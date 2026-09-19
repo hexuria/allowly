@@ -369,12 +369,6 @@ public actor HTTPServer {
         Task { await router.onControls(handler) }
     }
 
-    public nonisolated func onHandoff(_ handler: @escaping (String) -> String?) {
-        Task {
-            await router.onHandoff(handler)
-        }
-    }
-
     public nonisolated func onWebSocketConnect(_ handler: @escaping (WebSocketSession) -> Void) {
         Task {
             await router.onWebSocketConnect(handler)

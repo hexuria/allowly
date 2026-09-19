@@ -9,7 +9,6 @@ actor Router {
     typealias ScreenshotHandler = (String?) async -> Data?
     typealias VoiceUploadHandler = (Data) async -> String?
     typealias CommandHandler = (String) async -> ExecutionResult
-    typealias HandoffHandler = (String) -> String?
     typealias ControlsHandler = () async -> String
     typealias HintsHandler = () async -> String
     typealias VapidKeyHandler = () async -> String
@@ -31,7 +30,6 @@ actor Router {
     private var screenshotHandler: ScreenshotHandler?
     private var voiceUploadHandler: VoiceUploadHandler?
     private var commandHandler: CommandHandler?
-    private var handoffHandler: HandoffHandler?
     private var controlsHandler: ControlsHandler?
     private var hintsHandler: HintsHandler?
     private var vapidKeyHandler: VapidKeyHandler?
@@ -88,10 +86,6 @@ actor Router {
     func onSwipe(_ handler: @escaping SwipeHandler) { self.swipeHandler = handler }
     func onPolicy(_ handler: @escaping PolicyHandler) { self.policyHandler = handler }
     func onSetPolicy(_ handler: @escaping SetPolicyHandler) { self.setPolicyHandler = handler }
-
-    func onHandoff(_ handler: @escaping HandoffHandler) {
-        self.handoffHandler = handler
-    }
 
     func onWebSocketConnect(_ handler: @escaping WebSocketConnectHandler) {
         self.webSocketConnectHandler = handler
@@ -223,9 +217,6 @@ actor Router {
         } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "controls" {
             let json = await (controlsHandler?() ?? "[]")
             completion(HTTPResponse(status: 200, headers: ["content-type": "application/json"], body: json))
-        } else if request.method == "GET" && components.count >= 3 && components[0] == "api" && components[1] == "handoff" {
-            let requestId = components[2]
-            await handleGetHandoff(requestId, completion)
         } else {
             // Try to serve static file from web root
             await staticFiles.serve(path: route) { data, mimeType in
@@ -439,23 +430,6 @@ actor Router {
             ))
         } catch {
             completion(HTTPResponse(status: 500, headers: [:], body: "JSON encoding failed"))
-        }
-    }
-
-    private func handleGetHandoff(_ requestId: String, _ completion: @escaping (HTTPResponse) -> Void) async {
-        guard let handler = handoffHandler else {
-            completion(HTTPResponse(status: 500, headers: [:], body: "Handler not configured"))
-            return
-        }
-
-        if let vncUrl = handler(requestId) {
-            completion(HTTPResponse(
-                status: 200,
-                headers: ["content-type": "application/json"],
-                body: "{\"url\":\"\(vncUrl)\"}"
-            ))
-        } else {
-            completion(HTTPResponse(status: 404, headers: [:], body: "Handoff not available"))
         }
     }
 

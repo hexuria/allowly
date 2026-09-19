@@ -529,11 +529,6 @@ actor JevRuntime {
             return String(data: data, encoding: .utf8) ?? "{}"
         }
 
-        server.onHandoff { _ in
-            guard let host = Self.tailnetAddress() else { return nil }
-            return "vnc://\(host)"
-        }
-
         server.onWebSocketConnect { [weak self] session in
             guard let self else { return }
             Task { await self.addSocket(session) }

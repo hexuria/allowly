@@ -11,7 +11,7 @@ Jev is a remote-control system for your Mac. Run an AI agent or app on your Mac 
 - Auto-answer dialogs using a learned policy model
 
 **Jev cannot:**
-- Bypass or interact with macOS TCC consent sheets (rendered by tccd) — these must be handled by you in person via a VNC deep link to macOS Screen Sharing
+- Answer macOS TCC consent sheets (rendered by the system, not by the app asking). These reject synthetic input by design, and no remote tool can press them — not jev, not TeamViewer, and almost certainly not Apple's own Screen Sharing, whose VNC server holds `kTCCServicePostEvent` but no HID entitlement, so its clicks are synthetic too. jev detects these, tells you what is being asked, and refuses rather than pretending. To stop hitting them while away: grant the permission once in person, or pre-approve the binary with a PPPC configuration profile (works for Full Disk Access and Accessibility; Apple reserves camera, microphone and Screen Recording for a human). The only complete fix is a USB HID bridge that produces real hardware events.
 - Run on macOS versions older than Sonoma (14.0)
 - Function without Accessibility and Screen Recording permissions granted in System Settings
 

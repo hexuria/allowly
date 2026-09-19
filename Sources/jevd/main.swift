@@ -712,7 +712,8 @@ final class CommandExecutor {
         // A TCC consent sheet ignores synthetic input by design. Returning success
         // here would tell the phone the job was done while nothing happened.
         guard !request.handoffOnly else {
-            return .failed(reason: "System permission dialog: macOS ignores synthetic clicks. Use the Screen Sharing handoff.")
+            return .failed(reason: "System permission dialog — only a real key press or click answers this. "
+                + "No remote tool can, including Screen Sharing. Grant it at the Mac once and it stops asking.")
         }
 
         guard let element = DialogRegistry.shared.element(for: requestId) else {

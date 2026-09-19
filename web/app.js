@@ -1182,12 +1182,19 @@ const APP = {
 
         let optionsHTML = '';
         if (isTCC) {
-            const vncUrl = this.generateVNCDeepLink(approval);
+            // Deliberately no button. macOS tags every click with where it came
+            // from, and a permission sheet honours only events from real
+            // hardware — so nothing software can send will press this, jev and
+            // Screen Sharing included. A button that does nothing is worse than
+            // no button: you would tap it and not know what failed.
             optionsHTML = `
                 <div class="approval-tcc-notice">
-                    <p>This requires direct user interaction. jev cannot auto-answer this. Use Screen Sharing on your Mac to handle it.</p>
+                    <p><strong>Only a real press works on this one.</strong> macOS
+                    refuses synthetic clicks on permission prompts on purpose, so no
+                    remote tool can answer it — including this one.</p>
+                    <p class="approval-tcc-advice">Grant it once at the Mac and it
+                    will stop interrupting you when you are away.</p>
                 </div>
-                <a href="${vncUrl}" class="btn btn-primary" style="text-decoration: none; margin-top: var(--spacing-sm);">Open in Screen Sharing</a>
             `;
         } else {
             optionsHTML = '<div class="approval-options">';
@@ -1261,11 +1268,6 @@ const APP = {
             spokenCommand: 'Voice',
         };
         return labels[kind] || kind;
-    },
-
-    generateVNCDeepLink(approval) {
-        const app = approval.originatingApp.bundleIdentifier || 'unknown';
-        return `vnc://${new URL(this.baseUrl).hostname}/?app=${encodeURIComponent(app)}&request=${approval.id}`;
     },
 
     // Decision submission

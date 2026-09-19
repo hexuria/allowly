@@ -10,7 +10,7 @@ jev detects dialog boxes on your Mac and asks for human approval when you're awa
 
 **JevCapture** — Screenshots via ScreenCaptureKit.
 
-**JevServer** — HTTP server bound to loopback only (127.0.0.1:8080). Routes: `/api/pending` (list dialogs), `/api/decide` (receive approval), `/api/command` (execute), `/api/handoff` (VNC link for TCC). Serves the PWA.
+**JevServer** — HTTP server bound to loopback only (127.0.0.1:8080). Routes: `/api/pending` (list dialogs), `/api/decide` (receive approval), `/api/command` (execute), `/api/screenshot`, `/api/tap`, `/api/type`, `/api/policy`, `/api/vapid-key` and `/api/subscribe` (web push). Serves the PWA.
 
 **jevd** — Menu bar app. Runs JevAX, JevServer, and the Claude Code hook. One-time onboarding grants Accessibility and Screen Recording.
 
@@ -27,7 +27,7 @@ jev detects dialog boxes on your Mac and asks for human approval when you're awa
 7. Policy re-evaluates (dangerous buttons escalate to human, unknown apps deny)
 8. JevAX executes via AXPress or launches app
 
-**TCC consent sheets** (cert trust, location, microphone, Full Disk Access) are detected but cannot be clicked (macOS tccd rejects synthetic input). JevServer returns a `vnc://` link to macOS Screen Sharing. User taps it, sees the dialog on their phone's screen, and clicks it manually while controlling the Mac remotely.
+**TCC consent sheets** (cert trust, location, microphone, Full Disk Access) are detected but cannot be clicked. Every click carries a source tag, and the sheet honours only events tagged as coming from real hardware; anything posted through `CGEvent` is tagged synthetic and discarded. That applies to remote-control software too, including Apple's Screen Sharing — `AppleVNCServer` is pre-granted `kTCCServicePostEvent` so it never has to ask for Accessibility, but it holds no HID entitlement, so its events are synthetic like everyone else's. jev therefore marks these `handoffOnly`, surfaces what is being asked, and never reports having pressed one. The only way to produce an accepted event is genuine hardware: a USB HID bridge. See https://claude.ai/artifact/HXvBXAsWSYbgaPUfELMzoL.
 
 ## Trust Boundaries
 

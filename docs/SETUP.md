@@ -149,7 +149,9 @@ Once enabled, when a dialog appears on your Mac, you will receive a notification
 
 jev **cannot automatically answer** macOS TCC consent sheets (certificate trust, location access, microphone, camera, Full Disk Access, etc.). These are rendered by the system `tccd` process and explicitly reject synthetic input (CGEvent, AXPress, virtual HID).
 
-**What happens instead:** jev detects the TCC sheet and marks it as `handoffOnly: true`. Instead of offering a button to press, the PWA displays a **"Use Screen Sharing"** link. Tap it to open macOS Screen Sharing on your phone, then manually click the dialog on your Mac's screen while you control it via Screen Sharing. This is secure: the human is present and visually confirms the action.
+**What happens instead:** jev detects the TCC sheet, marks it `handoffOnly: true`, and shows you on the phone what is being asked and by which app — with no button, because no button would work. Screen Sharing does not help here: its VNC server posts the same synthetic events the sheet rejects.
+
+**To stop hitting these while away**, in increasing order of effort: grant the permission once while you are at the Mac; pre-approve the binary with a PPPC configuration profile (Full Disk Access and Accessibility only — Apple reserves camera, microphone and Screen Recording for a human); or attach a USB HID bridge, which produces real hardware events and is the only complete fix. Full explanation: https://claude.ai/artifact/HXvBXAsWSYbgaPUfELMzoL
 
 **Examples of TCC dialogs:**
 - "MyApp would like to access your files" (Full Disk Access)
