@@ -1,0 +1,696 @@
+import Foundation
+import AppKit
+import JevCore
+
+/// The literal vocabulary: phrases that map to a fixed sequence of steps.
+///
+/// Everything here is deterministic and costs no model call. Jev is for the
+/// ambiguous remainder, not for "new tab".
+///
+/// Shortcuts differ between apps, so the table is keyed by bundle id with a
+/// sensible default. Browsers and Electron apps share most of their bindings
+/// because Electron is Chromium.
+enum Phrasebook {
+    struct Binding {
+        let phrases: [String]
+        /// Built from the trailing argument, when the phrase takes one.
+        let build: (String, Context) -> VoiceCommand.Parsed?
+    }
+
+    struct Context {
+        let bundleId: String
+        let appName: String
+        let isBrowserLike: Bool
+        /// The host of the frontmost tab, when the app is a scriptable browser.
+        /// Carried explicitly so parsing can be tested without a live browser.
+        let host: String?
+
+        init(bundleId: String, appName: String, isBrowserLike: Bool, host: String? = nil) {
+            self.bundleId = bundleId
+            self.appName = appName
+            self.isBrowserLike = isBrowserLike
+            self.host = host
+        }
+    }
+
+    static func context() -> Context {
+        let app = NSWorkspace.shared.frontmostApplication
+        let bundleId = app?.bundleIdentifier ?? ""
+        let browserish = [
+            "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
+            "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.Browser",
+            "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
+        ]
+        // Electron apps are Chromium, so they take the same bindings.
+        let isElectron = FileManager.default.fileExists(
+            atPath: (app?.bundleURL?.path ?? "") + "/Contents/Frameworks/Electron Framework.framework")
+        return Context(
+            bundleId: bundleId,
+            appName: app?.localizedName ?? "the frontmost app",
+            isBrowserLike: browserish.contains(bundleId) || isElectron,
+            host: BrowserContext.currentHost()
+        )
+    }
+
+    /// Match a phrase. Longest phrases first so "close tab" beats "close".
+    static func parse(_ raw: String, in explicitContext: Context? = nil) -> VoiceCommand.Parsed? {
+        let text = raw.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
+        guard !text.isEmpty else { return nil }
+        let context = explicitContext ?? self.context()
+
+        // Scope first. Where you are standing can redefine a bare word —
+        // "mute" on YouTube is the video, not the Mac — and that has to be
+        // decided before the generic, system-wide table gets a look.
+        if let scoped = AppProfiles.override(for: text, in: context) {
+            return scoped
+        }
+
+        let ordered = bindings.sorted { ($0.phrases.first?.count ?? 0) > ($1.phrases.first?.count ?? 0) }
+
+        for binding in ordered {
+            for phrase in binding.phrases {
+                if text == phrase {
+                    if let parsed = binding.build("", context) { return parsed }
+                }
+                if text.hasPrefix(phrase + " ") {
+                    let argument = String(text.dropFirst(phrase.count + 1)).trimmingCharacters(in: .whitespaces)
+                    if let parsed = build(binding, argument, context) { return parsed }
+                }
+            }
+        }
+
+        // Nothing matched exactly. Speech mangles short words constantly —
+        // "close tab" arrives as "close thab", "select all" as "select owl" —
+        // so try again allowing a small number of wrong letters.
+        return nearMatch(text, in: ordered, context: context)
+    }
+
+    /// Match a phrase allowing a few wrong characters, budgeted by length so
+    /// short phrases cannot collide with each other.
+    private static func nearMatch(_ text: String, in ordered: [Binding],
+                                  context: Context) -> VoiceCommand.Parsed? {
+        let words = text.split(separator: " ").map(String.init)
+        var best: (parsed: VoiceCommand.Parsed, distance: Int)?
+
+        for binding in ordered {
+            for phrase in binding.phrases {
+                let phraseWordCount = phrase.split(separator: " ").count
+                guard words.count >= phraseWordCount else { continue }
+
+                let head = words.prefix(phraseWordCount).joined(separator: " ")
+                let budget = phrase.count <= 8 ? 1 : (phrase.count <= 16 ? 2 : 3)
+                let distance = AppCatalog.editDistance(phrase, head)
+                guard distance <= budget else { continue }
+
+                let argument = words.dropFirst(phraseWordCount).joined(separator: " ")
+                guard let parsed = build(binding, argument, context) else { continue }
+                if best == nil || distance < best!.distance {
+                    best = (parsed, distance)
+                }
+            }
+        }
+        return best?.parsed
+    }
+
+    /// Build a binding from a trailing argument, refusing the match when the
+    /// binding does not actually use it.
+    ///
+    /// Matching is prefix-based, and most bindings ignore their argument — so
+    /// "copy" matched "copy the link and open a new tab" and did nothing but
+    /// copy, silently dropping the rest of the sentence. Worse, "delete all"
+    /// matched "delete all the files in my downloads folder" and pressed
+    /// ⌘A then Delete. A binding that throws its argument away has not
+    /// understood the sentence and must not claim it.
+    ///
+    /// Trailing politeness is the exception: "copy please" really is "copy".
+    private static func build(_ binding: Binding, _ argument: String,
+                              _ context: Context) -> VoiceCommand.Parsed? {
+        guard let parsed = binding.build(argument, context) else { return nil }
+        guard !argument.isEmpty, !isFiller(argument) else { return parsed }
+
+        // If dropping the argument changes nothing, it was never read.
+        guard let bare = binding.build("", context) else { return parsed }
+        return encoded(bare.command) == encoded(parsed.command) ? nil : parsed
+    }
+
+    private static let fillerWords: Set<String> = [
+        "please", "now", "thanks", "thank", "you", "for", "me", "it", "that", "this",
+    ]
+
+    private static func isFiller(_ argument: String) -> Bool {
+        let words = argument.split(separator: " ").map(String.init)
+        return words.count <= 3 && words.allSatisfy { fillerWords.contains($0) }
+    }
+
+    private static func encoded(_ command: Command) -> String {
+        let encoder = JSONEncoder()
+        // Without sortedKeys, two encodings of the same value can differ only
+        // in key order, and comparing them would answer "different" at random.
+        encoder.outputFormatting = .sortedKeys
+        return (try? encoder.encode(command)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    }
+
+    /// Every capability, as canonical phrases. This doubles as the closed
+    /// choice list handed to Jev: it can only ever pick something that really
+    /// exists, and each choice may be a multi-step sequence.
+    static func catalog() -> [String] {
+        bindings.compactMap { binding in
+            // Only argument-free capabilities: a classifier returns a label,
+            // so it cannot supply a URL or a body of text.
+            guard let phrase = binding.phrases.first,
+                  binding.build("", context()) != nil else { return nil }
+            return phrase
+        }
+    }
+
+    /// Build a capability chosen by its canonical phrase.
+    static func build(canonical: String) -> VoiceCommand.Parsed? {
+        let context = self.context()
+        for binding in bindings where binding.phrases.first == canonical {
+            return binding.build("", context)
+        }
+        return nil
+    }
+
+    private static func keys(_ spec: String) -> Command { .pressKeys(spec: spec) }
+
+    private static func step(_ label: String, _ steps: [Command]) -> VoiceCommand.Parsed {
+        VoiceCommand.Parsed(command: .sequence(label: label, steps: steps), description: label)
+    }
+
+    private static let bindings: [Binding] = [
+        // MARK: Text editing
+        Binding(phrases: ["select all", "select everything", "highlight all"]) { _, _ in
+            step("Select all", [keys("cmd+a")])
+        },
+        Binding(phrases: ["delete all", "clear all", "clear it", "clear the field",
+                          "delete everything", "clear search", "delete search term",
+                          "clear the search", "erase all"]) { _, _ in
+            // Select first, then delete: pressing delete alone removes one character.
+            step("Clear the field", [keys("cmd+a"), keys("delete")])
+        },
+        Binding(phrases: ["copy"]) { _, _ in step("Copy", [keys("cmd+c")]) },
+        Binding(phrases: ["paste"]) { _, _ in step("Paste", [keys("cmd+v")]) },
+        Binding(phrases: ["cut"]) { _, _ in step("Cut", [keys("cmd+x")]) },
+        Binding(phrases: ["undo"]) { _, _ in step("Undo", [keys("cmd+z")]) },
+        Binding(phrases: ["redo"]) { _, _ in step("Redo", [keys("cmd+shift+z")]) },
+        Binding(phrases: ["save"]) { _, _ in step("Save", [keys("cmd+s")]) },
+        Binding(phrases: ["delete", "backspace"]) { _, _ in step("Delete", [keys("delete")]) },
+        Binding(phrases: ["delete word", "delete the word"]) { _, _ in
+            step("Delete word", [keys("option+delete")])
+        },
+        Binding(phrases: ["delete line", "delete the line"]) { _, _ in
+            step("Delete line", [keys("cmd+delete")])
+        },
+        Binding(phrases: ["enter", "press enter", "return", "confirm", "submit"]) { _, _ in
+            step("Enter", [keys("return")])
+        },
+        Binding(phrases: ["escape", "cancel", "dismiss", "close this", "click away", "tab away"]) { _, _ in
+            step("Escape", [keys("escape")])
+        },
+        Binding(phrases: ["tab", "next field"]) { _, _ in step("Tab", [keys("tab")]) },
+
+        Binding(phrases: ["show me the form", "show the form", "fill the form",
+                          "fill out the form", "show the login form", "show form",
+                          "what are the fields", "fill this in"]) { _, _ in
+            VoiceCommand.Parsed(command: .showForm,
+                                description: "Show the form on your phone")
+        },
+
+        // MARK: Pointing — "this" and "here" mean wherever the pointer is
+        //
+        // The phone draws the pointer and lets you drag it, so aiming is a
+        // gesture and the sentence stays short. Faster than numbering the
+        // screen when you can already see what you want.
+        Binding(phrases: ["enter password here", "enter the password here",
+                          "type the password here", "enter my password",
+                          "type password", "password here"]) { _, _ in
+            // The password is typed on the phone. It never goes near the
+            // microphone, a transcription service or the log.
+            step("Ask the phone for the password", [
+                .pointerAction(kind: "click"),
+                .requestInput(field: "password", secret: true),
+            ])
+        },
+        Binding(phrases: ["double click this", "double click here", "double click that",
+                          "double click", "open this", "open that"]) { _, _ in
+            VoiceCommand.Parsed(command: .pointerAction(kind: "double"),
+                                description: "Double click the pointer")
+        },
+        Binding(phrases: ["right click this", "right click here", "right click that",
+                          "context menu here", "context menu this"]) { _, _ in
+            VoiceCommand.Parsed(command: .pointerAction(kind: "right"),
+                                description: "Right click the pointer")
+        },
+        Binding(phrases: ["type here", "type in here", "write here", "enter text here",
+                          "type something here", "let me type here"]) { _, _ in
+            step("Ask the phone for text", [
+                .pointerAction(kind: "click"),
+                .requestInput(field: "text", secret: false),
+            ])
+        },
+        Binding(phrases: ["click this", "click here", "click that", "press this",
+                          "tap this", "tap here", "click it"]) { _, _ in
+            VoiceCommand.Parsed(command: .pointerAction(kind: "click"),
+                                description: "Click the pointer")
+        },
+
+        // MARK: Sound and media
+        //
+        // The explicit system phrases come first and are deliberately wordy:
+        // they are the escape hatch for when you are on a page that redefines
+        // the bare word and you meant the Mac after all.
+        Binding(phrases: ["mute everything", "mute the mac", "mute the computer",
+                          "mute system", "system mute", "mute all apps"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "mute", value: 0),
+                                description: "Mute the Mac")
+        },
+        Binding(phrases: ["unmute everything", "unmute the mac", "unmute the computer",
+                          "unmute system", "system unmute"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "unmute", value: 0),
+                                description: "Unmute the Mac")
+        },
+        Binding(phrases: ["volume up", "turn it up", "louder", "increase volume",
+                          "turn the volume up"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "volumeUp", value: 10),
+                                description: "Volume up")
+        },
+        Binding(phrases: ["volume down", "turn it down", "quieter", "decrease volume",
+                          "turn the volume down"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "volumeDown", value: 10),
+                                description: "Volume down")
+        },
+        Binding(phrases: ["max volume", "full volume", "maximum volume", "volume all the way up"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "volumeSet", value: 100),
+                                description: "Volume 100%")
+        },
+        Binding(phrases: ["no volume", "zero volume", "volume off", "silence"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "volumeSet", value: 0),
+                                description: "Volume 0%")
+        },
+        Binding(phrases: ["set volume to", "volume"]) { argument, _ in
+            let token = argument.replacingOccurrences(of: "percent", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            guard let level = Int(token) ?? spokenDigits[token].map({ $0 * 10 }) else { return nil }
+            return VoiceCommand.Parsed(command: .systemAction(name: "volumeSet", value: level),
+                                       description: "Volume \(level)%")
+        },
+        Binding(phrases: ["mute", "mute the sound", "mute it"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "mute", value: 0), description: "Mute")
+        },
+        Binding(phrases: ["unmute", "unmute the sound", "sound on"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "unmute", value: 0), description: "Unmute")
+        },
+        Binding(phrases: ["play", "pause", "play pause", "resume"]) { _, _ in
+            step("Play/pause", [keys("f8")])
+        },
+        Binding(phrases: ["next track", "next song", "skip", "skip song"]) { _, _ in
+            step("Next track", [keys("f9")])
+        },
+        Binding(phrases: ["previous track", "previous song", "last song", "back a track"]) { _, _ in
+            step("Previous track", [keys("f7")])
+        },
+        Binding(phrases: ["brighter", "brightness up", "increase brightness"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "brighter", value: 0), description: "Brighter")
+        },
+        Binding(phrases: ["dimmer", "brightness down", "decrease brightness", "darker screen"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "dimmer", value: 0), description: "Dimmer")
+        },
+        Binding(phrases: ["dark mode", "light mode", "toggle dark mode", "switch appearance"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "darkMode", value: 0),
+                                description: "Switch appearance")
+        },
+        Binding(phrases: ["empty trash", "empty the trash", "take out the trash"]) { _, _ in
+            VoiceCommand.Parsed(command: .systemAction(name: "emptyTrash", value: 0),
+                                description: "Empty the trash")
+        },
+
+        // MARK: Desktop, spaces and windows
+        Binding(phrases: ["show desktop", "reveal desktop", "toggle desktop", "hide everything"]) { _, _ in
+            step("Show desktop", [keys("f11")])
+        },
+        Binding(phrases: ["mission control", "show all windows", "expose", "toggle mission control"]) { _, _ in
+            step("Mission Control", [keys("f3")])
+        },
+        Binding(phrases: ["next window", "cycle windows", "other window"]) { _, _ in
+            step("Next window", [keys("cmd+grave")])
+        },
+        Binding(phrases: ["previous window", "last window"]) { _, _ in
+            step("Previous window", [keys("cmd+shift+grave")])
+        },
+        Binding(phrases: ["next space", "next desktop"]) { _, _ in
+            step("Next space", [keys("ctrl+right")])
+        },
+        Binding(phrases: ["previous space", "last space", "previous desktop"]) { _, _ in
+            step("Previous space", [keys("ctrl+left")])
+        },
+        Binding(phrases: ["full screen", "fullscreen", "maximise", "maximize"]) { _, _ in
+            step("Full screen", [keys("cmd+ctrl+f")])
+        },
+        Binding(phrases: ["hide app", "hide this app", "hide this"]) { _, _ in
+            step("Hide", [keys("cmd+h")])
+        },
+        Binding(phrases: ["lock screen", "lock the mac", "lock it"]) { _, _ in
+            step("Lock screen", [keys("ctrl+cmd+q")])
+        },
+        Binding(phrases: ["screenshot", "take a screenshot", "capture screen"]) { _, _ in
+            step("Screenshot", [keys("cmd+shift+5")])
+        },
+
+        // MARK: Zoom and find
+        Binding(phrases: ["zoom in", "bigger", "enlarge"]) { _, _ in step("Zoom in", [keys("cmd+equal")]) },
+        Binding(phrases: ["zoom out", "smaller", "shrink"]) { _, _ in step("Zoom out", [keys("cmd+minus")]) },
+        Binding(phrases: ["reset zoom", "actual size", "normal zoom"]) { _, _ in
+            step("Reset zoom", [keys("cmd+0")])
+        },
+        Binding(phrases: ["find next", "next result", "next match"]) { _, _ in
+            step("Find next", [keys("cmd+g")])
+        },
+        Binding(phrases: ["find previous", "previous result", "previous match"]) { _, _ in
+            step("Find previous", [keys("cmd+shift+g")])
+        },
+        Binding(phrases: ["bookmark this", "bookmark page", "save bookmark"]) { _, _ in
+            step("Bookmark", [keys("cmd+d")])
+        },
+        Binding(phrases: ["developer tools", "dev tools", "inspector", "inspect"]) { _, _ in
+            step("Developer tools", [keys("cmd+option+i")])
+        },
+        Binding(phrases: ["toggle hidden files", "show hidden files", "hide hidden files"]) { _, _ in
+            step("Toggle hidden files", [keys("cmd+shift+period")])
+        },
+
+        // MARK: Numbered hints
+        Binding(phrases: ["show boxes", "show guides", "show helpers", "show numbers",
+                          "show actionable boxes", "show hints", "show labels",
+                          "what can i click", "number everything", "show targets"]) { _, _ in
+            VoiceCommand.Parsed(command: .showHints, description: "Show numbers")
+        },
+        Binding(phrases: ["show guides everywhere", "show numbers everywhere",
+                          "show all guides", "show guides for everything",
+                          "number every window"]) { _, _ in
+            VoiceCommand.Parsed(command: .showHintsEverywhere, description: "Show numbers everywhere")
+        },
+        Binding(phrases: ["show box", "outline", "show outline", "which is"]) { argument, _ in
+            let token = argument.split(separator: " ").first.map(String.init) ?? ""
+            guard let number = Int(token) ?? spokenDigits[token] else { return nil }
+            return VoiceCommand.Parsed(command: .showHintBox(number: number),
+                                       description: "Outline \(number)")
+        },
+        Binding(phrases: ["show guides for", "show numbers for", "show boxes for",
+                          "show guides on", "number the"]) { argument, _ in
+            guard !argument.isEmpty else { return nil }
+            let text = argument.hasPrefix("the ") ? String(argument.dropFirst(4)) : argument
+
+            // A kind of thing — "images", "buttons", "links" — cuts eighty
+            // targets down to a handful, which is worth far more than shorter
+            // labels.
+            if let kind = HintScope.Kind.spoken[text] {
+                return VoiceCommand.Parsed(
+                    command: .showHintsScoped(kind: kind.rawValue, region: ""),
+                    description: "Show \(kind.rawValue)")
+            }
+            // A part of the window.
+            if let region = HintScope.Region.spoken[text] {
+                return VoiceCommand.Parsed(
+                    command: .showHintsScoped(kind: "", region: region.rawValue),
+                    description: "Show the \(region.rawValue)")
+            }
+            // "images in the sidebar"
+            for separator in [" in the ", " in ", " on the "] {
+                guard let range = text.range(of: separator) else { continue }
+                let kindText = String(text[..<range.lowerBound])
+                let regionText = String(text[range.upperBound...])
+                if let kind = HintScope.Kind.spoken[kindText],
+                   let region = HintScope.Region.spoken[regionText] {
+                    return VoiceCommand.Parsed(
+                        command: .showHintsScoped(kind: kind.rawValue, region: region.rawValue),
+                        description: "Show \(kind.rawValue) in the \(region.rawValue)")
+                }
+            }
+            // Otherwise it names an app.
+            if let app = AppCatalog.shared.resolve(spokenName: text) {
+                return VoiceCommand.Parsed(
+                    command: .showHintsForApp(bundleIdentifier: app.bundleIdentifier),
+                    description: "Show numbers in \(app.name)")
+            }
+            // A noun nobody taught it — "the videos", "the posts", "the
+            // results". Every site invents its own word for its own tiles, so
+            // a fixed synonym list can never keep up. Carry the word through
+            // with a "?" and let the executor, which can await, resolve it
+            // against the site's profile and then against Jev.
+            guard text.count <= 40 else { return nil }
+            return VoiceCommand.Parsed(
+                command: .showHintsScoped(kind: "?" + text, region: ""),
+                description: "Show the \(text)")
+        },
+        Binding(phrases: ["hide boxes", "hide numbers", "hide hints", "clear boxes",
+                          "clear numbers", "hide the guides", "never mind"]) { _, _ in
+            // This used to build selectHint(-1) as a sentinel, and nothing
+            // ever looked for it: the command reported "there is no number -1"
+            // and the numbers stayed on the phone.
+            VoiceCommand.Parsed(command: .hideHints, description: "Hide numbers")
+        },
+        Binding(phrases: ["select", "choose", "click number", "pick", "number"]) { argument, _ in
+            let token = argument.split(separator: " ").first.map(String.init) ?? ""
+            guard let number = Int(token) ?? spokenDigits[token] else { return nil }
+            return VoiceCommand.Parsed(command: .selectHint(number: number),
+                                       description: "Select \(number)")
+        },
+
+        // MARK: Jumping to the ends
+        Binding(phrases: ["scroll to the bottom", "scroll to bottom", "go to the bottom",
+                          "jump to the bottom", "bottom of the page", "go to the end",
+                          "scroll all the way down"]) { _, _ in
+            // Command+Down is end-of-document across Cocoa and the browsers;
+            // a very large scroll would stop at whatever is currently loaded.
+            step("Bottom", [keys("cmd+down")])
+        },
+        Binding(phrases: ["scroll to the top", "scroll to top", "go to the top",
+                          "jump to the top", "top of the page", "go to the beginning",
+                          "scroll all the way up"]) { _, _ in
+            step("Top", [keys("cmd+up")])
+        },
+        Binding(phrases: ["end of line", "go to end of line"]) { _, _ in
+            step("End of line", [keys("cmd+right")])
+        },
+        Binding(phrases: ["start of line", "beginning of line", "go to start of line"]) { _, _ in
+            step("Start of line", [keys("cmd+left")])
+        },
+
+        // MARK: Browser and Electron navigation
+        Binding(phrases: ["new tab", "open a new tab"]) { _, _ in step("New tab", [keys("cmd+t")]) },
+        Binding(phrases: ["close all tabs", "close every tab", "close all the tabs",
+                          "shut all tabs"]) { _, _ in
+            // cmd+shift+w closes the window and with it every tab. cmd+w only
+            // ever closes the one in front, which is why "close all tabs" did
+            // nothing useful.
+            step("Close all tabs", [keys("cmd+shift+w")])
+        },
+        Binding(phrases: ["close other tabs", "close the other tabs"]) { _, _ in
+            step("Close other tabs", [keys("cmd+option+w")])
+        },
+        Binding(phrases: ["close tab", "close the tab"]) { _, _ in step("Close tab", [keys("cmd+w")]) },
+        Binding(phrases: ["reopen tab", "undo close tab", "restore tab"]) { _, _ in
+            step("Reopen closed tab", [keys("cmd+shift+t")])
+        },
+        Binding(phrases: ["next tab", "go to next tab"]) { _, _ in
+            step("Next tab", [keys("ctrl+tab")])
+        },
+        Binding(phrases: ["previous tab", "prior tab", "go to previous tab", "last tab"]) { _, _ in
+            step("Previous tab", [keys("ctrl+shift+tab")])
+        },
+        Binding(phrases: ["go back", "back", "navigate back"]) { _, _ in
+            step("Back", [keys("cmd+left")])
+        },
+        Binding(phrases: ["go forward", "forward", "navigate forward"]) { _, _ in
+            step("Forward", [keys("cmd+right")])
+        },
+        Binding(phrases: ["reload", "refresh", "reload the page", "refresh the page"]) { _, _ in
+            step("Reload", [keys("cmd+r")])
+        },
+        Binding(phrases: ["hard reload", "force reload"]) { _, _ in
+            step("Hard reload", [keys("cmd+shift+r")])
+        },
+        Binding(phrases: ["focus the address bar", "focus address bar", "focus the url bar",
+                          "focus search", "focus the search bar", "focus search bar"]) { _, context in
+            step("Focus the address bar", [keys(context.isBrowserLike ? "cmd+l" : "cmd+f")])
+        },
+        Binding(phrases: ["find", "search the page", "find on page"]) { argument, _ in
+            argument.isEmpty
+                ? step("Find", [keys("cmd+f")])
+                : step("Find “\(argument)”", [keys("cmd+f"), keys("cmd+a"),
+                                              .typeText(text: argument), keys("return")])
+        },
+        Binding(phrases: ["go to tab", "switch to tab", "tab number"]) { argument, _ in
+            guard let index = digit(argument), (1...9).contains(index) else { return nil }
+            return step("Go to tab \(index)", [keys("cmd+\(index)")])
+        },
+        Binding(phrases: ["go to", "browse", "browse to", "open the website", "navigate to",
+                          "visit", "open site", "open website"]) { argument, context in
+            guard !argument.isEmpty, context.isBrowserLike || looksLikeURL(argument) else { return nil }
+            let destination = normalisedDestination(argument)
+            // Hand the URL to the system rather than typing it. The keystroke
+            // version opened a tab and then reliably failed to enter anything,
+            // because a freshly focused address bar does not accept synthetic
+            // unicode events. This just works, and opens a new tab anyway.
+            return VoiceCommand.Parsed(command: .openURL(url: "https://" + destination),
+                                       description: "Open \(destination)")
+        },
+
+        // MARK: Windows and system
+        Binding(phrases: ["close window"]) { _, _ in step("Close window", [keys("cmd+w")]) },
+        Binding(phrases: ["quit this", "quit this app", "quit the app"]) { _, context in
+            step("Quit \(context.appName)", [keys("cmd+q")])
+        },
+        Binding(phrases: ["minimise", "minimize"]) { _, _ in step("Minimise", [keys("cmd+m")]) },
+        Binding(phrases: ["switch app", "next app", "app switcher"]) { _, _ in
+            step("Switch app", [keys("cmd+tab")])
+        },
+        Binding(phrases: ["new window"]) { _, _ in step("New window", [keys("cmd+shift+n")]) },
+        Binding(phrases: ["spotlight", "open spotlight"]) { _, _ in
+            step("Spotlight", [keys("cmd+space")])
+        },
+
+        // MARK: Documents and notes
+        Binding(phrases: ["new note", "create a note", "create new note", "add a note",
+                          "new note called", "create a new note"]) { argument, _ in
+            // Activate Notes first. Sending cmd+n to whatever happens to be in
+            // front opened a Safari window and reported "New note in Safari".
+            var steps: [Command] = [.launchApp(bundleIdentifier: "com.apple.Notes"), keys("cmd+n")]
+            if !argument.isEmpty { steps.append(.typeText(text: argument)) }
+            return step(argument.isEmpty ? "New note" : "New note “\(argument)”", steps)
+        },
+        Binding(phrases: ["search notes", "find a note", "search my notes"]) { argument, _ in
+            var steps: [Command] = [.launchApp(bundleIdentifier: "com.apple.Notes"),
+                                    keys("cmd+option+f")]
+            if !argument.isEmpty { steps += [.typeText(text: argument), keys("return")] }
+            return step(argument.isEmpty ? "Search Notes" : "Search Notes for “\(argument)”", steps)
+        },
+        Binding(phrases: ["new email", "new message", "compose email", "write an email"]) { argument, _ in
+            var steps: [Command] = [.launchApp(bundleIdentifier: "com.apple.mail"), keys("cmd+n")]
+            if !argument.isEmpty { steps.append(.typeText(text: argument)) }
+            return step("New email", steps)
+        },
+        Binding(phrases: ["search mail", "search email", "find an email"]) { argument, _ in
+            var steps: [Command] = [.launchApp(bundleIdentifier: "com.apple.mail"), keys("cmd+option+f")]
+            if !argument.isEmpty { steps += [.typeText(text: argument), keys("return")] }
+            return step("Search Mail", steps)
+        },
+        Binding(phrases: ["search notes", "search for", "search"]) { argument, context in
+            var steps: [Command] = [keys(context.isBrowserLike ? "cmd+l" : "cmd+f"), keys("cmd+a")]
+            if !argument.isEmpty {
+                steps.append(.typeText(text: argument))
+                steps.append(keys("return"))
+            }
+            return step(argument.isEmpty ? "Search in \(context.appName)"
+                                         : "Search for “\(argument)”", steps)
+        },
+        Binding(phrases: ["type", "write", "enter text", "say"]) { argument, _ in
+            guard !argument.isEmpty else { return nil }
+            return step("Type “\(argument)”", [.typeText(text: argument)])
+        },
+        // MARK: Forms and credentials
+        Binding(phrases: ["autofill", "autofill password", "fill password",
+                          "use saved password", "fill my password"]) { _, _ in
+            // Let the password manager do it. Nothing secret passes through
+            // jev at all, which is the safest possible arrangement.
+            step("Autofill from Passwords", [keys("cmd+backslash")])
+        },
+        Binding(phrases: ["fill"]) { argument, _ in
+            // "fill email with me@example.com"
+            guard let range = argument.range(of: " with ") else { return nil }
+            let field = String(argument[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let value = String(argument[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            guard !field.isEmpty, !value.isEmpty else { return nil }
+            return VoiceCommand.Parsed(command: .fillField(label: field, text: value),
+                                       description: "Fill “\(field)”")
+        },
+        Binding(phrases: ["next field", "tab to next field"]) { _, _ in
+            step("Next field", [keys("tab")])
+        },
+        Binding(phrases: ["previous field", "back a field"]) { _, _ in
+            step("Previous field", [keys("shift+tab")])
+        },
+        Binding(phrases: ["log in", "login", "sign in", "log in to", "sign in to"]) { argument, context in
+            // Deliberately does NOT handle the password. It focuses the form
+            // and invokes the system password manager; anything secret comes
+            // from Passwords or from you typing it on the phone.
+            var steps: [Command] = []
+            if !argument.isEmpty {
+                steps.append(.openURL(url: "https://" + normalisedDestination(argument)))
+            }
+            steps.append(keys("cmd+backslash"))
+            return step(argument.isEmpty ? "Autofill this login" : "Open \(argument) and autofill",
+                        steps)
+        },
+
+        // MARK: Spreadsheets
+        Binding(phrases: ["go to cell", "select cell", "cell"]) { argument, _ in
+            let reference = argument.replacingOccurrences(of: " ", with: "").uppercased()
+            guard !reference.isEmpty else { return nil }
+            // The name box: ctrl+G in Excel, and Numbers accepts the same jump.
+            return step("Go to cell \(reference)",
+                        [keys("ctrl+g"), .typeText(text: reference), keys("return")])
+        },
+        Binding(phrases: ["next cell", "move right"]) { _, _ in step("Next cell", [keys("tab")]) },
+        Binding(phrases: ["cell below", "move down"]) { _, _ in step("Cell below", [keys("down")]) },
+        Binding(phrases: ["cell above", "move up"]) { _, _ in step("Cell above", [keys("up")]) },
+        Binding(phrases: ["new row", "insert row"]) { _, _ in
+            step("Insert row", [keys("ctrl+shift+equal")])
+        },
+        Binding(phrases: ["bold"]) { _, _ in step("Bold", [keys("cmd+b")]) },
+        Binding(phrases: ["italic"]) { _, _ in step("Italic", [keys("cmd+i")]) },
+        Binding(phrases: ["underline"]) { _, _ in step("Underline", [keys("cmd+u")]) },
+        Binding(phrases: ["print"]) { _, _ in step("Print", [keys("cmd+p")]) },
+        Binding(phrases: ["select row"]) { _, _ in step("Select row", [keys("shift+space")]) },
+        Binding(phrases: ["select column"]) { _, _ in step("Select column", [keys("ctrl+space")]) },
+
+        Binding(phrases: ["right click on", "right click", "secondary click on", "context menu on"]) { argument, _ in
+            guard !argument.isEmpty else { return nil }
+            return VoiceCommand.Parsed(command: .rightClickControl(label: argument),
+                                       description: "Right click “\(argument)”")
+        },
+    ]
+
+    // MARK: Helpers
+
+    private static let spokenDigits = [
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    ]
+
+    private static func digit(_ text: String) -> Int? {
+        let token = text.split(separator: " ").first.map(String.init) ?? text
+        return Int(token) ?? spokenDigits[token]
+    }
+
+    private static func looksLikeURL(_ text: String) -> Bool {
+        text.contains(".") || text.hasPrefix("http")
+    }
+
+    /// Speech writes "facebook.com" as "facebook dot com", and a bare word is
+    /// a search rather than a host.
+    private static func normalisedDestination(_ raw: String) -> String {
+        var text = raw
+        // "log in to facebook" must not become the host "to facebook".
+        for filler in ["to ", "the ", "my "] where text.hasPrefix(filler) {
+            text = String(text.dropFirst(filler.count))
+        }
+        text = text
+            .replacingOccurrences(of: " dot com", with: ".com")
+            .replacingOccurrences(of: " dot org", with: ".org")
+            .replacingOccurrences(of: " dot net", with: ".net")
+            .replacingOccurrences(of: " dot io", with: ".io")
+            .replacingOccurrences(of: " dot ", with: ".")
+            .replacingOccurrences(of: " slash ", with: "/")
+            .replacingOccurrences(of: " ", with: "")
+        if !text.contains(".") && !text.hasPrefix("http") {
+            // A single word with no dot: treat it as a domain guess, which is
+            // what someone saying "browse facebook" means.
+            text += ".com"
+        }
+        return text
+    }
+}

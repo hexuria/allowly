@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#000000">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Jev">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%23000' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%23000' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
+    <link rel="stylesheet" href="/styles.css">
+    <title>Jev Control</title>
+</head>
+<body>
+    <div id="app" class="app">
+
+        <!-- Pairing -->
+        <div id="setupScreen" class="screen screen-setup">
+            <div class="setup-content">
+                <div class="setup-header">
+                    <h1>Jev</h1>
+                    <p>Paste the pairing link your Mac is showing</p>
+                </div>
+                <div class="setup-form">
+                    <input type="text" id="pairingUrl" placeholder="https://…/?token=…"
+                           class="pairing-input" autocomplete="off" spellcheck="false" autocapitalize="off">
+                    <button id="connectBtn" class="btn btn-primary">Connect</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Everything else lives on one screen -->
+        <div id="mainScreen" class="screen screen-main hidden">
+            <div class="header">
+                <div class="header-left">
+                    <h1>Jev</h1>
+                    <div class="connection-status">
+                        <span id="connectionStatus" class="status-dot"></span>
+                        <span id="statusText">Connecting…</span>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button id="inputBtn" class="icon-btn" aria-label="Send text">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H4V8h16z"/>
+                            <path d="M6 10h2v2H6zm3 0h2v2H9zm3 0h2v2h-2zm3 0h3v2h-3zM6 13h8v2H6zm9 0h3v2h-3z"/>
+                        </svg>
+                    </button>
+                    <button id="settingsBtn" class="icon-btn" aria-label="Settings">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M19.14 12.94a7.07 7.07 0 000-1.88l2.03-1.58a.5.5 0 00.12-.64l-1.92-3.32a.5.5 0 00-.6-.22l-2.39.96a7 7 0 00-1.62-.94l-.36-2.54a.5.5 0 00-.5-.42h-3.84a.5.5 0 00-.5.42l-.36 2.54c-.58.24-1.12.56-1.62.94l-2.39-.96a.5.5 0 00-.6.22L2.67 8.84a.5.5 0 00.12.64l2.03 1.58a7.07 7.07 0 000 1.88l-2.03 1.58a.5.5 0 00-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.38 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.56 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 00-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <div class="content">
+                <!-- The Mac, live -->
+                <div id="screenPanel" class="screen-panel">
+                    <div id="screenStage" class="screen-stage">
+                        <img id="screenImage" alt="Mac screen">
+                        <div id="hintLayer" class="hint-layer"></div>
+                        <div id="cursorMarker" class="cursor-marker hidden" aria-hidden="true">
+                            <span class="cursor-ring"></span>
+                        </div>
+                    </div>
+                    <div id="screenStatus" class="screen-status">Connecting…</div>
+                </div>
+
+                <!-- Anything waiting on you, directly beneath it -->
+                <div id="approvalsSection">
+                    <h3 class="section-heading">Needs you</h3>
+                    <div id="approvalsList" class="approvals-list"></div>
+                </div>
+
+                <!-- Voice -->
+                <div class="ptt-section" id="voiceSection">
+                    <div id="handsFreeMainStatus" class="handsfree-status"></div>
+                    <button id="pttBtn" class="btn btn-ptt" aria-label="Hold to talk">
+                        <svg class="ptt-icon" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                            <path d="M17 11a5 5 0 01-10 0H5a7 7 0 006 6.93V21h2v-3.07A7 7 0 0019 11z"/>
+                        </svg>
+                        <span>Hold to talk</span>
+                    </button>
+                    <div id="recordingStatus" class="recording-status hidden">
+                        <div class="recording-indicator">
+                            <span class="recording-dot"></span>
+                            <span id="recordingTime">0:00</span>
+                        </div>
+                    </div>
+                    <div id="voiceResult" class="voice-result hidden">
+                        <p id="voiceTranscription" class="voice-transcription"></p>
+                        <p id="voiceDecision" class="voice-decision"></p>
+                    </div>
+                </div>
+
+                <div id="pushBanner" class="ios-hint hidden">
+                    <span id="pushBannerText"></span>
+                    <button id="pushBannerAction" class="hidden">Turn on</button>
+                    <button id="pushBannerDismiss">Dismiss</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- The one settings surface -->
+        <div id="settingsSheet" class="sheet hidden">
+            <div class="sheet-scrim" data-close="settingsSheet"></div>
+            <div class="sheet-body">
+                <div class="sheet-grip"></div>
+                <h2>Settings</h2>
+
+                <h3>Voice</h3>
+                <label class="setting-row">
+                    <span>Hands free — keep listening</span>
+                    <input id="handsFree" type="checkbox">
+                </label>
+                <p class="setting-note">Starts and stops on your voice. Pauses when you leave the app; iOS will not hold the microphone in the background.</p>
+                <div id="handsFreeStatus" class="setting-note"></div>
+
+                <h3>Screen</h3>
+                <label class="setting-row">
+                    <span>Tap the screen to control the Mac</span>
+                    <input id="tapToClick" type="checkbox">
+                </label>
+                <p class="setting-note">Tap to click, hold for right click, drag to drag, swipe to scroll. Cannot press system permission dialogs.</p>
+
+                <h3>Decisions</h3>
+                <div id="policyGlobal" class="policy-global"></div>
+                <p class="policy-hint" id="policyExceptionsHint"></p>
+                <div id="policyEntries" class="policy-entries"></div>
+                <button id="policyReset" class="policy-reset">Forget every saved choice</button>
+
+                <h3>Pairing</h3>
+                <input type="text" id="currentUrl" class="setting-input" readonly>
+                <button id="changePairingBtn" class="btn btn-secondary">Change pairing</button>
+            </div>
+        </div>
+
+        <!-- Send text / fill a field -->
+        <div id="inputSheet" class="sheet hidden">
+            <div class="sheet-scrim" data-close="inputSheet"></div>
+            <div class="sheet-body">
+                <div class="sheet-grip"></div>
+                <h2>Send text</h2>
+                <p class="setting-note">Typed, not spoken — so passwords never go through speech or a model.</p>
+                <input id="typeField" class="setting-input" type="text" placeholder="Field name (optional, e.g. email)"
+                       autocapitalize="off" autocomplete="off" spellcheck="false">
+                <input id="typeText" class="setting-input" type="text" placeholder="Text to type on the Mac"
+                       autocapitalize="off" autocomplete="off" spellcheck="false">
+                <label class="setting-row"><span>Secret — hide and never log</span><input id="typeSecret" type="checkbox"></label>
+                <button id="typeSend" class="btn btn-primary">Send to Mac</button>
+                <div id="typeStatus" class="setting-note"></div>
+            </div>
+        </div>
+
+        <!-- A form read off the Mac's screen, filled in here -->
+        <div id="formSheet" class="sheet hidden">
+            <div class="sheet-scrim" data-close="formSheet"></div>
+            <div class="sheet-body">
+                <div class="sheet-grip"></div>
+                <h2>Fill this in</h2>
+                <p class="setting-note">Read off the form on your Mac. Values go straight into the fields — passwords are never spoken, transcribed or logged.</p>
+                <div id="formFields"></div>
+                <button id="formSubmit" class="btn btn-primary">Fill on the Mac</button>
+                <div id="formStatus" class="setting-note"></div>
+            </div>
+        </div>
+
+        <!-- Long press an approval to remember the answer -->
+        <div id="approvalSheet" class="sheet hidden">
+            <div class="sheet-scrim" data-close="approvalSheet"></div>
+            <div class="sheet-body">
+                <div class="sheet-grip"></div>
+                <h2 id="approvalSheetTitle">Remember this?</h2>
+                <p class="setting-note">Applies from now on, and Jev uses it when deciding on its own.</p>
+                <button class="sheet-action allow" data-mode="always">Always allow</button>
+                <button class="sheet-action auto" data-mode="auto">Let Jev decide</button>
+                <button class="sheet-action deny" data-mode="never">Never allow</button>
+                <button class="sheet-action" data-close="approvalSheet">Cancel</button>
+            </div>
+        </div>
+
+        <!-- Confirm a risky action -->
+        <div id="confirmModal" class="modal hidden">
+            <div class="modal-overlay" data-close="confirmModal"></div>
+            <div class="modal-content">
+                <div class="modal-header"><h2 id="confirmTitle">Are you sure?</h2></div>
+                <div class="modal-body"><p id="confirmMessage"></p></div>
+                <div class="modal-actions">
+                    <button id="confirmCancel" class="btn btn-secondary">Cancel</button>
+                    <button id="confirmYes" class="btn btn-primary">Yes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+    <script src="/sw-register.js"></script>
+</body>
+</html>

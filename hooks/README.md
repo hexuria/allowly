@@ -1,0 +1,135 @@
+# jev Claude Code Integration
+
+This directory contains the integration hook for Claude Code's PermissionRequest mechanism, allowing the jev daemon to approve or deny permission requests made by Claude Code.
+
+## Installation
+
+### 1. Copy the hook to your project
+
+The hook script `jev-permission-hook.sh` is installed as part of the jev build and is located at:
+
+```
+/path/to/jev/hooks/jev-permission-hook.sh
+```
+
+### 2. Register the hook in Claude Code
+
+Edit `~/.claude/settings.json` and add the following under the `"hooks"` key:
+
+```json
+{
+  "hooks": {
+    "permissionRequest": {
+      "command": "bash",
+      "args": ["/path/to/jev/hooks/jev-permission-hook.sh"]
+    }
+  }
+}
+```
+
+(Replace the path with the actual location of the hook on your system.)
+
+### 3. Pair your phone and start the jev daemon
+
+The hook requires the jev daemon (`jevd`) to be running on your Mac with an active pairing token. The pairing process stores the token in the macOS Keychain under:
+
+- **Service:** `com.jev.agent`
+- **Account:** `daemon-pairing-token`
+
+See [SETUP.md](../docs/SETUP.md) for the pairing workflow.
+
+## How It Works
+
+When Claude Code needs a permission decision (e.g., to run a bash command or read a file):
+
+1. **Hook receives request** — Claude Code invokes the hook with a JSON permission request on stdin.
+2. **Token lookup** — The hook retrieves the pairing token from the macOS Keychain.
+3. **POST to daemon** — The hook sends the permission request to `http://127.0.0.1:8080/api/permission` with the token as an `Authorization` header.
+4. **Wait for decision** — The daemon evaluates the request against the jev Policy and returns a decision (allow, deny, or ask human).
+5. **Return response** — The hook emits the decision back to Claude Code.
+6. **Claude Code acts** — If denied, Claude Code will fail the operation. If allowed, it proceeds. If "ask human," Claude Code shows an interactive prompt.
+
+## Behavior When jev Daemon Is Not Running
+
+If the daemon is not running or does not respond within 5 seconds:
+
+- The hook **emits a deny response** with reason `"jev daemon not available; falling back to interactive prompt"`.
+- Claude Code treats this as a **deny decision** and will **show an interactive prompt** instead of silently allowing or blocking.
+- This is the **fail-closed** design: when jev is unavailable, the user is always asked, never auto-granted.
+
+## Pairing Token Storage
+
+The daemon pairing token is stored in the macOS Keychain for security:
+
+```bash
+# To view the token (returns the pairing token)
+security find-generic-password -s com.jev.agent -a daemon-pairing-token -w
+
+# To manually add a token (rare — normally done during pairing)
+security add-generic-password -s com.jev.agent -a daemon-pairing-token -w "your-token-here"
+
+# To delete the token (during unpair or reset)
+security delete-generic-password -s com.jev.agent -a daemon-pairing-token
+```
+
+## Troubleshooting
+
+### Hook shows "jev daemon not available" but daemon is running
+
+- **Check the daemon is listening on loopback:** Run `lsof -i :8080` and verify the daemon is bound to `127.0.0.1`.
+- **Check the pairing token:** Run the command above to verify the token is in the Keychain. If empty, re-run the pairing flow.
+- **Check the timeout:** The hook waits 5 seconds. If the daemon is slow, increase `TIMEOUT_SECONDS` in the script.
+
+### "No pairing token found in Keychain"
+
+- The phone has not been paired yet, or the pairing was not completed. See [SETUP.md](../docs/SETUP.md) for the pairing flow.
+- Run the pairing flow again to store a new token.
+
+### Hook is not being called at all
+
+- Verify the path in `~/.claude/settings.json` is correct.
+- Restart Claude Code after updating settings.json.
+- Check that the hook is executable: `ls -l /path/to/jev/hooks/jev-permission-hook.sh` should show `-rwx...`.
+
+### Daemon returns "invalid token" or "unauthorized"
+
+- The pairing token has expired or been revoked.
+- Re-pair the phone (see [SETUP.md](../docs/SETUP.md)).
+- Verify the daemon is using the same token by checking the Keychain.
+
+## Protocol Details
+
+### Hook Request (from Claude Code)
+
+The hook receives a JSON object with fields describing the permission being requested:
+
+```json
+{
+  "name": "bash",
+  "resource": "/path/to/script",
+  "args": ["arg1", "arg2"]
+}
+```
+
+Fields depend on the permission type (bash, file read, etc.). The hook forwards this entire object to the daemon.
+
+### Hook Response (to Claude Code)
+
+The hook must return a JSON object:
+
+```json
+{
+  "allow": true,
+  "reason": "Policy permits shell commands in /usr/local/bin"
+}
+```
+
+- **`allow`** (boolean): Whether to grant the permission.
+- **`reason`** (string): Human-readable explanation (logged by Claude Code for transparency).
+
+## Security Notes
+
+- The pairing token is the only credential; it must be kept secret.
+- The hook communicates over loopback only (127.0.0.1); no network traffic leaves the Mac.
+- The daemon verifies the token before executing any action.
+- If the token is compromised, delete it from the Keychain and re-pair the phone.
