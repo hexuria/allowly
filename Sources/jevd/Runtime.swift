@@ -5,6 +5,7 @@ import JevAX
 import JevCapture
 import JevDecide
 import JevServer
+import JevCua
 
 /// Owns the running system and connects the parts.
 ///
@@ -22,10 +23,33 @@ actor JevRuntime {
     private var sockets: [WebSocketSession] = []
     /// Commands parked awaiting a yes/no from the phone, by approval id.
     private var pendingCommands: [String: Command] = [:]
+    /// Permission requests from the Claude Code hook that are on the phone
+    /// right now, waiting for a thumb, and the answers that have come back.
+    ///
+    /// Polled rather than raced with a continuation. The first version used
+    /// withTaskGroup and hung every request for the full curl timeout: the
+    /// `where` clause skipped the timeout task's nil instead of ending the
+    /// loop, and withCheckedContinuation is not cancellation-aware, so the
+    /// group waited forever on a child that could never finish. Polling an
+    /// actor's own dictionary has none of those edges.
+    private var _pendingArgument: (phrase: String, asked: Date)?
+    private var lastDecisionNonce: Nonce?
+    private var seenNonces: [String: Date] = [:]
+    /// Requests jev is pressing a button for right now.
+    ///
+    /// The auto-press path has to put the request in the store before it
+    /// presses, because that is where the executor looks it up — which
+    /// means `/api/pending` can hand the card to a phone mid-press. On a
+    /// beachballed app the AX walk takes seconds, so foregrounding the
+    /// app and tapping Allow in that window pressed the same button a
+    /// second time, and the second press landed on whatever replaced the
+    /// dialog.
+    private var pressingNow: Set<String> = []
+    private var awaitedPermissions: Set<String> = []
+    private var permissionAnswers: [String: String] = [:]
     /// How the phone should draw the current numbers: bare numbers by default,
     /// outlines only when asked. Eighty boxes over a screenshot hide the thing
     /// you are trying to look at.
-    private var hintMode = "numbers"
 
     init(policy: Policy, store: ApprovalStore, executor: CommandExecutor) {
         self.policy = policy
@@ -54,14 +78,22 @@ actor JevRuntime {
 
         do {
             try await server.start(on: port)
-            let host = Self.tailnetAddress() ?? "127.0.0.1"
-            JevLog.write("[jev] Server listening on \(host):\(port)")
+            // What it bound, not what it would like to have bound.
+            // `findBindAddress` returns loopback unless JEV_BIND_TAILNET=1,
+            // because `tailscale serve` terminates TLS and proxies to
+            // 127.0.0.1 — but this line printed the tailnet address
+            // regardless, and it is the line someone reads when pairing
+            // is not working.
+            let host = await server.boundAddress() ?? "an address it did not report"
+            JevLog.write("[jev] Server listening on \(host):\(port)"
+                + (host == "127.0.0.1" ? " (tailscale serve fronts it)" : ""))
             // Print the link outright. Reconstructing it by hand from a token
             // file is how the last pairing broke.
             // The same URL the menu bar hands out — an https MagicDNS origin
             // when serve is up. The old line hardcoded http://<ip>:<port>,
             // which is not a secure context and so cannot do voice or push.
-            JevLog.write("[jev] Pair your phone: \(Tailnet.pairingURL(token: token, localPort: port))")
+            JevLog.write("[jev] Pair your phone — the full link with its token is in the menu bar: "
+                + Tailnet.loggableURL(token: token, localPort: port))
         } catch {
             JevLog.write("[jev] Server failed to start: \(error)")
         }
@@ -75,7 +107,36 @@ actor JevRuntime {
         // Speech recognition is its own TCC permission. Without asking, every
         // transcription fails with an authorization error and the phone just
         // sees "failed to process voice command".
-        Transcription.requestSpeechAuthorization()
+        //
+        // Asking without the usage string in Info.plist does not fail —
+        // macOS kills the process, `EXC_CRASH` with
+        // `__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__`. The app bundle has
+        // the key (`scripts/build-app.sh`), the bare `.build/debug/jevd`
+        // does not, so running the binary directly aborted a second or
+        // two after printing "self-tests: pass" — which is exactly how
+        // this project verifies a build, and it looked like the daemon
+        // had started fine.
+        if Bundle.main.object(forInfoDictionaryKey: "NSSpeechRecognitionUsageDescription") != nil {
+            Transcription.requestSpeechAuthorization()
+        } else {
+            JevLog.write("[jev] no NSSpeechRecognitionUsageDescription in this binary — "
+                + "skipping the speech permission (voice will not transcribe). Run the app bundle for that.")
+        }
+
+        // Start the reaper BEFORE the Accessibility guard.
+        //
+        // The server is already listening by now and /api/command already
+        // works, so spoken commands raise approvals whether or not
+        // Accessibility was granted. With the sweep behind the guard, the
+        // only thing that removes an expired request never ran: the store
+        // grew for the life of the process, and a three-hour-old card was
+        // still answerable.
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                await self?.sweepDeadDialogs()
+            }
+        }
 
         guard AccessibilityPermission.isTrusted() else {
             JevLog.write("[jev] Accessibility is not granted, so no dialogs can be seen or pressed.")
@@ -85,16 +146,6 @@ actor JevRuntime {
             _ = AccessibilityPermission.requestTrust()
             JevLog.write("[jev] Requested Accessibility. Approve it, then relaunch Jev.")
             return
-        }
-
-        // Numbers taken in one app are meaningless in another.
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            guard !Hints.shared.all.isEmpty else { return }
-            Hints.shared.clear()
-            Task { await self?.broadcastHintsCleared() }
         }
 
         DialogWatcher.log = { JevLog.write("[jev] \($0)") }
@@ -108,6 +159,14 @@ actor JevRuntime {
             Task { await self.broadcastForm(fields) }
             return true
         }
+        CommandExecutor.onNumbersRequested = { [weak self] on in
+            // Its two siblings both refuse when nothing is listening; this
+            // one returned Void and so always "succeeded", broadcasting to
+            // an empty socket list and reporting "Numbers on screen".
+            guard let self, self.hasConnectedPhone else { return false }
+            Task { await self.broadcastNumbers(on) }
+            return true
+        }
         let watcher = DialogWatcher { [weak self] request in
             guard let self else { return }
             Task { await self.handle(request) }
@@ -115,9 +174,74 @@ actor JevRuntime {
         self.watcher = watcher
         watcher.start()
         JevLog.write("[jev] Watching for dialogs.")
+
     }
 
     // MARK: - The loop
+
+    /// May a decider press this button with nobody watching?
+    ///
+    /// Returns the reason it may not, or nil.
+    ///
+    /// `Policy.evaluate` already refuses to auto-answer anything above
+    /// `maxAutoApprovableRiskLevel`, which is `.low` — but it is the
+    /// LOCAL decider, and by the time the remote one is asked, the local
+    /// one has already returned `.askHuman` and stepped out of the way.
+    /// So the remote `.allow` went straight to a press, gated only by
+    /// `dangerousButtonLabels`, and could press "Discard", "Don't Save",
+    /// "Revert", "Overwrite", "Move to Trash", "Restart", "Log Out" or
+    /// plain "Allow" with nobody in the loop. Every one of those is
+    /// rated high precisely so a PERSON is asked first; a model is not
+    /// a higher authority than the person it is standing in for.
+    ///
+    /// The test is on the chosen button, not on every option: what
+    /// matters is what is about to be pressed.
+    /// Does this reason string carry the typed value back, in any form
+    /// a driver is likely to echo it in?
+    ///
+    /// Verbatim, case-folded, whitespace-stripped, and any run of it
+    /// long enough to matter — a reason that quotes the first dozen
+    /// characters of a password has still leaked the password.
+    static func reasonEchoes(_ value: String, in reason: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        let fold: (String) -> String = { $0.lowercased().filter { !$0.isWhitespace } }
+        let needle = fold(value)
+        let haystack = fold(reason)
+        guard !needle.isEmpty else { return false }
+        if haystack.contains(needle) { return true }
+        // A truncated echo. Eight characters is short enough to catch a
+        // clipped secret and long enough that an ordinary word shared
+        // between the value and jev's own wording does not trip it.
+        let window = 8
+        guard needle.count > window else { return false }
+        var start = needle.startIndex
+        while let end = needle.index(start, offsetBy: window, limitedBy: needle.endIndex) {
+            if haystack.contains(needle[start..<end]) { return true }
+            start = needle.index(after: start)
+        }
+        return false
+    }
+
+    private func refuseToAutoPress(
+        _ request: ApprovalRequest, optionId: String, by source: DecisionSource
+    ) async -> String? {
+        guard let chosen = request.options.first(where: { $0.id == optionId }) else {
+            return "\(source) named a button that is not on this dialog."
+        }
+        if chosen.riskLevel > policy.maxAutoApprovableRiskLevel {
+            return "\(source) chose “\(chosen.label)”, which is not one jev presses on its own."
+        }
+        // …and "not recognised as dangerous" is not the same as safe.
+        // `risk`'s dangerous words are English; a decider was free to
+        // press `Empty Bin` on an en_GB Mac, or `Löschen` on a German
+        // one, with nobody watching. Unattended pressing now needs a
+        // positive match.
+        guard DialogWatcher.isKnownSafeLabel(chosen.label) else {
+            return "\(source) chose “\(chosen.label)”, and jev does not press what it "
+                + "cannot recognise as harmless."
+        }
+        return nil
+    }
 
     /// A dialog appeared. Decide what to do with it.
     private func handle(_ request: ApprovalRequest) async {
@@ -125,8 +249,48 @@ actor JevRuntime {
         // dialog should not reach you. Policy no longer denies merely-unknown
         // apps, so this is what keeps the noisy ones quiet.
         let bundleId = request.originatingApp.bundleIdentifier
-        if AppPolicyStore.shared.effectiveMode(for: bundleId) == .never, !request.handoffOnly {
+        // `mode`, not `effectiveMode`. The comment above says "an
+        // EXPLICIT 'Never allow' for this app", and `effectiveMode`
+        // returns `.never` for every app with no entry once the global
+        // default is "Block everything except what I have allowed". So
+        // choosing that on the settings sheet — meaning it to govern
+        // spoken commands — silently dropped every save sheet and every
+        // "Leave site?" on the Mac, with one log line and no card.
+        // `decidePermission` already gets this right.
+        if AppPolicyStore.shared.mode(for: bundleId) == .never, !request.handoffOnly {
             JevLog.write("[jev] ignoring dialog from \(request.originatingApp.name) — set to never")
+            return
+        }
+
+        // Handoff-only requests (TCC consent sheets) are never pressed,
+        // whatever a decision would have said — macOS ignores synthetic
+        // input on them. So the decision is not asked for.
+        //
+        // This used to sit AFTER the pipeline call, which meant every
+        // system permission prompt had its title and body sent over the
+        // network to the decider, and jev then waited out the 1.5-second
+        // timeout for an answer these four lines throw away. The last
+        // text on the screen that should leave the Mac for no reason is
+        // a permission prompt.
+        if request.handoffOnly {
+            // Say what it is, not where it cannot be answered. The old note
+            // read "needs you in Screen Sharing", which sounds like jev is
+            // asking for a Screen Sharing permission — the opposite of the
+            // truth. It means: walk to the Mac, because nothing remote can
+            // press this, Screen Sharing included.
+            await escalate(request, note: "A macOS permission prompt. Only a press at the Mac itself answers it.")
+            return
+        }
+
+        // "Ask me about anything I have not already decided" is a
+        // setting the person chose, and the dialog path was not reading
+        // it — only the per-app override. So with the global set to
+        // ask, a dialog from an app with no entry still went to the
+        // remote decider, which could answer it. The copy on the
+        // settings sheet said otherwise in so many words.
+        if AppPolicyStore.shared.mode(for: bundleId) == nil,
+           AppPolicyStore.shared.globalMode == .ask {
+            await escalate(request, note: "you asked to be asked about everything")
             return
         }
 
@@ -134,27 +298,132 @@ actor JevRuntime {
         JevLog.write("[jev] dialog “\(request.title)” from \(request.originatingApp.name): "
             + "\(decision.value) by \(decision.source) — \(decision.reason)")
 
-        // Handoff-only requests (TCC consent sheets) are never pressed, whatever
-        // the decision says — macOS ignores synthetic input on them.
-        if request.handoffOnly {
-            await escalate(request, note: "System permission dialog — needs you in Screen Sharing.")
-            return
-        }
-
         switch decision.value {
         case .allow:
             guard let optionId = decision.chosenOptionId else {
-                await escalate(request, note: "Decider allowed but named no button.")
+                await escalate(request, note: "jev could not work out which button to press — your call.")
                 return
             }
+            if let blocked = await refuseToAutoPress(request, optionId: optionId,
+                                                     by: decision.source) {
+                await escalate(request, note: blocked)
+                return
+            }
+            // The executor looks the request up in the store, and on this
+            // branch nothing had ever put it there — only `escalate` adds.
+            // So every auto-press failed with "Request not found", the
+            // whole auto-allow path was inert, and the card that then went
+            // to the phone carried an internal error as its reason instead
+            // of "the decider allowed this and the press did not land".
+            // Deduplicated, like every other way into the store.
+            //
+            // `processDialog` runs more than once for one dialog —
+            // window-created and focused-window-changed both fire, and the
+            // registration sweep adds a third — so two `handle()` tasks
+            // exist for the same sheet, each with its own id. While this
+            // path was dead they both failed and `escalate`'s dedup
+            // collapsed them; now they would both press, and a dialog that
+            // survives the first press gets the action twice.
+            // Claimed BEFORE the store write. The other way round, losing
+            // the claim to a concurrent tap left the request sitting in
+            // the store with no `broadcast` and no push behind it — a
+            // card that appears only on the next poll, if at all.
+            guard claimPress(request.id) else { return }
+            guard await store.addDeduplicated(request) else {
+                releasePress(request.id)
+                return
+            }
+            // The same claim the human path takes. A bare insert/remove
+            // pair would drop someone else's claim: if a tap from the
+            // phone claimed this id in the actor hop above, the
+            // unconditional `remove` below released it mid-press, and a
+            // second tap could press the same control again.
             let result = await executor.execute(.pressButton(requestId: request.id, optionId: optionId))
+            releasePress(request.id)
             audit(request: request, decision: decision, result: result)
+            // Either way it comes back out: on success there is nothing
+            // left to answer, and on failure `escalate` has to be able to
+            // add it again — its dedup guard would otherwise see the entry
+            // this line just made and suppress the card entirely.
+            _ = await store.resolve(id: request.id)
             if result.status == .failed {
+                // …unless the dialog is not there any more. `processDialog`
+                // fires two or three times for one sheet, each with its
+                // own id, so when the first task's press lands and
+                // resolves, the second presses a dead element, fails, and
+                // used to put a card AND a push notification in front of
+                // the person for a dialog they had already answered. The
+                // sweep took the card back two seconds later; the push had
+                // gone.
+                if !DialogRegistry.shared.isLive(id: request.id) { return }
                 await escalate(request, note: "Auto-press failed: \(result.reason)")
+            } else if !result.landed {
+                // Delivered and ignored. `main.swift` keeps the registry
+                // entry in this case, and discarding here anyway — which
+                // this branch used to do unconditionally — took the card
+                // off the phone for a dialog that is still on the Mac,
+                // with nothing left to raise it again. Put it back in
+                // front of the person instead.
+                await escalate(request, note: "Pressed it, and the dialog is still on screen. "
+                    + "It may be a macOS prompt that only answers to the Mac itself.")
+            } else {
+                DialogRegistry.shared.discard(id: request.id)
+                // A phone that polled /api/pending inside the press window
+                // has this card and nothing would ever take it down.
+                await broadcastResolved(id: request.id)
             }
 
         case .deny:
-            audit(request: request, decision: decision, result: .ok(reason: "Denied by \(decision.source); left alone."))
+            // "Left alone" meant: no press, no card, no notification, one
+            // audit line nobody reads — and an app still blocked on a
+            // sheet you were never told about. `Policy.evaluate` was
+            // changed to stop doing exactly this ("silently dropped and
+            // never reached your phone"); the model's deny path was not
+            // brought along.
+            //
+            // If the decider named a button, press it. If it did not,
+            // this is a decision jev cannot carry out, which makes it
+            // yours.
+            if let optionId = decision.chosenOptionId,
+               request.options.contains(where: { $0.id == optionId }) {
+                if let blocked = await refuseToAutoPress(request, optionId: optionId,
+                                                         by: decision.source) {
+                    await escalate(request, note: blocked)
+                    return
+                }
+                // Deduplicated, for the reason the allow branch spells
+                // out: the watcher raises the same sheet two or three
+                // times with different ids, and `store.add` keys on the
+                // id so it collapses nothing. Both tasks would press.
+                // Claimed before the store write, like the allow branch:
+                // losing the claim afterwards leaves the request in the
+                // store with no broadcast and no push behind it.
+                guard claimPress(request.id) else { return }
+                guard await store.addDeduplicated(request) else {
+                    releasePress(request.id)
+                    return
+                }
+                let result = await executor.execute(.pressButton(requestId: request.id, optionId: optionId))
+                releasePress(request.id)
+                audit(request: request, decision: decision, result: result)
+                _ = await store.resolve(id: request.id)
+                if result.status == .failed {
+                    // Same guard as the allow branch: do not raise a card
+                    // and a push for a dialog that has already gone.
+                    if !DialogRegistry.shared.isLive(id: request.id) { return }
+                    await escalate(request, note: "Could not decline it for you: \(result.reason)")
+                } else if !result.landed {
+                    await escalate(request, note: "Declined it, and the dialog is still on screen. "
+                        + "It may be a macOS prompt that only answers to the Mac itself.")
+                } else {
+                    DialogRegistry.shared.discard(id: request.id)
+                    await broadcastResolved(id: request.id)
+                }
+            } else {
+                audit(request: request, decision: decision,
+                      result: .ok(reason: "Denied by \(decision.source), but no button to press — asking you."))
+                await escalate(request, note: decision.reason)
+            }
 
         case .askHuman:
             await escalate(request, note: decision.reason)
@@ -203,8 +472,47 @@ actor JevRuntime {
             await store.getAllPending()
         }
 
-        server.onDecide { [weak self] requestId, optionId, _ in
+        server.onDecide { [weak self] requestId, optionId, nonce in
             guard let self else { return .failed(reason: "Shutting down") }
+
+            // Actually check the nonce.
+            //
+            // `Nonce.isValid` existed, was unit-tested, and was called from
+            // nowhere — so the self-test reported "replay guard rejects
+            // duplicate nonce" while there was no replay guard. A captured
+            // decision could be replayed at any time; the bearer token was
+            // the only gate on a request that presses buttons.
+            switch await self.acceptNonce(nonce) {
+            case .fresh:
+                break
+            case .replayed:
+                JevLog.write("[jev] rejected a replayed decision")
+                return .failed(reason: "That answer was already used — tap it again")
+            case .stale:
+                // Distinguish the two. Telling someone their answer was
+                // "already used" when the truth is that the card sat there
+                // too long sends them looking for a second tap they never
+                // made.
+                JevLog.write("[jev] rejected a stale decision")
+                return .failed(reason: "That answer took too long to arrive — tap it again")
+            }
+
+            // Not while jev is already pressing it. An early out, so the
+            // permission and command paths below are not walked for a
+            // press already in flight; the claim that actually decides
+            // it is taken just before the press.
+            guard await !self.isPressing(requestId) else {
+                return .failed(reason: "Your Mac is already answering that one")
+            }
+
+            // A Claude Code permission request has a hook holding an open
+            // HTTP connection for it. Hand it the answer and stop — there is
+            // no command on this Mac to run; Claude Code does the running.
+            if await self.resolvePermission(id: requestId, optionId: optionId) {
+                _ = await store.resolve(id: requestId)
+                await self.broadcastResolved(id: requestId)
+                return .ok(reason: "Told Claude Code")
+            }
 
             // A parked voice command resolves here, not through the AX path.
             if let result = await self.resolveCommandApproval(id: requestId, optionId: optionId) {
@@ -214,15 +522,67 @@ actor JevRuntime {
             }
 
             guard let request = await store.get(id: requestId) else {
-                return .failed(reason: "No pending approval with that id")
+                // Take the card down as well. The Mac has no record of this
+                // one, so nothing on the phone can ever answer it — leaving
+                // it up means tapping the same dead card forever.
+                await self.broadcastResolved(id: requestId)
+                return .failed(reason: "Your Mac has no record of that one — it is gone now")
             }
             let command: Command = request.kind == .agentToolPrompt
                 ? .answerAgentPrompt(requestId: requestId, optionId: optionId)
                 : .pressButton(requestId: requestId, optionId: optionId)
-            let result = await executor.execute(command)
-            if result.status == .ok {
+            // The person read the button's name on the card and tapped it,
+            // and for a high-risk option answered "Are you sure?" as well.
+            // This call went in unflagged, so the executor treated the most
+            // deliberate input in the whole system as if jev had thought of
+            // it unprompted — and applied the never-auto-press list to it.
+            // Claimed, not merely checked. `isPressing` above guarded
+            // the AUTO press only — nothing was ever added to the set on
+            // this path — so two `/api/decide` calls for one id both
+            // reached `ButtonPresser`, pressing the same live control
+            // twice. Harmless for "Allow"; not for "Send", "Add" or
+            // "Purchase".
+            //
+            // It matters more now than it did: a press that does not
+            // land deliberately leaves the card up and tells the person
+            // it may not have worked, so tapping again is the obvious
+            // next move — and on an app that was merely slow, the
+            // control is still there to be pressed.
+            guard await self.claimPress(requestId) else {
+                return .failed(reason: "Your Mac is already answering that one")
+            }
+            let result = await executor.execute(command, humanApproved: true, answeredCard: true)
+            await self.releasePress(requestId)
+            if result.status == .ok, result.landed {
                 _ = await store.resolve(id: requestId)
                 await self.broadcastResolved(id: requestId)
+                return result
+            }
+            // Pressed, ignored, dialog still up. Resolving here — which
+            // is what `.ok` alone used to do — withdrew the card one
+            // frame after `main.swift` had deliberately kept the handle
+            // to press again, and nothing raises a card for a window
+            // that is already being watched. The prompt was then stuck
+            // on the Mac with no remote way to answer it at all, which
+            // is worse than never having sent the card.
+            if result.status == .ok {
+                return result
+            }
+
+            // The press failed. If the dialog it belongs to is no longer
+            // there, the card can never be answered — so take it away rather
+            // than leave it on the phone forever.
+            //
+            // This is what stranded two “[AXSheet]” cards that no amount of
+            // tapping Allow could clear: jev knew the dialog had gone (it
+            // said so in the reason) and kept the card up anyway.
+            if request.kind == .appDialog || request.kind == .tccConsent,
+               !DialogRegistry.shared.isLive(id: requestId) {
+                _ = await store.resolve(id: requestId)
+                DialogRegistry.shared.discard(id: requestId)
+                await self.broadcastResolved(id: requestId)
+                JevLog.write("[jev] withdrew “\(request.title)” — its dialog is gone")
+                return .failed(reason: "That dialog closed on the Mac, so this card is gone too.")
             }
             return result
         }
@@ -235,8 +595,12 @@ actor JevRuntime {
         // JPEG back into a screen coordinate.
         server.onSwipe { nx, ny, dx, dy in
             let frame = Pointer.displayBounds()
-            let result = Pointer.scroll(dx: dx * frame.width, dy: dy * frame.height,
-                                        at: CGPoint(x: nx * frame.width, y: ny * frame.height))
+            let result: ExecutionResult
+            if let at = Pointer.screenPoint(nx: nx, ny: ny, in: frame) {
+                result = Pointer.scroll(dx: dx * frame.width, dy: dy * frame.height, at: at)
+            } else {
+                result = .failed(reason: "That is not a place on the screen")
+            }
             let payload: [String: Any] = ["ok": result.status == .ok, "reason": result.reason]
             let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
             return String(data: data, encoding: .utf8) ?? #"{"ok":false}"#
@@ -256,23 +620,15 @@ actor JevRuntime {
             return String(data: data, encoding: .utf8) ?? "null"
         }
 
-        server.onDisplayInfo {
-            let frame = Pointer.displayBounds()
-            let payload: [String: Any] = [
-                "width": frame.width,
-                "height": frame.height,
-            ]
-            let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
-            return String(data: data, encoding: .utf8) ?? "{}"
-        }
 
         // A tap on the screen view. Coordinates arrive normalised 0..1 so the
         // phone never has to know the display size or the JPEG scale.
         server.onTap { nx, ny, kind in
             let frame = Pointer.displayBounds()
-            let x = nx * frame.width
-            let y = ny * frame.height
-            let result = Pointer.perform(kind, at: CGPoint(x: x, y: y))
+            guard let at = Pointer.screenPoint(nx: nx, ny: ny, in: frame) else {
+                return #"{"ok":false,"reason":"That is not a place on the screen"}"#
+            }
+            let result = Pointer.perform(kind, at: at)
             let payload: [String: Any] = ["ok": result.status == .ok, "reason": result.reason]
             let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
             return String(data: data, encoding: .utf8) ?? #"{"ok":false}"#
@@ -280,35 +636,190 @@ actor JevRuntime {
 
         server.onCommand { [weak self] text in
             guard let self else { return .failed(reason: "Shutting down") }
+            let started = Date()
+            // NSWorkspace only. Phrasebook.context() also asks the browser
+            // for its current page, which spawns osascript and blocks until
+            // it answers — an Apple Event on the hot path of every command,
+            // purely to fill a log field.
+            let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown"
+            // Every route below ends here, so there is exactly one line per
+            // command and it always says which path claimed it.
+            func journal(_ route: String, _ command: String,
+                         _ result: ExecutionResult,
+                         kind: Command? = nil,
+                         /// The whole phrase, when what arrived was only part
+                         /// of one. On the finishing route `text` is the bare
+                         /// answer — "hunter2" — and the redaction's
+                         /// keep-the-first-word rule would then keep the
+                         /// secret itself.
+                         heard: String? = nil,
+                         /// Nothing understood this. See CommandJournal.
+                         unparsed: Bool = false,
+                         verified: String? = nil) -> ExecutionResult {
+                CommandJournal.record(heard: heard ?? text, route: route, command: command,
+                                      kind: kind, result: result, started: started,
+                                      app: frontApp, verified: verified, unparsed: unparsed)
+                return result
+            }
+
+            // Who wins between a button on screen and a built-in shortcut
+            // depends on whether you said a verb.
+            //
+            //   "click save"  → the Save button. You pointed at something.
+            //   "save"        → ⌘S. The shortcut, as it has always been.
+            //
+            // An earlier pass let the screen win outright, and that quietly
+            // stole a lot of vocabulary: "save", "back", "find", "copy" and
+            // "play" are all ordinary button labels, so on the wrong page
+            // they stopped doing what they had always done. The bug that
+            // started this was "click skip" — the verb was there all along,
+            // and it is the only signal that a control was meant.
+            // Finishing a command you already started.
+            //
+            // "switch workspace" is a real command with one piece missing.
+            // Saying it used to end in "did not understand", so the whole
+            // sentence had to be repeated just to add "2". If the last thing
+            // asked for a value and this is short enough to be one, put them
+            // together instead.
+            if let pending = await self.takePendingArgument(for: text) {
+                let phrase = pending + " " + text
+                let parsed = VoiceCommand.parse(phrase)
+                // On this route the answer is ALWAYS a value the person
+                // supplied — that is what the route is for. So it is never
+                // written down, whatever command it turns into.
+                //
+                // Three narrower rules were each wrong here. Keying on the
+                // verb missed it ("hunter2" has none). Keying on the
+                // command missed `.rightClickControl`, which carries a
+                // label rather than "free text". Keying on the parse
+                // missed the case where nothing parsed at all.
+                JevLog.write("[jev] finishing “\(pending)” with <not recorded> (\(JevLog.shape(text)))")
+                if let parsed {
+                    // `unparsed: true` unconditionally, because on THIS
+                    // route the answer is always a value the person
+                    // supplied — whatever command it turns into. "right
+                    // click on" + "hunter2" builds a `.rightClickControl`,
+                    // which carries no free text as far as the command tree
+                    // is concerned, so the answer went to disk intact.
+                    return journal("finishing", parsed.description,
+                                   await self.dispatch(parsed, spokenAs: phrase,
+                                                       spokenIsPrivate: true),
+                                   kind: parsed.command, heard: phrase, unparsed: true)
+                }
+                // The phone still gets the whole sentence; the disk gets none
+                // of it. Nothing parsed, so there is no verb worth keeping.
+                return journal("finishing", pending,
+                               .failed(reason: "“\(text)” does not work for \(pending)"),
+                               heard: phrase, unparsed: true)
+            }
+
+            let pressed = JevIntent.startsWithPressVerb(text)
+            if pressed, let onScreen = await self.controlMatching(text) {
+                JevLog.write("[jev] on screen: “\(onScreen)” — you said press, so pressing it")
+                return journal("screen/press", "clickControl(\(onScreen))", await self.dispatch(
+                    VoiceCommand.Parsed(command: .clickControl(label: onScreen),
+                                        description: "Click “\(onScreen)”"),
+                    spokenAs: text),
+                    kind: .clickControl(label: onScreen))
+            }
 
             if let parsed = VoiceCommand.parse(text) {
+                // Take a fingerprint of the screen either side, for the
+                // commands that cannot report their own effect. A keystroke
+                // says "delivered", never "it worked".
+                let checking = EffectCheck.worthChecking(parsed.command)
+                // Started, not awaited. The header of EffectCheck promises
+            // the "before" frame is taken WHILE the command runs and
+            // that the check never slows anything — and this awaited a
+            // full ScreenCaptureKit frame first, so every keystroke,
+            // scroll and click paid for it before anything happened.
+            // Stamped, because a race that usually loses is a lie.
+            //
+            // `sample()` is an XPC round trip to the window server plus a
+            // capture — tens to hundreds of milliseconds — while a
+            // keystroke returns in microseconds. So "concurrent" means
+            // the before-frame is normally taken AFTER the effect has
+            // painted, and the comparison then says "no-change" for a
+            // command that worked: a false negative on exactly the
+            // commands this check exists for. The timestamp lets the
+            // verdict say "could not tell" instead of saying the wrong
+            // thing confidently.
+            let beforeTask: Task<(EffectCheck.Fingerprint?, Date), Never>? =
+                checking ? Task { (await EffectCheck.sample(), Date()) } : nil
                 let result = await self.dispatch(parsed, spokenAs: text)
-                // The phone cannot draw boxes it has not been told about.
-                switch parsed.command {
-                case .showHints, .showHintsForApp, .showHintsEverywhere, .showHintsScoped:
-                    if result.status == .ok {
-                        // "show boxes" asks for outlines; everything else is
-                        // numbers alone.
-                        await self.setHintMode(text.lowercased().contains("box") ? "boxes" : "numbers")
-                        await self.broadcastHints()
-                    }
-                case .showHintBox(let number):
-                    if result.status == .ok { await self.broadcastSingleBox(number) }
-                default:
-                    break
+                let dispatchEnded = Date()
+
+                guard checking else {
+                    return journal("vocabulary", parsed.description, result, kind: parsed.command)
                 }
-                switch parsed.command {
-                case .selectHint, .hideHints:
-                    Hints.shared.clear()
-                    await self.broadcastHintsCleared()
-                default:
-                    break
+                // Finish the check AFTER answering. Waiting for the screen to
+                // settle turned a 150 ms command into an 850 ms one, and the
+                // only thing that wait buys is a word in a log — nobody is
+                // watching the journal in real time, and the phone is.
+                let described = parsed.description
+                let kind = parsed.command
+                let heardNow = text
+                let app = frontApp
+                let took = Int(Date().timeIntervalSince(started) * 1000)
+                Task.detached(priority: .utility) {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    // Collected here, where waiting costs nothing —
+                    // this task already runs after the answer has gone
+                    // to the phone. And only trusted if it landed while
+                    // the command was still running; otherwise there is
+                    // no "before" and the honest answer is no answer.
+                    let captured = await beforeTask?.value
+                    let inTime = (captured?.1).map { $0 <= dispatchEnded } ?? false
+                    // And SAY "could not tell", rather than leaving the
+                    // field absent. A nil `verified` encodes to no key at
+                    // all, which is byte-identical to a command that was
+                    // never checked — so the one distinction this whole
+                    // timestamp exists to draw was invisible in the file.
+                    // Also skips the second capture when there is no
+                    // first one to compare against.
+                    // Always a word, never an absent key. A nil
+                    // `verified` encodes to nothing at all, which is
+                    // byte-identical to a command that was never
+                    // checked — and that is the one distinction this
+                    // timestamp exists to draw. The after-capture can
+                    // fail too, so it gets the same treatment.
+                    let verdict: String?
+                    if inTime, let before = captured?.0 {
+                        verdict = EffectCheck.verdict(before: before, after: await EffectCheck.sample())
+                            ?? EffectCheck.missing
+                    } else {
+                        verdict = EffectCheck.missing
+                    }
+                    CommandJournal.record(heard: heardNow, route: "vocabulary",
+                                          command: described, kind: kind,
+                                          result: result,
+                                          started: started, app: app,
+                                          verified: verdict, tookMs: took)
                 }
                 return result
             }
 
+            // A command that is right but incomplete: ask for the rest
+            // rather than throwing the sentence away.
+            if let phrase = Phrasebook.awaitingArgument(text, in: Phrasebook.context()) {
+                await self.rememberPendingArgument(phrase)
+                return journal("asking", phrase, .ok(reason: Self.askFor(phrase)))
+            }
+
+            // No verb and no shortcut: a bare word that happens to name a
+            // button on screen is almost certainly that button.
+            if !pressed, let onScreen = await self.controlMatching(text) {
+                JevLog.write("[jev] on screen: “\(onScreen)” — nothing else claims that word")
+                return journal("screen/bare", "clickControl(\(onScreen))", await self.dispatch(
+                    VoiceCommand.Parsed(command: .clickControl(label: onScreen),
+                                        description: "Click “\(onScreen)”"),
+                    spokenAs: text),
+                    kind: .clickControl(label: onScreen))
+            }
+
             if let prefix = policy.allowedCommandPrefixes.first(where: { text.hasPrefix($0) }) {
-                return await executor.execute(.runCommand(allowlistedPrefix: prefix, fullCommand: text))
+                return journal("shell", "runCommand(\(prefix))",
+                               await executor.execute(.runCommand(allowlistedPrefix: prefix, fullCommand: text)))
             }
 
             // The literal parser only knows open/quit. Anything else goes to
@@ -316,28 +827,32 @@ actor JevRuntime {
             // installed apps and the controls really on screen — so it can only
             // ever name something actionable.
             guard let apiKey = JevAPI.loadAPIKey() else {
-                return .failed(reason: "Did not understand “\(text)”, and no Jev key is configured to interpret it")
+                // Journalled like every other terminal path. Without this,
+                // an unparseable command on a Mac with no key produced no
+                // record at all, and "exactly one line per command" was
+                // quietly untrue.
+                return journal("no-key", "-",
+                    .failed(reason: "Did not understand “\(text)”, and no Jev key is configured to interpret it"),
+                    unparsed: true)
             }
 
+            let seen = await CommandExecutor.cua.frontmostContext()
             switch await JevIntent.resolve(transcript: text,
                                            alternatives: await self.readings(for: text),
+                                           frontmostApp: seen.app,
+                                           controls: seen.labels,
                                            apiKey: apiKey) {
             case .failure(let error):
                 JevLog.write("[jev] intent: \(error.description)")
 
-                // No single known action fits. Before giving up, let Jev try to
-                // build one out of several — "open a new tab and search for X"
-                // is two things jev can already do, in an order nobody wrote
-                // down. A composed plan is a guess, so it always goes to you
-                // for approval rather than straight to the machine.
-                if let plan = await JevPlan.compose(transcript: text, apiKey: apiKey) {
-                    let parsed = VoiceCommand.Parsed(
-                        command: .sequence(label: plan.description, steps: plan.steps),
-                        description: plan.description)
-                    return await self.requestApproval(for: parsed, spokenAs: text)
-                }
-
-                return .failed(reason: "Did not understand “\(text)” — \(error.description)")
+                // Fail closed. This used to hand the transcript to JevPlan,
+                // which guessed a two-to-four step Phrasebook sequence out of
+                // words nobody had mapped — a plan invented from a miss. The
+                // observe/act loop is the planner now; a command we cannot
+                // resolve is a command we do not run.
+                return journal("model/failed", "-",
+                               .failed(reason: "Did not understand “\(text)” — \(error.description)"),
+                               unparsed: true)
 
             case .success(let resolution):
                 JevLog.write("[jev] intent: \(resolution.description) confidence=\(String(format: "%.2f", resolution.confidence)) safety=\(String(format: "%.2f", resolution.safety))")
@@ -346,11 +861,25 @@ actor JevRuntime {
                 // unsafe, goes to you rather than straight to the machine.
                 guard resolution.confidence >= 0.55, resolution.safety >= 0.5 else {
                     let parsed = VoiceCommand.Parsed(command: resolution.command, description: resolution.description)
-                    return await self.requestApproval(for: parsed, spokenAs: text)
+                    // "Asked you" is not "did it".
+                    //
+                    // Journalling this as ok made a command that never ran
+                    // look successful. But raising the card DID succeed, so
+                    // the phone must still be told ok — only the journal
+                    // needs to say the command is merely pending. The route
+                    // name carries that, and `verified` says it outright.
+                    let asked = await self.requestApproval(for: parsed, spokenAs: text)
+                    CommandJournal.record(heard: text, route: "model/asked",
+                                          command: parsed.description, kind: parsed.command,
+                                          result: asked, started: started,
+                                          app: frontApp, verified: "pending-your-answer")
+                    return asked
                 }
 
                 let parsed = VoiceCommand.Parsed(command: resolution.command, description: resolution.description)
-                return await self.dispatch(parsed, spokenAs: text)
+                return journal("model", parsed.description,
+                               await self.dispatch(parsed, spokenAs: text),
+                               kind: parsed.command)
             }
         }
 
@@ -390,13 +919,22 @@ actor JevRuntime {
             let result = await SpeechRecognizer().transcribe(audioURL: audioURL)
             switch result {
             case .success(let heard):
-                if heard.alternatives.isEmpty {
-                    JevLog.write("[jev] voice: heard \"\(heard.best)\"")
-                } else {
-                    JevLog.write("[jev] voice: heard \"\(heard.best)\" "
-                        + "(also: \(heard.alternatives.joined(separator: " | ")))")
-                }
-                let chosen = await SpeechRepair.choose(heard, apiKey: JevAPI.loadAPIKey())
+                // Shape, not words. Nothing has interpreted this yet, so
+                // there is no way to know whether it is "next tab" or a
+                // passphrase — and the one utterance most likely to be a
+                // secret is exactly the one nothing will understand. What
+                // jev DID understand gets logged further down, once it
+                // knows, and the journal carries the rest.
+                JevLog.write("[jev] voice: heard \(JevLog.shape(heard.best))"
+                    + (heard.alternatives.isEmpty ? "" : ", \(heard.alternatives.count) other readings"))
+                // What is on screen decides which reading is real. A spoken
+                // "click skip" was being rewritten to "skip" and firing the
+                // media key for next track, because nothing at this stage
+                // knew a Skip button was sitting right there.
+                let chosen = await SpeechRepair.choose(
+                    heard,
+                    controls: await CommandExecutor.cua.visibleLabels(),
+                    apiKey: JevAPI.loadAPIKey())
                 // Kept for the command handler that runs next in this same
                 // request: if nothing parses, Jev should see every reading,
                 // not just the one that failed.
@@ -416,10 +954,54 @@ actor JevRuntime {
         // password must never be spoken aloud, transcribed, sent to a model,
         // or written to the log. Secret text is redacted at every step.
         server.onType { text, field, secret in
+            let started = Date()
             let command: Command = field.map { .fillField(label: $0, text: text) }
                 ?? .typeText(text: text)
             let result = await executor.execute(command, humanApproved: true)
-            JevLog.write("[jev] typed \(secret ? "<secret>" : "\(text.count) chars")\(field.map { " into \($0)" } ?? "") -> \(result.status.rawValue)")
+            // If the typed value is anywhere in the reason, the reason is
+            // not ours and goes back through the ordinary redaction.
+            //
+            // Substituting it out was worse: the replacement is global
+            // and unanchored, so typing "Chrome" turned "Typed into
+            // Chrome" into "Typed into <not recorded>" and typing "Email"
+            // mangled "Filled “Email address”". Deciding rather than
+            // editing cannot corrupt anything.
+            //
+            // An exact substring test is not enough: a driver that
+            // echoes the value TRANSFORMED — trimmed, case-folded,
+            // truncated to fit a message, percent-encoded — does not
+            // contain it verbatim, the reason is declared jev's own,
+            // redaction is skipped, and the typed value goes to
+            // `commands.jsonl`, which `/api/journal` serves. So the
+            // test looks for the shapes an echo actually takes, and
+            // when in doubt the reason is treated as not ours, which
+            // costs nothing but a redacted line.
+            let reasonIsJevs = text.isEmpty || !Self.reasonEchoes(text, in: result.reason)
+            // Never the exact length, secret flag or not. That count was
+            // removed from the spoken path on the grounds that the precise
+            // length of a passphrase is a real fact about it — and this is
+            // the path people use *because* it is the safe one. The flag
+            // cannot be trusted to mark it either: Chrome reports an
+            // unlabelled <input type="password"> as a plain text field, so
+            // `looksSecret` says false for exactly the boxes that matter.
+            JevLog.write("[jev] typed \(JevLog.shape(text))"
+                + (field.map { " into \($0)" } ?? "") + " -> \(result.status.rawValue)")
+            // And a journal line, which this route never wrote — the
+            // contract says exactly one per command, and typed text was
+            // the one command that produced none.
+            CommandJournal.record(
+                heard: secret ? "<secret>" : "typed",
+                route: "type", command: field == nil ? "typeText" : "fillField",
+                kind: command, result: result, started: started,
+                app: NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown",
+                // The sentence explaining a failure survives intact —
+                // but only after making sure it is jev's sentence. The
+                // last `catch` in `fill` and `type` returns the DRIVER's
+                // error text, and the value we sent is in the request
+                // that produced it; a validator that echoes the offending
+                // field would put the password straight through a flag
+                // that disables redaction.
+                reasonIsOurs: reasonIsJevs)
             let payload: [String: Any] = ["ok": result.status == .ok, "reason": result.reason]
             let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
             return String(data: data, encoding: .utf8) ?? #"{"ok":false}"#
@@ -440,13 +1022,36 @@ actor JevRuntime {
                 return ["id": id, "name": name, "mode": mode.rawValue]
             }.sorted { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
 
-            let payload: [String: Any] = [
+            var payload: [String: Any] = [
                 "global": store.globalMode.rawValue,
                 "globalOptions": GlobalMode.allCases.map { ["id": $0.rawValue, "label": $0.explanation] },
                 "entries": entries,
             ]
+            // A notification path that is refusing every send is the
+            // product not working, and the phone is the one place that
+            // cannot tell. It goes out with the settings the person
+            // opens when they wonder why nothing is arriving.
+            if let failure = PushStore.shared.lastFailure {
+                payload["pushError"] = failure
+            }
             let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
             return String(data: data, encoding: .utf8) ?? "{}"
+        }
+
+        // Claude Code's PermissionRequest hook.
+        //
+        // hooks/jev-permission-hook.sh has been posting to this route since
+        // the repo was created and nothing was listening: the route did not
+        // exist, so every request timed out and fell back to the interactive
+        // prompt on the Mac. That is the whole Claude-Code-from-your-pocket
+        // story, and it has never once worked.
+        //
+        // Order is policy, then the model, then you. Policy first so nothing
+        // the allowlist already refuses is ever sent to a model, and no model
+        // answer can widen what policy permits.
+        server.onPermission { [weak self] body in
+            guard let self else { return #"{"allow":false,"reason":"jev is shutting down"}"# }
+            return await self.decidePermission(body)
         }
 
         server.onSetPolicy { body in
@@ -493,40 +1098,34 @@ actor JevRuntime {
             return #"{"ok":true}"#
         }
 
-        server.onHints {
-            // Read the current set. Refreshing here meant every read produced
-            // a new numbering, so the numbers on the phone could differ from
-            // the ones the Mac would act on.
-            let data = (try? JSONEncoder().encode(Hints.shared.all)) ?? Data("[]".utf8)
+        // Numbers over the picture, for when names cannot tell two things
+        // apart — four buttons all called "Alex" in Chrome's profile picker.
+        server.onControls {
+            let rows: [(number: Int, label: String, x: Double, y: Double, w: Double, h: Double)]
+            do {
+                rows = try await CommandExecutor.cua.numberedControls()
+            } catch {
+                // Say why, in the one vocabulary. Returning [] made a broken
+                // driver look like an empty screen, which is the least useful
+                // thing it could say.
+                JevLog.write("[jev] numbers: \(error)")
+                let payload: [String: Any] = ["error": "\(error)"]
+                let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+                return String(data: data, encoding: .utf8) ?? "{}"
+            }
+            let payload = rows.map { row -> [String: Any] in
+                ["n": row.number, "label": row.label,
+                 "x": row.x, "y": row.y, "w": row.w, "h": row.h]
+            }
+            let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("[]".utf8)
             return String(data: data, encoding: .utf8) ?? "[]"
         }
 
-        server.onControls {
-            // Include the window frame and each control's position relative to
-            // it. Region detection is pure geometry, so it can only be tuned
-            // against real numbers from real windows.
-            let controls = JevIntent.frontmostControls(limit: 200)
-            let window = HintScope.frontmostWindowFrame() ?? .zero
-            let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
-
-            let rows = controls.map { c -> [String: Any] in
-                [
-                    "label": c.label, "role": c.role,
-                    "x": c.x, "y": c.y, "w": c.width, "h": c.height,
-                    "rx": window.width > 0 ? (c.x - window.minX) / window.width : 0,
-                    "ry": window.height > 0 ? (c.y - window.minY) / window.height : 0,
-                    "rw": window.width > 0 ? c.width / window.width : 0,
-                    "rh": window.height > 0 ? c.height / window.height : 0,
-                ]
-            }
-            let payload: [String: Any] = [
-                "app": app,
-                "window": ["x": window.minX, "y": window.minY,
-                           "w": window.width, "h": window.height],
-                "controls": rows,
-            ]
-            let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
-            return String(data: data, encoding: .utf8) ?? "{}"
+        // Every command, with how it routed and how long it took.
+        server.onJournal {
+            let entries = CommandJournal.recent(80)
+            let data = (try? JSONEncoder().encode(entries)) ?? Data("[]".utf8)
+            return String(data: data, encoding: .utf8) ?? "[]"
         }
 
         server.onWebSocketConnect { [weak self] session in
@@ -535,8 +1134,158 @@ actor JevRuntime {
         }
     }
 
+    // ── Finishing an unfinished command ─────────────────────────────────
+
+    /// The phrase still waiting for its missing value, and when it asked.
+    private var pendingArgument: (phrase: String, asked: Date)? {
+        get { _pendingArgument }
+        set { _pendingArgument = newValue }
+    }
+
+    private func rememberPendingArgument(_ phrase: String) {
+        _pendingArgument = (phrase, Date())
+    }
+
+    /// The waiting phrase, if this utterance could be the value it wants.
+    ///
+    /// Short and recent, both on purpose. A minute later you have moved on,
+    /// and a whole sentence is a new command rather than an answer — only
+    /// something the length of "2" or "the design one" is a missing piece.
+    private func takePendingArgument(for text: String) -> String? {
+        guard let pending = _pendingArgument else { return nil }
+        guard Date().timeIntervalSince(pending.asked) < 30 else {
+            _pendingArgument = nil
+            return nil
+        }
+        let words = text.split(separator: " ").count
+        guard words <= 4 else { return nil }
+        // Anything that stands on its own is a new command, not an answer.
+        guard VoiceCommand.parse(text) == nil else { return nil }
+        // And so is a command that is merely unfinished — saying "set volume
+        // to" twice asked the question and then answered it with itself.
+        guard Phrasebook.awaitingArgument(text, in: Phrasebook.context()) == nil else { return nil }
+        _pendingArgument = nil
+        return pending.phrase
+    }
+
+    /// What to ask for, in the words of the phrase itself.
+    private static func askFor(_ phrase: String) -> String {
+        if phrase.contains("workspace") || phrase.contains("space") { return "Which workspace?" }
+        if phrase.contains("tab") { return "Which tab?" }
+        if phrase.contains("volume") { return "What level?" }
+        if phrase.hasPrefix("type") || phrase.hasPrefix("write") || phrase.hasPrefix("say") {
+            return "What should I type?"
+        }
+        if phrase.hasPrefix("search") || phrase.hasPrefix("find") { return "Search for what?" }
+        if phrase.hasPrefix("go to") || phrase.contains("website") { return "Which site?" }
+        return "\(phrase.prefix(1).uppercased() + phrase.dropFirst()) what?"
+    }
+
+    /// Accept a decision's nonce, once.
+    enum NonceVerdict { case fresh, replayed, stale }
+
+    private func acceptNonce(_ nonce: Nonce) -> NonceVerdict {
+        // Freshness and clock skew, from the shared rule.
+        guard nonce.isValid(against: lastDecisionNonce) else {
+            return nonce.id == lastDecisionNonce?.id ? .replayed : .stale
+        }
+
+        // Every nonce still inside the window, not just the previous one.
+        //
+        // Comparing against the last decision alone is not replay
+        // protection: answer two cards and the first nonce is replayable
+        // again. The set was being written and never read, which is worse
+        // than not having it — it reads like a guard.
+        guard seenNonces[nonce.id] == nil else { return .replayed }
+
+        lastDecisionNonce = nonce
+        seenNonces[nonce.id] = nonce.timestamp
+        // Prune by age, not by count. Emptying the whole set at some
+        // arbitrary size would let every old id straight back in.
+        let cutoff = Date().addingTimeInterval(-120)
+        seenNonces = seenNonces.filter { $0.value > cutoff }
+        return .fresh
+    }
+
+    /// Take away cards whose dialog is no longer on screen.
+    ///
+    /// Dismissing a sheet at the Mac used to leave its card stranded on the
+    /// phone, and the queue only ever grew. Nothing pushed the withdrawal
+    /// because nothing was watching for the dialog's disappearance — the
+    /// watcher only ever reported dialogs arriving.
+    func isPressing(_ id: String) -> Bool { pressingNow.contains(id) }
+
+    /// Take the right to press this one, or find it already taken.
+    ///
+    /// Atomic because it runs on the actor: of two calls arriving
+    /// together, exactly one gets `true`.
+    func claimPress(_ id: String) -> Bool { pressingNow.insert(id).inserted }
+
+    func releasePress(_ id: String) { pressingNow.remove(id) }
+
+    private func sweepDeadDialogs() async {
+        // Cards the store has aged out. Nothing told the phone, so they sat
+        // there unanswerable — and with the swipe gone, a TCC card (which
+        // has no buttons at all) could not be got rid of by any means.
+        for stale in await store.reapExpired() {
+            DialogRegistry.shared.discard(id: stale.id)
+            // Read the command BEFORE dropping it: for a spoken command the
+            // card's title is the Phrasebook description — `Search for
+            // “…”` — and every other line about that command is redacted
+            // through `safeDescription` while this one was not. Say a
+            // search with a card number in it, never answer the card, and
+            // five minutes later the number went to jev.log in full.
+            let parked = pendingCommands.removeValue(forKey: stale.id)
+            await broadcastResolved(id: stale.id)
+            JevLog.write("[jev] withdrew “\(CommandJournal.safeDescription(stale.title, parked))”"
+                + " — nobody answered it in time")
+        }
+        for request in await store.getAllPending() {
+            guard request.kind == .appDialog || request.kind == .tccConsent else { continue }
+            guard !DialogRegistry.shared.isLive(id: request.id) else { continue }
+            _ = await store.resolve(id: request.id)
+            DialogRegistry.shared.discard(id: request.id)
+            await broadcastResolved(id: request.id)
+            JevLog.write("[jev] withdrew “\(request.title)” — its dialog left the screen")
+        }
+    }
+
+    /// The visible control this sentence is naming, if it is naming one.
+    ///
+    /// Deliberately strict. It matches an exact label, optionally behind a
+    /// pressing verb and the odd article — "skip", "click skip", "press the
+    /// Skip button". It will not match a sentence that merely contains the
+    /// word, because "save the file to Downloads" is not a request to press
+    /// Save, and a loose match here would be worse than the shortcut
+    /// collision it exists to fix.
+    private func controlMatching(_ text: String) async -> String? {
+        var phrase = text.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
+        guard !phrase.isEmpty else { return nil }
+
+        for verb in ["click on", "click", "press", "tap", "push", "hit", "choose", "select"]
+        where phrase.hasPrefix(verb + " ") {
+            phrase = String(phrase.dropFirst(verb.count + 1))
+            break
+        }
+        if phrase.hasPrefix("the ") { phrase = String(phrase.dropFirst(4)) }
+        if phrase.hasSuffix(" button") { phrase = String(phrase.dropLast(7)) }
+        phrase = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard phrase.count >= 2 else { return nil }
+
+        let labels = await CommandExecutor.cua.visibleLabels()
+        let hits = labels.filter { $0.lowercased() == phrase }
+        // Two buttons with the same name is not a decision we get to make.
+        return hits.count == 1 ? hits[0] : nil
+    }
+
     /// Apply the saved mode for this app, if any, before troubling the human.
-    private func dispatch(_ parsed: VoiceCommand.Parsed, spokenAs text: String) async -> ExecutionResult {
+    /// - Parameter spokenIsPrivate: the spoken words are a VALUE the
+    ///   person supplied, not a command they issued, so they must not
+    ///   leave the Mac.
+    private func dispatch(_ parsed: VoiceCommand.Parsed, spokenAs text: String,
+                          spokenIsPrivate: Bool = false) async -> ExecutionResult {
         guard let bundleId = parsed.command.bundleIdentifier else {
             return await requestApproval(for: parsed, spokenAs: text)
         }
@@ -549,11 +1298,12 @@ actor JevRuntime {
             return result
 
         case .never:
-            JevLog.write("[jev] refused (never): \(parsed.description)")
+            JevLog.write("[jev] refused (never): \(CommandJournal.safeDescription(parsed.description, parsed.command))")
             return .failed(reason: "\(parsed.description) is set to never allow")
 
         case .auto:
-            return await autoDecide(parsed, spokenAs: text, bundleId: bundleId)
+            return await autoDecide(parsed, spokenAs: text, bundleId: bundleId,
+                                    spokenIsPrivate: spokenIsPrivate)
 
         case .none:
             return await requestApproval(for: parsed, spokenAs: text)
@@ -567,14 +1317,23 @@ actor JevRuntime {
     /// person's judgement might help — so it deferred on everything, including
     /// "scroll down", and auto was indistinguishable from ask. Asking instead
     /// whether the action is routine and reversible gives usable signal.
-    private func autoDecide(_ parsed: VoiceCommand.Parsed, spokenAs text: String, bundleId: String) async -> ExecutionResult {
+    private func autoDecide(_ parsed: VoiceCommand.Parsed, spokenAs text: String, bundleId: String,
+                            spokenIsPrivate: Bool = false) async -> ExecutionResult {
         guard let apiKey = JevAPI.loadAPIKey() else {
             return await requestApproval(for: parsed, spokenAs: text)
         }
 
         let appName = AppCatalog.shared.all.first { $0.bundleIdentifier == bundleId }?.name ?? bundleId
         let state: [String: Any] = [
-            "spoken_request": text,
+            // The finishing route asks "what should I type?" and the
+            // answer is whatever the person said next — a search term,
+            // a name, a password. The log goes to great lengths not to
+            // record it and the journal marks it `unparsed` so it never
+            // reaches `commands.jsonl`, and then this line posted the
+            // whole sentence to the decider anyway. The description
+            // ("Type into the focused field") says what is being asked
+            // without saying what was typed.
+            "spoken_request": spokenIsPrivate ? parsed.description : text,
             "interpreted_as": parsed.description,
             "target": appName,
             "already_allowed": Array(AppPolicyStore.shared.all.filter { $0.value == .always }.keys),
@@ -599,7 +1358,8 @@ actor JevRuntime {
         let routine = answers.noul("routine") ?? 0
         let destructive = answers.noul("destructive") ?? 1
         JevLog.write(String(format: "[jev] auto: %@ routine=%.2f destructive=%.2f",
-                            parsed.description, routine, destructive))
+                            CommandJournal.safeDescription(parsed.description, parsed.command),
+                            routine, destructive))
 
         // Run it when Jev thinks it is routine and not destructive. Either
         // doubt goes to you: the asymmetry is the whole safety argument.
@@ -614,6 +1374,136 @@ actor JevRuntime {
     }
 
     /// Park a command and put an approval in front of the human.
+    /// Answer one Claude Code permission request.
+    ///
+    /// The hook gives up after five seconds, so the human path is a race we
+    /// have to be honest about: the card goes to the phone either way, and if
+    /// you answer within four seconds we use your answer. If you do not, we
+    /// fail closed and Claude Code falls back to its own prompt — the card
+    /// stays on the phone, so whichever you reach first is the one that acts.
+    func decidePermission(_ body: String) async -> String {
+        func reply(_ allow: Bool, _ reason: String) -> String {
+            let payload: [String: Any] = ["allow": allow, "reason": reason]
+            let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+            return String(data: data, encoding: .utf8)
+                ?? #"{"allow":false,"reason":"could not encode a decision"}"#
+        }
+
+        guard let data = body.data(using: .utf8),
+              let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return reply(false, "jev could not read the request")
+        }
+
+        // Claude Code names the tool in `name` and what it is acting on in
+        // `resource`; the rest varies by tool, so it is summarised, not parsed.
+        let tool = (request["name"] as? String) ?? "a tool"
+        let resource = (request["resource"] as? String) ?? ""
+        let args = (request["args"] as? [Any])?.map { String(describing: $0) } ?? []
+        let detail = [resource, args.joined(separator: " ")]
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        let summary = detail.isEmpty ? tool : "\(tool): \(detail)"
+
+        let bundleId = "com.anthropic.claude-code"
+        // The SHAPE, not the payload. `summary` is the tool name plus
+        // whatever it is acting on — a Bash command line, the text of a
+        // Write — and it went into `jev.log` in full. That is the one
+        // place a value the person never typed reached the log
+        // unredacted, and a log is exactly where a token pasted into a
+        // command goes to be forgotten about. The card still shows the
+        // whole thing; the card is on their phone, not in a file.
+        JevLog.write("[jev] permission asked: \(tool) (\(JevLog.shape(detail)))")
+
+        // 1. Policy. An explicit choice you already made needs no model and
+        //    no phone.
+        switch AppPolicyStore.shared.mode(for: bundleId) {
+        case .always:
+            JevLog.write("[jev] permission allowed by policy")
+            return reply(true, "You always allow Claude Code")
+        case .never:
+            JevLog.write("[jev] permission denied by policy")
+            return reply(false, "You never allow Claude Code")
+        default:
+            break
+        }
+
+        // 2. The card goes to the phone now, so it is already there whether
+        //    or not the wait below runs out.
+        let id = UUID().uuidString
+        let approval = ApprovalRequest(
+            id: id,
+            kind: .agentToolPrompt,
+            title: summary,
+            bodyText: "Claude Code is asking to use \(tool)."
+                + (detail.isEmpty ? "" : "\n\(detail)"),
+            options: [
+                ApprovalOption(id: "once", label: "Allow once", riskLevel: .low),
+                ApprovalOption(id: "always", label: "Always allow Claude Code", riskLevel: .medium),
+                ApprovalOption(id: "deny", label: "Deny", riskLevel: .low),
+            ],
+            originatingApp: ApplicationInfo(name: "Claude Code", bundleIdentifier: bundleId),
+            timestamp: Date(),
+            screenshotReference: nil,
+            handoffOnly: false
+        )
+        guard await store.addDeduplicated(approval) else {
+            return reply(false, "Already waiting for your answer on that")
+        }
+        await broadcast(event: "approval", request: approval)
+
+        // 3. Wait, but not longer than the hook will. Four seconds leaves it
+        //    a second to write its own answer.
+        awaitedPermissions.insert(id)
+        var answer = ""
+        for _ in 0..<40 {
+            if let given = permissionAnswers.removeValue(forKey: id) { answer = given; break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        // One more look, after the last sleep rather than before it.
+        //
+        // The loop checked and then slept, so an answer written during that
+        // final 100 ms was dropped on the floor by the cleanup below — while
+        // `/api/decide` had already replied "Told Claude Code" to the phone.
+        // The phone said it was answered and Claude Code was told nobody
+        // answered.
+        if answer.isEmpty, let late = permissionAnswers.removeValue(forKey: id) { answer = late }
+        awaitedPermissions.remove(id)
+        permissionAnswers.removeValue(forKey: id)
+
+        switch answer {
+        case "once":
+            JevLog.write("[jev] permission allowed from the phone")
+            return reply(true, "You allowed it from your phone")
+        case "always":
+            AppPolicyStore.shared.set(.always, for: bundleId)
+            JevLog.write("[jev] permission allowed, and remembered")
+            return reply(true, "You allowed Claude Code from now on")
+        case "deny":
+            JevLog.write("[jev] permission denied from the phone")
+            return reply(false, "You denied it from your phone")
+        default:
+            // Nobody answered in time. Fail closed, and TAKE THE CARD DOWN.
+            //
+            // Leaving it up would be a lie: the hook has already told Claude
+            // Code no and it has shown its own prompt on the Mac, so a later
+            // tap here cannot retroactively allow anything. Worse, the id is
+            // no longer awaited, so that tap would fall through to the
+            // generic agent-prompt path and try to press a button in an app
+            // that was never involved.
+            _ = await store.resolve(id: id)
+            await broadcastResolved(id: id)
+            JevLog.write("[jev] permission unanswered in 4s — withdrew the card, answer on the Mac")
+            return reply(false, "No answer from your phone in time — asking on the Mac instead")
+        }
+    }
+
+    /// Called by /api/decide. Returns true when this id was a permission
+    /// request rather than a parked command, so the caller stops there.
+    func resolvePermission(id: String, optionId: String) -> Bool {
+        guard awaitedPermissions.contains(id) else { return false }
+        permissionAnswers[id] = optionId
+        return true
+    }
+
     private func requestApproval(for parsed: VoiceCommand.Parsed, spokenAs text: String) async -> ExecutionResult {
         let id = UUID().uuidString
         let friendly: [String: String] = [
@@ -637,27 +1527,51 @@ actor JevRuntime {
             ],
             originatingApp: ApplicationInfo(
                 name: appName,
-                bundleIdentifier: parsed.command.bundleIdentifier ?? "unknown"
+                // "unknown.bundle", the same string `DialogWatcher` uses
+                // and the one the phone checks before offering to
+                // remember an app. Spelled "unknown" here, the guard did
+                // not fire: long-pressing an unattributable spoken
+                // command and choosing "never allow this app" wrote a
+                // policy keyed "unknown", which then applied to every
+                // other command jev could not attribute either.
+                bundleIdentifier: parsed.command.bundleIdentifier ?? "unknown.bundle"
             ),
             timestamp: Date(),
             screenshotReference: nil,
             handoffOnly: false
         )
 
-        pendingCommands[id] = parsed.command
+        // Park it only once there is a card to answer. Set before the
+        // dedup guard, a suppressed duplicate left a command sitting under
+        // an id that no card would ever carry, for the life of the process.
         guard await store.addDeduplicated(request) else {
-            JevLog.write("[jev] duplicate approval suppressed: \(parsed.description)")
+            JevLog.write("[jev] duplicate approval suppressed: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
             return .ok(reason: "Already waiting for your answer on that")
         }
+        pendingCommands[id] = parsed.command
         await broadcast(event: "approval", request: request)
-        JevLog.write("[jev] asking for approval: \(parsed.description)")
+        JevLog.write("[jev] asking for approval: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
         return .ok(reason: "Needs your approval — check the Approvals tab")
     }
 
     /// Answer a parked command. Returns nil when the id is not one of ours.
     func resolveCommandApproval(id: String, optionId: String) async -> ExecutionResult? {
-        guard let command = pendingCommands[id] else { return nil }
-        pendingCommands.removeValue(forKey: id)
+        // CLAIM it first, in one synchronous step.
+        //
+        // Reading and then removing with an `await` in between is not a
+        // claim: two /api/decide calls landing inside that hop both see
+        // the command and both run it. "A parked command runs at most
+        // once" has to be structural, not a matter of timing.
+        guard let command = pendingCommands.removeValue(forKey: id) else { return nil }
+        // The store is the clock. `pendingCommands` has no expiry of its
+        // own and only the 2-second sweep prunes it, so a card that aged
+        // out still ran its command for up to two seconds after the store
+        // had already stopped acknowledging it — the one path where
+        // "expired means expired" was not true.
+        guard await store.get(id: id) != nil else {
+            await broadcastResolved(id: id)
+            return .failed(reason: "That one sat too long — say it again")
+        }
 
         let bundleId = command.bundleIdentifier
 
@@ -672,42 +1586,40 @@ actor JevRuntime {
             if let bundleId { AppPolicyStore.shared.set(.always, for: bundleId) }
         case "auto":
             if let bundleId { AppPolicyStore.shared.set(.auto, for: bundleId) }
-        default:
+        case "once":
             break
+        default:
+            // Named, not assumed. `default: break` fell through to
+            // running the command, so any id that was not one of these —
+            // a typo, an older client, a replayed body with the id
+            // changed — executed a parked command as though the person
+            // had approved it. The card only ever offers these.
+            JevLog.write("[jev] approval for \(id) named an unknown option “\(optionId)”")
+            return .failed(reason: "That is not one of the choices on the card")
         }
 
         let result = await executor.execute(command, humanApproved: true)
-        JevLog.write("[jev] approved (\(optionId)) -> \(result.status.rawValue): \(result.reason)")
+        // A sequence reports its own label as the reason, and that label is
+        // the description — "Search for “5555 4444 3333”".
+        JevLog.write("[jev] approved (\(optionId)) -> \(result.status.rawValue): \(CommandJournal.safeDescription(result.reason, command))")
         return result
     }
 
-    /// Announce that an approval is no longer pending.
-    private func setHintMode(_ mode: String) { hintMode = mode }
-
-    /// Outline exactly one number, leaving the rest as bare digits.
-    private func broadcastSingleBox(_ number: Int) async {
-        let message = #"{"type":"hintBox","number":\#(number)}"#
-        for socket in pruneSockets() { await socket.send(text: message) }
-    }
-
     private func broadcastResolved(id: String) async {
-        let message = #"{"type":"resolved","id":"\#(id)"}"#
+        // Built, not interpolated. On the unknown-id path this `id` is
+        // whatever the phone POSTed — it never came from the store — so
+        // an id containing a quote could close the string and append
+        // its own keys, and the last `type` wins in JSON.parse. That is
+        // a way to pop the "enter your password" sheet on every paired
+        // phone. It needs the bearer token, so it is depth rather than
+        // a hole, but it is the one place a network string is spliced
+        // into JSON by hand.
+        let payload: [String: Any] = ["type": "resolved", "id": id]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let message = String(data: data, encoding: .utf8) else { return }
         for socket in pruneSockets() {
             await socket.send(text: message)
         }
-    }
-
-    private func broadcastHints() async {
-        let hints = Hints.shared.all
-        guard let data = try? JSONEncoder().encode(hints),
-              let json = String(data: data, encoding: .utf8) else { return }
-        let message = #"{"type":"hints","mode":"\#(hintMode)","hints":\#(json)}"#
-        JevLog.write("[jev] broadcasting \(hints.count) hints (\(hintMode)) to \(sockets.count) socket(s)")
-        for socket in pruneSockets() { await socket.send(text: message) }
-    }
-
-    private func broadcastHintsCleared() async {
-        for socket in pruneSockets() { await socket.send(text: #"{"type":"hints","hints":[]}"#) }
     }
 
     /// Whether anything is actually listening. Checked synchronously, because
@@ -734,12 +1646,72 @@ actor JevRuntime {
         return lastReadings.all
     }
 
-    /// Show a scanned form on the phone.
+    /// Show a scanned form on the phone as a Spec it can render natively.
+    ///
+    /// The shape is json-render's: flat `elements` keyed by id, a `root`, and
+    /// a `state` map that the inputs bind into. We take the format and not
+    /// the library — the library is React and this app is four static files —
+    /// but keeping the contract means the phone renderer stays a dumb
+    /// interpreter, and a DOM-derived field list from the browser backend can
+    /// emit the same thing without the phone learning a second format.
+    ///
+    /// Beats shipping a screenshot of a form: you get a real keyboard, real
+    /// autofill, and a field you can name out loud.
+    /// Tell the phone to draw numbers over its picture. It fetches the list
+    /// itself from /api/controls — the Mac never draws anything.
+    func broadcastNumbers(_ on: Bool) async {
+        // Carry the intent. Sending the same message for both and letting the
+        // phone toggle meant "show guides" HID the numbers whenever they were
+        // already up — which is exactly what happens after pressing the
+        // button, so the voice command looked broken every time.
+        let payload: [String: Any] = ["type": "numbers", "show": on]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        for socket in pruneSockets() { await socket.send(text: json) }
+    }
+
     func broadcastForm(_ fields: [FormScanner.Field]) async {
-        let encoder = JSONEncoder()
-        guard let data = try? encoder.encode(fields),
-              let list = String(data: data, encoding: .utf8) else { return }
-        let json = #"{"type":"form","fields":\#(list)}"#
+        var state: [String: String] = [:]
+        var elements: [String: Any] = [:]
+        var children: [String] = []
+
+        for (index, field) in fields.enumerated() {
+            let id = "f\(index)"
+            state[id] = ""
+            children.append(id)
+            elements[id] = [
+                "component": "Input",
+                "props": [
+                    "label": field.label,
+                    // What the Mac will be asked to fill. Sent separately
+                    // from the label because Jev may have named this field
+                    // for you, and the Mac has never heard that name.
+                    "target": field.realLabel,
+                    "secret": field.secret,
+                    // The AX role is the best keyboard hint we have.
+                    "kind": field.kind,
+                    "$bindState": id,
+                ] as [String: Any],
+            ]
+        }
+
+        let submitId = "submit"
+        children.append(submitId)
+        elements[submitId] = [
+            "component": "Button",
+            "props": ["label": "Fill on the Mac", "action": "submit"] as [String: Any],
+        ]
+        elements["root"] = [
+            "component": "Panel",
+            "props": ["title": "Fill this in"] as [String: Any],
+            "slots": ["children": children],
+        ]
+
+        let spec: [String: Any] = ["root": "root", "state": state, "elements": elements]
+        let payload: [String: Any] = ["type": "spec", "spec": spec]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        JevLog.write("[jev] sending a \(fields.count)-field form to the phone as a spec")
         for socket in pruneSockets() { await socket.send(text: json) }
     }
 
@@ -778,6 +1750,12 @@ actor JevRuntime {
             "by": String(describing: decision.source),
             "reason": decision.reason,
             "result": String(describing: result.status),
+            // The file that outlives the session must not say "ok"
+            // about a press the Mac ignored. `landed` is the whole
+            // reason that distinction exists; leaving it out of the
+            // durable record kept the claim alive in the one place
+            // nobody can correct it later.
+            "landed": result.landed ? "yes" : "no",
             "detail": result.reason,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: line),
@@ -794,7 +1772,13 @@ actor JevRuntime {
             _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: Data(text.utf8))
         } else {
-            try? Data(text.utf8).write(to: file)
+            // Created 0600, not written-then-chmodded: `audit.jsonl` was
+            // the one file with no attributes at all, and it holds every
+            // dialog title, decision and reason. The launch-time sweep
+            // would only have caught it on the NEXT start, so it sat
+            // world-readable for the whole session it was born in.
+            FileManager.default.createFile(atPath: file.path, contents: Data(text.utf8),
+                                           attributes: [.posixPermissions: 0o600])
         }
     }
 

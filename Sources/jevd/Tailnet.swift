@@ -42,6 +42,26 @@ enum Tailnet {
         return "http://\(host):\(localPort)/?token=\(token)"
     }
 
+    /// The same link with the token taken out, for saying out loud.
+    ///
+    /// `pairingURL` carries the bearer token for full remote control of
+    /// this Mac, and it was being written to `jev.log` on every launch —
+    /// a file nothing rotates, in the file the README tells you to tail
+    /// when something goes wrong. `publicURL` already refuses to put a
+    /// token in a notification for exactly this reason; the log is not a
+    /// lesser place for a credential to sit.
+    static func loggableURL(token: String, localPort: UInt16) -> String {
+        let full = pairingURL(token: token, localPort: localPort)
+        // Fails CLOSED. Returning the full URL when the marker is missing
+        // is the wrong default for a function whose whole job is removing
+        // a credential — one change to `pairingURL`'s shape and the token
+        // is back in the log with nothing to notice it.
+        guard let cut = full.range(of: "?token=") else {
+            return full.contains(token) ? "<the pairing link>" : full
+        }
+        return String(full[..<cut.lowerBound]) + "?token=<in the menu bar>"
+    }
+
     /// Where a notification should send the phone: the same origin it paired
     /// with, minus the token — that already lives in the PWA's storage, and a
     /// token in a notification URL is a token in the notification history.
@@ -49,19 +69,33 @@ enum Tailnet {
     /// Cached: this is called on every escalation and the underlying lookup
     /// spawns the tailscale binary.
     static func publicURL(path: String) -> URL? {
+        // Cached, but not forever. `tailscale serve` can be restarted
+        // and a device can be renamed, and a permanently cached origin
+        // meant every notification afterwards pointed at a host that no
+        // longer answers — until jevd itself was restarted. Five
+        // minutes is short enough that a rename fixes itself over a
+        // coffee, and long enough that a burst of escalations does not
+        // spawn the tailscale binary once each.
         cacheLock.lock()
         let cached = cachedOrigin
+        let age = cachedAt.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
         cacheLock.unlock()
 
-        if let cached { return URL(string: cached + path) }
-        guard let name = deviceName(), serveIsActive() else { return nil }
+        if let cached, age < 300 { return URL(string: cached + path) }
+        guard let name = deviceName(), serveIsActive() else {
+            // Keep serving the last known origin rather than dropping
+            // the notification entirely when the lookup fails once.
+            return cached.flatMap { URL(string: $0 + path) }
+        }
         let origin = "https://\(name)"
         cacheLock.lock()
         cachedOrigin = origin
+        cachedAt = Date()
         cacheLock.unlock()
         return URL(string: origin + path)
     }
 
+    private nonisolated(unsafe) static var cachedAt: Date?
     private nonisolated(unsafe) static var cachedOrigin: String?
     private static let cacheLock = NSLock()
 

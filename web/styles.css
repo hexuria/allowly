@@ -1,1237 +1,1745 @@
+/* Jev — a control surface, not a gallery.
+ *
+ * Read this first if you are changing anything:
+ *
+ *  - Every class app.js creates at runtime is styled here exactly once. The
+ *    old file had grown by appending, so .btn-ptt, .screen-stage and
+ *    .screen-panel were each defined twice and the loser was invisible dead
+ *    weight. One rule per thing. Add to the right section.
+ *  - Colour lives in tokens. A literal hex below :root cannot follow the
+ *    theme, which is how the old file ended up with a blue that stayed the
+ *    same in dark mode.
+ *  - Fills carry dark text in dark mode and white text in light mode. A light
+ *    accent with white text on it measures under 2:1; the kind badge is the
+ *    last place in this app to lose legibility, since it is what says whether
+ *    you are answering a shell command or a privacy prompt.
+ *  - No shadows on flat content. Depth comes from surface lightness. The two
+ *    overlay surfaces are the exception, and they already have a scrim.
+ */
+
 :root {
-    --color-bg: #ffffff;
-    --color-surface: #f5f5f5;
-    --color-surface-hover: #eeeeee;
-    --color-text: #000000;
-    --color-text-secondary: #666666;
-    --color-border: #e0e0e0;
-    --color-primary: #007aff;
-    --color-primary-hover: #0051d5;
-    --color-primary-active: #003d9e;
-    --color-danger: #ff3b30;
-    --color-danger-hover: #ff1744;
-    --color-success: #34c759;
-    --color-warning: #ff9500;
-    --color-info: #5ac8fa;
+    /* Surfaces, lightest to most recessed. */
+    --bg: #f7f7f8;
+    --surface: #ffffff;
+    --surface-2: #f1f1f4;
 
-    --color-risk-low: #34c759;
-    --color-risk-medium: #ff9500;
-    --color-risk-high: #ff3b30;
+    /* Two borders on purpose: a quiet separator, and one strong enough to
+       read as the edge of a control (3:1 against its surface). */
+    --line: #cbccd4;
+    --line-strong: #8b8d96;
 
-    --color-status-connected: #34c759;
-    --color-status-disconnected: #999999;
+    --text: #16171a;          /* 17.9:1 on --surface */
+    --text-2: #5f6169;        /*  6.2:1 */
+    --text-3: #6a6c75;        /*  5.2:1 on surface, 4.9 on bg, 4.6 on surface-2 */
 
-    --spacing-xs: 4px;
-    --spacing-sm: 8px;
-    --spacing-md: 16px;
-    --spacing-lg: 24px;
-    --spacing-xl: 32px;
+    --accent: #0a63d8;        /* white on it: 5.5:1 */
+    --accent-press: #0850b0;
+    --accent-tint: #eaf2fe;
+    --on-accent: #ffffff;
 
-    --radius-sm: 4px;
-    --radius-md: 8px;
-    --radius-lg: 12px;
-    --radius-xl: 16px;
+    --ok: #0b7a47;
+    --ok-tint: #e7f6ee;
+    --warn: #8a5300;
+    --warn-tint: #fdf3e3;
+    --danger: #c5302a;
+    --danger-press: #a52722;
+    --danger-tint: #fdeceb;
+    --on-fill: #ffffff;       /* text on a saturated fill, light theme */
+    --pointer: #0a63d8;
 
-    --font-size-xs: 12px;
-    --font-size-sm: 14px;
-    --font-size-base: 16px;
-    --font-size-lg: 18px;
-    --font-size-xl: 20px;
-    --font-size-2xl: 24px;
+    /* The screen stream always sits on near-black, in both themes: a Mac
+       desktop is a bright rectangle and it should be framed, not blended. */
+    --stage: #0b0c0e;
 
-    --transition: all 200ms ease-in-out;
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+    --scrim: rgba(16, 17, 20, 0.45);
+
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 24px;
+    --sp-6: 32px;
+
+    /* Nesting rule: an inner radius is the outer one minus its padding. */
+    --r-1: 8px;    /* controls */
+    --r-2: 12px;   /* cards */
+    --r-3: 16px;   /* the viewport frame */
+    --r-4: 22px;   /* sheets */
+
+    --overlay-shadow: 0 -12px 40px rgba(0, 0, 0, 0.22);
+
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
+/* Two selectors, so the theme follows the system by default but can still be
+   forced — which is also what lets both themes be reviewed side by side. */
 @media (prefers-color-scheme: dark) {
-    :root {
-        --color-bg: #1a1a1a;
-        --color-surface: #2a2a2a;
-        --color-surface-hover: #333333;
-        --color-text: #ffffff;
-        --color-text-secondary: #b0b0b0;
-        --color-border: #404040;
-        --color-primary: #0a84ff;
-        --color-primary-hover: #3b9bff;
-        --color-primary-active: #5aafff;
-        --color-danger: #ff453a;
-        --color-danger-hover: #ff6b63;
-        --color-success: #30b0c0;
-        --color-warning: #ff9500;
-        --color-info: #32b3ff;
+    :root:not([data-theme="light"]) {
+        --bg: #0c0d10;
+        --surface: #17181c;
+        --surface-2: #1f2126;
 
-        --color-risk-low: #30b0c0;
-        --color-risk-medium: #ff9500;
-        --color-risk-high: #ff453a;
+        --line: #383b44;
+        --line-strong: #767983;
 
-        --color-status-connected: #30b0c0;
-        --color-status-disconnected: #888888;
+        --text: #f2f3f5;      /* 16.0:1 on --surface */
+        --text-2: #9ea2ac;    /*  6.9:1 */
+        --text-3: #878b95;    /*  5.2:1 on surface, 5.7 on bg, 4.7 on surface-2 */
 
-        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-        --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+        --accent: #4da3ff;    /* dark text on it: 7.4:1 */
+        --accent-press: #7ab9ff;
+        --accent-tint: #112030;
+        --on-accent: #0c0d10;
+
+        --ok: #3ddc97;
+        --ok-tint: #0f2a1f;
+        --warn: #f5b13d;
+        --warn-tint: #241d0f;
+        --danger: #ff6b61;
+        --danger-press: #ff8b83;
+        --danger-tint: #2a1614;
+        --on-fill: #0c0d10;   /* dark text on a light fill */
+        --pointer: #4da3ff;
+
+        --scrim: rgba(0, 0, 0, 0.6);
+        --overlay-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
     }
 }
 
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+:root[data-theme="dark"] {
+    --bg: #0c0d10;
+    --surface: #17181c;
+    --surface-2: #1f2126;
+    --line: #383b44;
+    --line-strong: #767983;
+    --text: #f2f3f5;
+    --text-2: #9ea2ac;
+    --text-3: #878b95;
+    --accent: #4da3ff;
+    --accent-press: #7ab9ff;
+    --accent-tint: #112030;
+    --on-accent: #0c0d10;
+    --ok: #3ddc97;
+    --ok-tint: #0f2a1f;
+    --warn: #f5b13d;
+    --warn-tint: #241d0f;
+    --danger: #ff6b61;
+    --danger-press: #ff8b83;
+    --danger-tint: #2a1614;
+    --on-fill: #0c0d10;
+    --pointer: #4da3ff;
+    --scrim: rgba(0, 0, 0, 0.6);
+    --overlay-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
 }
 
-html, body {
-    width: 100%;
-    height: 100%;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: var(--font-size-base);
-    line-height: 1.5;
-    color: var(--color-text);
-    background-color: var(--color-bg);
-    -webkit-font-smoothing: antialiased;
+
+/* ── Reset ─────────────────────────────────────────────────────────────── */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+    /* The phone must never rubber-band the shell; only .content scrolls. */
+    overscroll-behavior: none;
     -webkit-text-size-adjust: 100%;
 }
 
 body {
-    overflow: hidden;
     position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    /* dvh tracks Safari's collapsing toolbars; vh does not, which leaves the
-       bottom of the app underneath them. */
+    inset: 0;
+    /* dvh tracks Safari's collapsing toolbars; vh does not, which used to
+       leave the bottom of the app underneath them. */
     height: 100vh;
     height: 100dvh;
+    overflow: hidden;
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    /* Every interactive element below declares its own :active state, so the
+       grey flash iOS paints on top is only ever noise. */
+    -webkit-tap-highlight-color: transparent;
 }
 
-#app {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    background-color: var(--color-bg);
-}
+button, input, select { font: inherit; color: inherit; }
+button { background: none; border: none; cursor: pointer; }
 
-/* Screens */
+/* One ring, everywhere, and only for keyboard and switch control — this app
+   suppresses the UA default all over, so without it those users get nothing. */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+:focus:not(:focus-visible) { outline: none; }
+
+#app { width: 100%; height: 100%; }
+
+
+/* ── Screens ───────────────────────────────────────────────────────────── */
+
 .screen {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     display: flex;
     flex-direction: column;
-    opacity: 1;
-    transition: opacity 300ms ease-in-out;
+    visibility: visible;
+    transition: opacity 260ms ease, visibility 260ms ease;
     z-index: 10;
 }
+/* visibility, not opacity alone: opacity:0 still leaves the screen in the
+   accessibility tree, so a screen reader read out both screens — two "Jev"
+   headings and a full set of controls you cannot see. */
+.screen.hidden { opacity: 0; visibility: hidden; pointer-events: none; z-index: 0; }
 
-.screen.hidden {
-    opacity: 0;
-    pointer-events: none;
-    z-index: 0;
-}
 
-/* Setup Screen */
+/* ── Pairing ───────────────────────────────────────────────────────────── */
+
 .screen-setup {
-    background: linear-gradient(135deg, var(--color-bg) 0%, var(--color-surface) 100%);
     justify-content: center;
-    padding: var(--spacing-md);
+    /* Scrollable, not clipped: the soft keyboard shrinks the visual viewport
+       precisely when someone is pasting a link into this screen. */
+    overflow: hidden auto;
+    padding: var(--sp-5) var(--sp-4)
+             calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
+    background: var(--bg);
 }
 
-.setup-content {
-    width: 100%;
-    max-width: 500px;
-    margin: 0 auto;
-}
+.setup-content { width: 100%; max-width: 380px; margin: 0 auto; }
 
-.setup-header {
-    text-align: center;
-    margin-bottom: var(--spacing-xl);
-}
+.setup-header { margin-bottom: var(--sp-5); text-align: center; }
 
 .setup-header h1 {
-    font-size: var(--font-size-2xl);
+    font-size: 34px;
     font-weight: 700;
-    margin-bottom: var(--spacing-sm);
+    letter-spacing: -0.02em;
+    /* Flat colour, deliberately. A background-clip gradient disappears under
+       forced-colors and reads at roughly 2:1 in light mode. */
+    color: var(--text);
 }
 
 .setup-header p {
-    font-size: var(--font-size-lg);
-    color: var(--color-text-secondary);
+    margin-top: var(--sp-2);
+    font-size: 15px;
+    color: var(--text-2);
 }
 
-.setup-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-}
-
-.setup-form label {
-    font-weight: 600;
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
-}
+.setup-form { display: flex; flex-direction: column; gap: var(--sp-3); }
 
 .pairing-input {
-    padding: var(--spacing-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    font-size: var(--font-size-base);
-    background-color: var(--color-bg);
-    color: var(--color-text);
-    font-family: monospace;
+    min-height: 48px;
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-1);
+    background: var(--surface);
+    color: var(--text);
+    /* 16px keeps iOS from zooming the page when this takes focus. */
+    font-family: var(--mono);
+    font-size: 16px;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
 }
-
+.pairing-input::placeholder { color: var(--text-3); }
 .pairing-input:focus {
     outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-tint);
 }
 
 .setup-hint {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
+    margin-top: var(--sp-1);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-3);
     text-align: center;
-    margin-top: var(--spacing-sm);
 }
 
-/* Main Screen */
-.screen-main {
-    display: flex;
-    flex-direction: column;
-}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
 
 .header {
+    /* Above the approvals layer: notifications slide in under the app's own
+       chrome, the way they sit under the status bar, so Settings never ends
+       up behind a card. */
+    position: relative;
+    z-index: 360;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    /* viewport-fit=cover puts the page under the status bar and the Dynamic
-       Island, so the title was sitting on top of the clock. Add the safe-area
-       inset on top of the normal padding. */
-    padding: var(--spacing-md);
-    padding-top: calc(var(--spacing-md) + env(safe-area-inset-top, 0px));
-    padding-left: calc(var(--spacing-md) + env(safe-area-inset-left, 0px));
-    padding-right: calc(var(--spacing-md) + env(safe-area-inset-right, 0px));
-    border-bottom: 1px solid var(--color-border);
-    background-color: var(--color-surface);
+    justify-content: space-between;
+    gap: var(--sp-3);
+    /* viewport-fit=cover puts the page under the Dynamic Island, so the title
+       would otherwise sit on top of the clock. */
+    padding: var(--sp-3) var(--sp-4);
+    padding-top: calc(var(--sp-3) + env(safe-area-inset-top, 0px));
+    padding-left: calc(var(--sp-4) + env(safe-area-inset-left, 0px));
+    padding-right: calc(var(--sp-4) + env(safe-area-inset-right, 0px));
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
 }
 
-.header-left {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-}
+.header-left { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
 
 .header-left h1 {
-    font-size: var(--font-size-xl);
+    font-size: 19px;
     font-weight: 700;
+    letter-spacing: -0.01em;
 }
 
+/* A pill, so "connected" is legible at a glance rather than an 8px dot and
+   grey text that looked identical whether it was working or not. */
 .connection-status {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: var(--spacing-xs);
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
+    gap: 6px;
+    padding: 3px 9px 3px 7px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    transition: color 200ms ease, background-color 200ms ease;
 }
-
-.connection-status.connected {
-    color: var(--color-status-connected);
-}
-
-.connection-status.disconnected {
-    color: var(--color-status-disconnected);
-}
+/* One renderer. app.js toggles these on the pill itself (index.html carries
+   the id there), and the dot inherits currentColor — so there is no second
+   code path that only runs on browsers lacking some feature. */
+.connection-status.connected { color: var(--ok); background: var(--ok-tint); }
+.connection-status.disconnected { color: var(--text-2); background: var(--surface-2); }
+/* Hands free lives here rather than on a line of its own: it is the same
+   kind of fact as "Connected", and one badge is one place to look. */
+.connection-status.listening { color: var(--accent); background: var(--accent-tint); }
+.connection-status.hearing { color: var(--accent); background: var(--accent-tint); }
 
 .status-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    background-color: currentColor;
+    background: currentColor;
+    flex: none;
 }
 
-.header-btn {
-    width: 44px;
+/* Only while it is actually live, so the motion means something. */
+.connection-status.connected .status-dot { animation: breathe 2.4s ease-in-out infinite; }
+/* Listening breathes faster; hearing you holds steady and swells, so the two
+   are told apart by movement as well as by the word. */
+.connection-status.listening .status-dot { animation: breathe 1.2s ease-in-out infinite; }
+.connection-status.hearing .status-dot {
+    animation: hearing 0.9s ease-in-out infinite;
+}
+@keyframes hearing {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.55); }
+}
+
+@keyframes breathe {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
+}
+
+.header-actions { display: flex; gap: var(--sp-1); }
+
+.icon-btn {
+    width: 44px;              /* Apple's minimum, not 40 */
     height: 44px;
-    border: none;
-    background: transparent;
-    color: var(--color-primary);
-    cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: var(--radius-lg);
-    transition: var(--transition);
-    padding: 0;
+    border-radius: var(--r-1);
+    color: var(--text-2);
+    transition: background-color 140ms ease, color 140ms ease;
 }
+.icon-btn:active { background: var(--surface-2); color: var(--text); }
+.icon-btn svg { width: 22px; height: 22px; }
 
-.header-btn:active {
-    background-color: var(--color-surface-hover);
-}
 
-.header-btn svg {
-    width: 24px;
-    height: 24px;
-}
+/* ── Content ───────────────────────────────────────────────────────────── */
 
-/* Content Area */
 .content {
     flex: 1;
+    display: flex;
+    flex-direction: column;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: var(--spacing-md);
-    /* Clear the nav plus whatever the home indicator occupies, or the last
-       card ends up permanently hidden behind the tab bar. */
-    padding-bottom: calc(60px + var(--spacing-md) + env(safe-area-inset-bottom, 0px));
-    padding-left: calc(var(--spacing-md) + env(safe-area-inset-left, 0px));
-    padding-right: calc(var(--spacing-md) + env(safe-area-inset-right, 0px));
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding: var(--sp-4);
+    padding-left: calc(var(--sp-4) + env(safe-area-inset-left, 0px));
+    padding-right: calc(var(--sp-4) + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
+    gap: var(--sp-5);
 }
 
-.content::-webkit-scrollbar {
-    width: 6px;
-}
+.content::-webkit-scrollbar { width: 6px; }
+.content::-webkit-scrollbar-track { background: transparent; }
+.content::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 
-.content::-webkit-scrollbar-track {
-    background: transparent;
-}
+/* The approvals layer is fixed, not in this flow — see the Approvals section
+   below. The content column keeps its height whether or not something is
+   waiting, so the Mac screen never jumps. */
 
-.content::-webkit-scrollbar-thumb {
-    background: var(--color-border);
-    border-radius: 3px;
-}
-
-/* Approvals List */
-.approvals-list {
+.section-heading {
     display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-}
-
-.empty-state {
-    text-align: center;
-    padding: var(--spacing-xl);
-    color: var(--color-text-secondary);
-}
-
-/* Approval Card */
-.approval-card {
-    background-color: var(--color-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--spacing-md);
-    border: 1px solid var(--color-border);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-    box-shadow: var(--shadow-sm);
-    animation: slideIn 300ms ease-out;
-}
-
-@keyframes slideIn {
-    from {
-        opacity: 0;
-        transform: translateY(20px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.approval-card.tcc {
-    border-left: 4px solid var(--color-warning);
-    background: linear-gradient(135deg, var(--color-surface) 0%, rgba(255, 149, 0, 0.05) 100%);
-}
-
-.approval-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: var(--spacing-sm);
-}
-
-.approval-app-info {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-}
-
-.approval-app-name {
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+    font-size: 12px;
     font-weight: 600;
-    font-size: var(--font-size-base);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-3);
 }
 
-.approval-timestamp {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
-}
-
-.approval-kind-badge {
+/* The count beside the heading, so "3 waiting" is readable before scrolling. */
+.section-count {
     display: inline-flex;
     align-items: center;
-    padding: 4px 8px;
-    background-color: var(--color-primary);
-    color: white;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    text-transform: uppercase;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+
+/* Kept in the accessibility tree, out of the visual layout: the floating
+   cards are self-evident on screen, but the count still has to be announced. */
+.visually-hidden {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
     white-space: nowrap;
 }
 
-.approval-kind-badge.tcc {
-    background-color: var(--color-warning);
-}
 
-.approval-kind-badge.agent {
-    background-color: var(--color-info);
-}
+/* ── The Mac, live ─────────────────────────────────────────────────────── */
 
-.approval-kind-badge.command {
-    background-color: var(--color-success);
-}
+.screen-panel { display: flex; flex-direction: column; gap: var(--sp-2); }
 
-.approval-title {
-    font-size: var(--font-size-base);
-    font-weight: 600;
-}
-
-.approval-body {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-.approval-tcc-notice {
-    padding: var(--spacing-md);
-    background-color: rgba(255, 149, 0, 0.1);
-    border-radius: var(--radius-md);
-    font-size: var(--font-size-sm);
-    color: var(--color-text);
-}
-
-.approval-screenshot {
-    width: 100%;
-    max-height: 300px;
-    border-radius: var(--radius-md);
-    object-fit: cover;
-    border: 1px solid var(--color-border);
-}
-
-.approval-options {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-}
-
-.option-btn {
-    min-height: 48px;
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    font-size: var(--font-size-base);
-    font-weight: 500;
-    cursor: pointer;
-    transition: var(--transition);
-    background-color: var(--color-surface);
-    color: var(--color-text);
-    text-align: left;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.option-btn:active {
-    background-color: var(--color-surface-hover);
-    transform: scale(0.98);
-}
-
-.option-btn.risk-low {
-    border-color: var(--color-risk-low);
-    color: var(--color-risk-low);
-}
-
-.option-btn.risk-medium {
-    border-color: var(--color-risk-medium);
-    color: var(--color-risk-medium);
-}
-
-.option-btn.risk-high {
-    border-color: var(--color-risk-high);
-    background-color: rgba(255, 59, 48, 0.1);
-    color: var(--color-risk-high);
-}
-
-.risk-indicator {
+/* A quiet control that lives inside a section heading. */
+.ghost-btn {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: var(--font-size-xs);
+    gap: 5px;
+    /* 44 is the floor even for a quiet control. Negative margin keeps the
+       heading row from growing to match it. */
+    min-height: 44px;
+    min-width: 44px;
+    justify-content: center;
+    margin: -6px -6px -6px auto;
+    padding: 0 var(--sp-2);
+    border-radius: 6px;
+    color: var(--text-2);
+    font-size: 11px;
     font-weight: 600;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    margin-left: auto;
+    transition: background-color 120ms ease, color 120ms ease;
+}
+.ghost-btn:active { background: var(--surface-2); color: var(--text); }
+.ghost-btn svg { width: 15px; height: 15px; }
+
+/* ── Full screen ───────────────────────────────────────────────────────── */
+
+/* iOS Safari will not put an arbitrary element into real fullscreen, so this
+   is done in CSS: the stage is lifted out to cover the viewport. The image
+   keeps its aspect ratio and is centred on the black stage. */
+body.fullscreen { overflow: hidden; }
+
+body.fullscreen .screen-stage {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 0;
+    background: #000;
+}
+body.fullscreen .screen-stage img {
+    /* Size against the stage, which is already pinned to the viewport with
+       inset:0 — not against dvh. On a real iPhone in landscape the dynamic
+       viewport units move with the address bar and disagree with the box
+       they are meant to describe, which left the picture missing entirely
+       even though the stage was the right size. 100% of a fixed parent
+       cannot drift. */
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    /* Landscape puts the notch on a side, not the top. */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+             env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    box-sizing: border-box;
+}
+/* The panel keeps the space the stage left, so nothing behind it reflows. */
+body.fullscreen .screen-panel { min-height: 0; }
+
+/* Everything that is not the screen gets out of the way. */
+body.fullscreen .header,
+body.fullscreen .screen-panel > .section-heading,
+body.fullscreen .screen-status,
+body.fullscreen .ptt-section,
+body.fullscreen .ios-hint { display: none; }
+
+/* The way back out. Sits above the stage, clear of the notch. */
+.exit-fullscreen {
+    position: fixed;
+    top: calc(var(--sp-3) + env(safe-area-inset-top, 0px));
+    right: calc(var(--sp-3) + env(safe-area-inset-right, 0px));
+    z-index: 320;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 0 var(--sp-3);
+    border-radius: 999px;
+    background: rgba(14, 15, 18, 0.72);
+    color: #f2f3f5;
+    font-size: 13px;
+    font-weight: 600;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+body.fullscreen .exit-fullscreen { display: inline-flex; }
+
+/* Sits beside Exit, same treatment. */
+.fill-toggle {
+    position: fixed;
+    top: calc(var(--sp-3) + env(safe-area-inset-top, 0px));
+    right: calc(var(--sp-3) + 104px + env(safe-area-inset-right, 0px));
+    z-index: 320;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    min-width: 62px;
+    padding: 0 var(--sp-3);
+    border-radius: 999px;
+    background: rgba(14, 15, 18, 0.72);
+    color: #f2f3f5;
+    font-size: 13px;
+    font-weight: 600;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+body.fullscreen .fill-toggle { display: inline-flex; }
+
+/* Fill: crop the edges rather than letterbox. */
+body.fullscreen.screen-fill .screen-stage img { object-fit: cover; }
+.exit-fullscreen svg { width: 16px; height: 16px; }
+
+/* A Mac screen is 16:10. On a portrait phone that letterboxes to about a
+   third of the height however big the viewport is, so full screen only really
+   pays off turned sideways — which is why the manifest no longer pins the app
+   to portrait. Said once, where the empty black actually is. */
+.rotate-hint {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    z-index: 320;
+    display: none;
+    padding: 9px var(--sp-4);
+    border-radius: 999px;
+    background: rgba(14, 15, 18, 0.72);
+    color: #cdd2da;
+    font-size: 13px;
+    white-space: nowrap;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+@media (orientation: portrait) {
+    body.fullscreen .rotate-hint { display: block; }
 }
 
-.risk-indicator::before {
-    content: '';
-    display: inline-block;
+/* In full screen a card floats over the picture, centred.
+   It used to stretch from edge to edge and sit hard against the top-left,
+   which on a landscape phone is a single line of text across two hand-spans
+   — unreadable, and it buried the screen it was floating over. A dialog
+   belongs in the middle at a width the eye can track. */
+body.fullscreen .approvals-layer {
+    top: 0;
+    bottom: 0;
+    left: env(safe-area-inset-left, 0px);
+    right: env(safe-area-inset-right, 0px);
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;      /* horizontally centred */
+    justify-content: center;  /* and vertically */
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+}
+body.fullscreen .approvals-layer > * {
+    width: min(460px, 100%);
+    flex: none;
+}
+
+/* Numbers over the picture. Only while you have asked for them. */
+.numbers-layer {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    display: none;
+    /* Above the picture, below the pointer and the cards. */
+    z-index: 320;
+}
+.numbers-layer.on { display: block; }
+.numbers-layer b {
+    /* fixed, like the pointer: placed from the picture's live rect rather
+       than as a percentage of the frame, so zoom cannot leave it behind. */
+    position: fixed;
+    transform: translate(-50%, -50%);
+    /* Sized against the frame, not in fixed pixels. A 20px badge is half a
+       folder icon on a phone-sized picture of a 1800px desktop — the numbers
+       covered the very things they were labelling. */
+    min-width: 22px;
+    height: 22px;
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border-radius: 999px;
+    background: #ffd23f;
+    color: #17181c;
+    border: 1px solid rgba(0, 0, 0, 0.8);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+    /* Readable over a bright window or a dark one. */
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+/* The frame: near-black in both themes, so a bright desktop reads as a
+   screen rather than bleeding into the page. */
+.screen-stage {
+    position: relative;
+    width: 100%;
+    /* Hold the shape before the first frame lands. Without this the frame
+       collapses to the height of its own alt text — a black strip that looks
+       like the app broke rather than like a picture on its way. */
+    aspect-ratio: 16 / 10;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    background: var(--stage);
+    /* touch-action:none so the browser never claims a gesture here for
+       panning or for its own zoom. The zoom transform goes on the image
+       inside, not on this frame — see setZoom. */
+    touch-action: none;
+}
+
+/* Once a frame has arrived the picture decides the height again. */
+.screen-stage:has(img[src]) { aspect-ratio: auto; }
+
+.screen-stage img {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* Zoom lives here. No transition, deliberately: the pointer is placed
+       from getBoundingClientRect, and mid-transition that reports geometry
+       the picture is only on its way to — which parked the pointer hundreds
+       of pixels away every time the zoom was reset. */
+    transform-origin: 50% 50%;
+    /* Letterbox rather than crop: a cropped remote screen hides the thing you
+       are trying to click. */
+    object-fit: contain;
+    background: var(--stage);
+}
+/* Dragging the pointer is the only thing the image itself does; a tap on it
+   never clicks the Mac, so it must not look like it will. */
+.screen-stage img { cursor: default; }
+
+/* Caption under the frame, never over it — an overlay steals the pixels you
+   came to look at. */
+.screen-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 16px;
+    padding: 0 var(--sp-1);
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+/* The Mac's pointer, drawn big enough to grab with a thumb. It is the only
+   thing on the stream you can drag; everything else you say or press.
+   Deliberately a plain disc — the old version had a 30px crosshair and a
+   coloured glow layered over it, which covered the very pixels you were
+   trying to aim at. */
+.cursor-marker {
+    /* fixed, not absolute: it is positioned against the viewport so it can
+       be dragged anywhere on the phone, including off the screenshot. */
+    position: fixed;
+    width: 56px;              /* the grab area — comfortably thumb-sized */
+    height: 56px;
+    margin: -28px 0 0 -28px;
+    display: grid;
+    place-items: center;
+    /* Above the screen frame and the full-screen stage, below the
+       notification layer — a card that needs you outranks aiming. */
+    z-index: 330;
+    cursor: grab;
+    touch-action: none;
+}
+.cursor-marker.hidden { display: none; }
+
+.cursor-ring {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border: 3px solid #ffffff;
+    border-radius: 50%;
+    background: var(--pointer);
+    /* One dark hairline so it holds up on a white window as well as a dark
+       one. No glow, no crosshair. */
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.5);
+    transition: transform 90ms ease-out;
+}
+
+/* The exact point. The ring is a thumb-sized handle; this is the pixel it
+   actually presses, so there is no guessing which part of the circle counts. */
+.cursor-dot {
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background-color: currentColor;
+    background: #ffffff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
+.cursor-marker:active .cursor-ring,
+.cursor-marker.aiming .cursor-ring { transform: scale(1.35); }
 
-.option-btn.risk-high::before {
-    box-shadow: inset 0 0 0 1px currentColor;
-}
-
-/* Push-to-Talk Section */
-.ptt-section {
-    margin-top: var(--spacing-lg);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-}
-
-.ptt-label {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
-    font-weight: 600;
-    text-transform: uppercase;
-}
-
-.btn-ptt {
-    min-height: 56px;
-    padding: var(--spacing-md);
-    background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
-    color: white;
-    border: none;
-    border-radius: var(--radius-lg);
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-xs);
-    transition: var(--transition);
-    box-shadow: var(--shadow-md);
-}
-
-.btn-ptt:active {
-    transform: scale(0.98);
-    box-shadow: var(--shadow-sm);
-}
-
-.ptt-icon {
-    width: 24px;
-    height: 24px;
-}
-
-.recording-status {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--spacing-md);
-    background-color: rgba(255, 59, 48, 0.1);
-    border-radius: var(--radius-md);
-    gap: var(--spacing-sm);
-}
-
-.recording-status.hidden {
-    display: none;
-}
-
-.recording-indicator {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    color: var(--color-danger);
-    font-weight: 600;
-}
-
-.recording-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background-color: var(--color-danger);
-    animation: pulse 1s infinite;
-}
-
-@keyframes pulse {
-    0%, 100% {
-        opacity: 1;
-    }
-    50% {
-        opacity: 0.5;
-    }
-}
-
-.voice-result {
-    padding: var(--spacing-md);
-    background-color: var(--color-surface);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-}
-
-.voice-result.hidden {
-    display: none;
-}
-
-.voice-transcription {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
-    margin-bottom: var(--spacing-sm);
-    font-style: italic;
-}
-
-.voice-decision {
-    font-size: var(--font-size-base);
-    color: var(--color-text);
-    font-weight: 500;
-}
-
-/* Bottom Navigation */
-.bottom-nav {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    /* Fixed 60px put the tab labels underneath the home indicator. Keep the
-       touch targets at 60px and extend the bar itself into the safe area. */
-    min-height: 60px;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    padding-left: env(safe-area-inset-left, 0px);
-    padding-right: env(safe-area-inset-right, 0px);
-    box-sizing: content-box;
-    display: flex;
-    justify-content: space-around;
-    align-items: center;
-    background-color: var(--color-surface);
-    border-top: 1px solid var(--color-border);
-    z-index: 100;
-}
-
-.nav-item {
-    flex: 1;
-    height: 100%;
-    border: none;
+/* Parked off the picture: still draggable, but it cannot press anything, so
+   it stops looking like it can. */
+.cursor-marker.off-screen .cursor-ring {
     background: transparent;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    font-size: var(--font-size-xs);
-    transition: var(--transition);
-    padding: 0;
-}
-
-.nav-item.active {
-    color: var(--color-primary);
-}
-
-.nav-item svg {
-    width: 24px;
-    height: 24px;
-}
-
-/* iOS Hint */
-.ios-hint {
-    position: fixed;
-    bottom: 70px;
-    left: var(--spacing-md);
-    right: var(--spacing-md);
-    background-color: var(--color-info);
-    color: white;
-    padding: var(--spacing-md);
-    border-radius: var(--radius-lg);
-    z-index: 80;
-    animation: slideUp 300ms ease-out;
-}
-
-@keyframes slideUp {
-    from {
-        opacity: 0;
-        transform: translateY(20px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.ios-hint.hidden {
-    display: none;
-}
-
-.ios-hint-content {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    align-items: center;
-    text-align: center;
-}
-
-.ios-hint p {
-    font-size: var(--font-size-sm);
-}
-
-.ios-hint-close {
-    padding: 6px 12px;
-    background-color: rgba(255, 255, 255, 0.2);
-    border: none;
-    border-radius: var(--radius-sm);
-    color: white;
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    cursor: pointer;
-    transition: var(--transition);
-}
-
-.ios-hint-close:active {
-    background-color: rgba(255, 255, 255, 0.3);
-}
-
-/* Buttons */
-.btn {
-    min-height: 44px;
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: none;
-    border-radius: var(--radius-md);
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    cursor: pointer;
-    transition: var(--transition);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.btn-primary {
-    background-color: var(--color-primary);
-    color: white;
-    width: 100%;
-}
-
-.btn-primary:active {
-    background-color: var(--color-primary-active);
-    transform: scale(0.98);
-}
-
-.btn-secondary {
-    background-color: var(--color-surface);
-    color: var(--color-text);
-    border: 1px solid var(--color-border);
-}
-
-.btn-secondary:active {
-    background-color: var(--color-surface-hover);
-}
-
-.btn-danger {
-    background-color: var(--color-danger);
-    color: white;
-}
-
-.btn-danger:active {
-    background-color: var(--color-danger-hover);
-}
-
-/* Modal */
-.modal {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: flex-end;
-    z-index: 200;
-    opacity: 1;
-    transition: opacity 300ms ease-in-out;
-}
-
-.modal.hidden {
-    display: none;
-    opacity: 0;
-    pointer-events: none;
-}
-
-.modal-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.4);
-    cursor: pointer;
-}
-
-.modal-content {
-    position: relative;
-    background-color: var(--color-bg);
-    width: 100%;
-    max-height: 90vh;
-    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-    display: flex;
-    flex-direction: column;
-    animation: slideUp 300ms ease-out;
-}
-
-.modal-confirm {
-    border-radius: var(--radius-lg);
-    max-height: none;
-    animation: fadeIn 200ms ease-out;
-}
-
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-    }
-    to {
-        opacity: 1;
-    }
-}
-
-.modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-md);
-    border-bottom: 1px solid var(--color-border);
-}
-
-.modal-header h2 {
-    font-size: var(--font-size-lg);
-    font-weight: 700;
-}
-
-.modal-close {
-    width: 32px;
-    height: 32px;
-    border: none;
-    background: transparent;
-    font-size: 24px;
-    color: var(--color-text);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.modal-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--spacing-md);
-}
-
-.settings-section {
-    margin-bottom: var(--spacing-lg);
-}
-
-.settings-section h3 {
-    font-size: var(--font-size-base);
-    font-weight: 700;
-    margin-bottom: var(--spacing-md);
-}
-
-.setting-item {
-    margin-bottom: var(--spacing-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-}
-
-.setting-item label {
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-}
-
-.toggle-input {
-    width: 48px;
-    height: 28px;
-    cursor: pointer;
-    -webkit-appearance: none;
-    appearance: none;
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 14px;
-    position: relative;
-    transition: var(--transition);
-    flex-shrink: 0;
-}
-
-.toggle-input::before {
-    content: '';
-    position: absolute;
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background-color: var(--color-bg);
-    top: 1px;
-    left: 1px;
-    transition: var(--transition);
-}
-
-.toggle-input:checked {
-    background-color: var(--color-primary);
-    border-color: var(--color-primary);
-}
-
-.toggle-input:checked::before {
-    transform: translateX(20px);
-}
-
-.toggle-label {
-    flex: 1;
-}
-
-.setting-input {
-    padding: var(--spacing-sm) var(--spacing-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background-color: var(--color-surface);
-    color: var(--color-text);
-    font-size: var(--font-size-sm);
-}
-
-.setting-input:focus {
-    outline: none;
-    border-color: var(--color-primary);
-}
-
-.setting-note {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
-}
-
-.confirm-buttons {
-    display: flex;
-    gap: var(--spacing-sm);
-    justify-content: center;
-    margin-top: var(--spacing-lg);
-}
-
-.confirm-buttons .btn {
-    flex: 1;
-}
-
-#confirmTitle {
-    font-size: var(--font-size-lg);
-    font-weight: 700;
-    margin-bottom: var(--spacing-md);
-}
-
-#confirmMessage {
-    font-size: var(--font-size-base);
-    color: var(--color-text-secondary);
-    margin-bottom: var(--spacing-lg);
-}
-
-/* Utilities */
-.hidden {
-    display: none !important;
-}
-
-/* Accessibility */
-@media (prefers-reduced-motion: reduce) {
-    * {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
-    }
-}
-
-/* Responsive adjustments for large screens */
-@media (min-width: 600px) {
-    .modal-content {
-        width: 90%;
-        max-width: 500px;
-        margin: 0 auto;
-        border-radius: var(--radius-xl);
-    }
-
-    .modal-confirm {
-        border-radius: var(--radius-lg);
-    }
-
-    .setup-content {
-        max-width: 400px;
-    }
+    border-color: var(--text-3);
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35);
 }
 
 
-/* Screen view */
-.screen-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    align-items: center;
-}
 
-.screen-panel img {
-    width: 100%;
-    height: auto;
-    border-radius: 8px;
-    border: 1px solid var(--color-border);
-    background: #000;
-}
-
-.screen-status {
-    font-size: 12px;
-    color: var(--color-text-secondary, #888);
-}
-
-
-/* Permissions */
-.policy-panel h3 { margin: var(--spacing-md) 0 4px; font-size: 15px; }
-.policy-hint { font-size: 12px; color: var(--color-text-secondary, #888); margin-bottom: var(--spacing-sm); }
-.policy-global { display: flex; flex-direction: column; gap: 8px; }
-.policy-option {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px; min-height: 48px;
-    border: 1px solid var(--color-border); border-radius: 10px;
-    background: var(--color-surface); cursor: pointer; text-align: left;
-    color: inherit; font-size: 14px; width: 100%;
-}
-.policy-option.selected { border-color: #2d6cdf; box-shadow: inset 0 0 0 1px #2d6cdf; }
-.policy-entries { display: flex; flex-direction: column; gap: 8px; }
-.policy-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 10px 12px; border: 1px solid var(--color-border);
-    border-radius: 10px; background: var(--color-surface);
-}
-.policy-row .name { font-size: 14px; flex: 1; }
-.policy-row select { font-size: 14px; padding: 6px; min-height: 36px; }
-.policy-row .forget { background: none; border: none; color: #c0392b; font-size: 13px; min-height: 36px; }
-.policy-reset {
-    margin-top: var(--spacing-md); width: 100%; min-height: 44px;
-    border: 1px solid #c0392b; color: #c0392b; background: none; border-radius: 10px; font-size: 14px;
-}
-
-
-/* Send text */
-.type-panel { display: flex; flex-direction: column; gap: 8px; margin-top: var(--spacing-md); }
-.type-panel h3 { font-size: 15px; margin-bottom: 0; }
-.type-input {
-    width: 100%; min-height: 44px; padding: 10px 12px; font-size: 16px;
-    border: 1px solid var(--color-border); border-radius: 10px;
-    background: var(--color-surface); color: inherit;
-}
-.type-secret { display: flex; align-items: center; gap: 8px; font-size: 13px; min-height: 36px; }
-.type-send {
-    min-height: 48px; border: none; border-radius: 10px;
-    background: #2d6cdf; color: #fff; font-size: 15px; font-weight: 600;
-}
-
-
-/* Settings */
-.settings-panel h3 { margin: var(--spacing-md) 0 4px; font-size: 15px; }
-.setting-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 12px; min-height: 48px;
-    border: 1px solid var(--color-border); border-radius: 10px;
-    background: var(--color-surface); font-size: 14px;
-}
-.setting-row input[type="checkbox"] { width: 22px; height: 22px; }
-.screen-panel img.tappable { cursor: crosshair; }
-
-
-/* Tap feedback */
+/* Where a tap landed. Positioned against the viewport, so it is fixed. */
 .tap-marker {
     position: fixed;
-    width: 28px; height: 28px; margin: -14px 0 0 -14px;
-    border: 2px solid #2d6cdf; border-radius: 50%;
-    pointer-events: none; z-index: 9999;
+    width: 28px;
+    height: 28px;
+    margin: -14px 0 0 -14px;
+    border: 2px solid var(--pointer);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 9999;
     animation: tap-fade 400ms ease-out forwards;
 }
 @keyframes tap-fade {
     from { opacity: 0.9; transform: scale(0.4); }
     to   { opacity: 0;   transform: scale(1.4); }
 }
-.screen-panel img { touch-action: none; }
 
 
-/* Numbered hints over the screen */
-.screen-stage { position: relative; width: 100%; }
-.hint-layer { position: absolute; inset: 0; pointer-events: none; }
-.hint-box {
-    position: absolute;
-    border: 2px solid #ffb300;
-    border-radius: 3px;
-    background: rgba(255, 179, 0, 0.12);
-    box-sizing: border-box;
+/* ── Approvals: the floating layer ─────────────────────────────────────── */
+
+/* These behave like notifications: they arrive on top of whatever you were
+   looking at and leave when answered, rather than shoving the Mac screen down
+   the page. Fixed to the viewport so full screen is covered too. */
+.approvals-layer {
+    position: fixed;
+    /* Just below the header. app.js measures it, because its height moves
+       with the safe-area inset and the font size. */
+    top: calc(var(--header-h, 68px) + var(--sp-2));
+    left: calc(var(--sp-3) + env(safe-area-inset-left, 0px));
+    right: calc(var(--sp-3) + env(safe-area-inset-right, 0px));
+    /* Above the full-screen stage, below the sheets and the modal. */
+    z-index: 350;
+    max-height: calc(100dvh - var(--header-h, 68px) - var(--sp-5));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* The layer is a pass-through; only the cards are touchable, so the Mac
+       screen behind it stays usable while something is pending. */
+    pointer-events: none;
 }
-.hint-tag {
-    position: absolute;
-    transform: translate(-2px, -100%);
-    background: #ffb300; color: #1a1a1a;
-    font-size: 11px; font-weight: 700; line-height: 1;
-    padding: 2px 4px; border-radius: 3px;
+.approvals-layer > * { pointer-events: auto; }
+.approvals-layer::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Nothing pending draws nothing: the list is simply empty, and the layer
+   collapses to zero height. Deliberately NOT display:none — the live region
+   announcing the count lives in here, and an aria-live region that is not in
+   the accessibility tree is never announced. Same trap as the toast. */
+
+.approvals-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.approval-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--surface);
+    /* It floats over live content now, so it needs to read as a layer above
+       the page rather than a block in it. */
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+    animation: card-in 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes card-in {
+    from { opacity: 0; transform: translateY(-10px) scale(0.98); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* Nothing here can be answered from the phone, so it is styled as a notice
+   and not as a card with disabled controls. */
+.approval-card.tcc { border-color: var(--warn); }
+
+.approval-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-2);
+}
+
+/* The app name and time are context, not the headline — they sit small and
+   quiet above the question. Previously the app name was the loudest thing on
+   the card and the actual question came third. */
+.approval-app-info {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    min-width: 0;
+}
+
+.approval-app-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.approval-timestamp {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-3);
     white-space: nowrap;
 }
 
-
-/* Hands free, on the main screen where it belongs */
-.handsfree-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 12px; margin-bottom: var(--spacing-sm);
-    min-height: 52px; font-size: 14px;
-    border: 1px solid var(--color-border); border-radius: 10px;
-    background: var(--color-surface);
+.approval-kind-badge {
+    flex: none;
+    padding: 3px 7px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
-.handsfree-row input[type="checkbox"] { width: 24px; height: 24px; flex: none; }
-.handsfree-status { font-size: 13px; margin-bottom: var(--spacing-sm); min-height: 18px; }
-.handsfree-status.live { color: #1a9d4b; font-weight: 600; }
-.handsfree-status.hearing { color: #c0392b; font-weight: 600; }
+/* These four are the class names app.js actually generates from the kind.
+   The old file styled .tcc/.agent/.command, none of which could ever match,
+   so every badge in the app fell through to plain blue. Dark text on the
+   fill, per the contrast rule at the top of this file. */
+.approval-kind-badge.agent-tool-prompt { background: var(--accent); color: var(--on-accent); }
+.approval-kind-badge.app-dialog        { background: var(--surface-2); color: var(--text-2); }
+.approval-kind-badge.tcc-consent       { background: var(--warn); color: var(--on-fill); }
+.approval-kind-badge.spoken-command    { background: var(--ok); color: var(--on-fill); }
 
-
-/* Restructured shell */
-.section-heading {
-    font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em;
-    color: var(--color-text-secondary, #888);
-    margin: var(--spacing-md) 0 var(--spacing-sm);
+/* The question. This is the thing you opened the app to read. */
+.approval-title {
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    overflow-wrap: anywhere;
 }
-.screen-panel { margin-bottom: var(--spacing-md); }
 
-/* A record button that looks like a button */
+.approval-body {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    /* A dialog body can be a wall of text; the title carries the question and
+       the card has to stay a notification. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+}
+
+.approval-screenshot {
+    width: 100%;
+    /* Small on a floating card — it is a glance at the dialog, not the
+       document. Two full-size thumbnails filled the whole phone. */
+    max-height: 92px;
+    object-fit: cover;
+    object-position: top center;
+    border: 1px solid var(--line);
+    /* Nesting rule: card radius minus card padding. */
+    border-radius: calc(var(--r-2) - 4px);
+    background: var(--stage);
+}
+
+.approval-tcc-notice {
+    padding: var(--sp-3);
+    border-radius: calc(var(--r-2) - 4px);
+    background: var(--warn-tint);
+}
+.approval-tcc-notice p { font-size: 14px; line-height: 1.55; color: var(--text); }
+.approval-tcc-notice p + p { margin-top: var(--sp-2); }
+.approval-tcc-advice { color: var(--text-2); }
+
+
+/* ── Option buttons ────────────────────────────────────────────────────── */
+
+.approval-options { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.option-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    min-height: 48px;
+    padding: var(--sp-2) var(--sp-4);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-1);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 500;
+    text-align: left;
+    transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+.option-btn:active { background: var(--surface-2); transform: translateY(1px); }
+
+/* Risk is carried by weight, fill and a word — never by colour alone.
+   Low risk is deliberately silent: if every button is tagged, no tag means
+   anything, and the safe default should be the quiet one. */
+.option-btn .risk-indicator {
+    flex: none;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+.option-btn.risk-low .risk-indicator { display: none; }
+
+.option-btn.risk-medium { border-color: var(--warn); }
+.option-btn.risk-medium .risk-indicator { color: var(--warn); }
+
+.option-btn.risk-high {
+    /* 2px, not just a different hue. Desaturated, amber resolves to a
+       BRIGHTER grey than red, so with equal borders the medium option looked
+       heavier than the dangerous one — the hierarchy inverted in greyscale and
+       for anyone red-blind. Weight is the cue that survives any rendering. */
+    border-width: 2px;
+    border-color: var(--danger);
+    background: var(--danger-tint);
+    color: var(--danger);
+    font-weight: 600;
+}
+.option-btn.risk-high .risk-indicator { color: var(--danger); }
+.option-btn.risk-high:active { background: var(--danger-tint); border-color: var(--danger-press); }
+
+
+/* ── Empty state ───────────────────────────────────────────────────────── */
+
+/* Slim on purpose. This is the steady state — most of the time nothing needs
+   you — so it reassures in one line rather than occupying a card's worth of
+   screen that the Mac stream could be using. */
+.empty-state {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px dashed var(--line);
+    border-radius: var(--r-1);
+    color: var(--text-2);
+}
+.empty-state::before {
+    content: '';
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+}
+.empty-state p { font-size: 14px; }
+
+
+/* How many are behind the one on screen. Quiet: it is a fact, not a task. */
+.queue-note {
+    padding: var(--sp-2) var(--sp-3) 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    text-align: center;
+}
+
+
+/* ── Voice ─────────────────────────────────────────────────────────────── */
+
+.ptt-section { display: flex; flex-direction: column; gap: var(--sp-3); }
+
 .btn-ptt {
-    display: flex; align-items: center; justify-content: center; gap: 10px;
-    width: 100%; min-height: 64px; border: none; border-radius: 16px;
-    background: linear-gradient(180deg, #3d7bf0 0%, #2559c4 100%);
-    color: #fff; font-size: 17px; font-weight: 600;
-    box-shadow: 0 2px 10px rgba(37, 89, 196, 0.35);
-    transition: transform 80ms ease, box-shadow 80ms ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+    width: 100%;
+    min-height: 56px;
+    border-radius: var(--r-2);
+    /* Flat, not a gradient: a gradient guarantees part of every button is
+       worse than the token says. */
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 17px;
+    font-weight: 600;
+    transition: background-color 120ms ease, transform 80ms ease;
 }
-.btn-ptt:active {
-    transform: scale(0.98);
-    box-shadow: 0 1px 4px rgba(37, 89, 196, 0.45);
-}
+.btn-ptt:active { background: var(--accent-press); transform: translateY(1px); }
 .btn-ptt.hidden { display: none; }
-.ptt-icon { width: 22px; height: 22px; }
+.ptt-icon { width: 20px; height: 20px; flex: none; }
 
-
-/* Header actions */
-.header-actions { display: flex; gap: 6px; }
-.icon-btn {
-    width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
-    border: none; border-radius: 10px; background: transparent; color: inherit;
+.recording-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: var(--sp-2) var(--sp-4);
+    border-radius: var(--r-1);
+    background: var(--danger-tint);
 }
-.icon-btn:active { background: rgba(127,127,127,0.18); }
-.icon-btn svg { width: 22px; height: 22px; }
+.recording-status.hidden { display: none; }
 
-/* Bottom sheets */
+.recording-indicator {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    color: var(--danger);
+    font-weight: 600;
+}
+.recording-indicator span:last-child {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.recording-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--danger);
+    /* A ring that actually expands. The old rule animated opacity against a
+       zero-spread shadow, which renders nothing at all. */
+    animation: rec-pulse 1.4s ease-out infinite;
+}
+@keyframes rec-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 50%, transparent); }
+    70%  { box-shadow: 0 0 0 9px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Hands free: the pill in the header says "Listening", so the heading and
+   the push-to-talk button below would only be repeating it at a button you
+   cannot press. The voice result stays — it is the one thing here that
+   carries new information. */
+body.handsfree #voiceSection > .section-heading { display: none; }
+
+.voice-result {
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--surface);
+}
+.voice-result.hidden { display: none; }
+
+/* Live feedback while the microphone is open. Without it there is no way to
+   tell "it is not hearing me" from "it heard me and is thinking". */
+.voice-live {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+    font-size: 13px;
+    color: var(--text-2);
+}
+.voice-live.hidden { display: none; }
+.voice-level {
+    flex: none;
+    width: 46px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    overflow: hidden;
+}
+.voice-level i {
+    display: block;
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: var(--accent);
+    transition: width 90ms linear;
+}
+
+/* The last few things heard, kept visible. */
+.voice-history {
+    list-style: none;
+    margin: var(--sp-2) 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.voice-history:empty { display: none; }
+.voice-history li {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    font-size: 13px;
+    color: var(--text-2);
+}
+.voice-history li b {
+    font-weight: 600;
+    color: var(--text);
+}
+.voice-history li.missed b { color: var(--text-3); font-weight: 500; }
+.voice-history li span {
+    margin-left: auto;
+    flex: none;
+    font-size: 11px;
+    color: var(--text-3);
+}
+
+.voice-transcription {
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--text);
+}
+.voice-decision {
+    margin-top: var(--sp-1);
+    font-size: 13px;
+    color: var(--text-2);
+}
+
+
+/* ── Push banner ───────────────────────────────────────────────────────── */
+
+/* Previously an unstyled bright slab whose two buttons rendered as browser
+   defaults, sitting over the content it was talking about. */
+.ios-hint {
+    position: fixed;
+    /* Centred, not pinned to a corner. Stretched edge to edge it read as a
+       bar bolted to the bottom-left of the window rather than a notice
+       about the app, and on a wide screen the text sat alone in a very long
+       box with the buttons a hand-span away from it. */
+    left: 50%;
+    transform: translateX(-50%);
+    width: calc(100% - 2 * var(--sp-4));
+    max-width: 420px;
+    bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+    z-index: 80;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--surface);
+    box-shadow: var(--overlay-shadow);
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--text);
+    animation: banner-in 240ms ease-out;
+}
+.ios-hint.hidden { display: none; }
+
+@keyframes banner-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+    to   { opacity: 1; transform: translateX(-50%); }
+}
+
+.ios-hint > span { flex: 1 1 100%; }
+
+/* app.js reaches these by id and they carry no class, so they are styled
+   by id. */
+#pushBannerAction,
+#pushBannerDismiss {
+    min-height: 44px;
+    padding: 0 var(--sp-4);
+    border-radius: var(--r-1);
+    font-size: 14px;
+    font-weight: 600;
+    transition: background-color 120ms ease;
+}
+#pushBannerAction { background: var(--accent); color: var(--on-accent); }
+#pushBannerAction:active { background: var(--accent-press); }
+#pushBannerAction.hidden { display: none; }
+#pushBannerDismiss { margin-left: auto; color: var(--text-2); }
+#pushBannerDismiss:active { background: var(--surface-2); }
+
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    padding: var(--sp-2) var(--sp-4);
+    border-radius: var(--r-1);
+    font-size: 16px;
+    font-weight: 600;
+    transition: background-color 120ms ease, transform 80ms ease;
+}
+
+.btn-primary {
+    width: 100%;
+    background: var(--accent);
+    color: var(--on-accent);
+}
+.btn-primary:active { background: var(--accent-press); transform: translateY(1px); }
+
+.btn-secondary {
+    width: 100%;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    color: var(--text);
+}
+.btn-secondary:active { background: var(--surface-2); transform: translateY(1px); }
+
+.btn-danger { background: var(--danger); color: var(--on-fill); }
+.btn-danger:active { background: var(--danger-press); transform: translateY(1px); }
+
+
+/* ── Bottom sheets ─────────────────────────────────────────────────────── */
+
 .sheet { position: fixed; inset: 0; z-index: 400; }
 .sheet.hidden { display: none; }
-.sheet-scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.5); }
+
+.sheet-scrim { position: absolute; inset: 0; background: var(--scrim); }
+
 .sheet-body {
-    position: absolute; left: 0; right: 0; bottom: 0;
-    max-height: 88dvh; overflow-y: auto;
-    padding: 8px 20px calc(24px + env(safe-area-inset-bottom, 0px));
-    background: var(--color-surface);
-    border-radius: 18px 18px 0 0;
-    box-shadow: 0 -8px 30px rgba(0,0,0,0.35);
-    animation: sheet-up 180ms ease-out;
-}
-@keyframes sheet-up { from { transform: translateY(16px); opacity: 0.6; } to { transform: none; opacity: 1; } }
-.sheet-grip {
-    width: 36px; height: 4px; border-radius: 2px; margin: 4px auto 12px;
-    background: var(--color-border);
-}
-.sheet-body h2 { font-size: 18px; margin-bottom: 4px; }
-.sheet-body h3 {
-    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
-    color: var(--color-text-secondary, #888); margin: 20px 0 8px;
-}
-.sheet-action {
-    display: block; width: 100%; min-height: 50px; margin-top: 8px;
-    border: 1px solid var(--color-border); border-radius: 12px;
-    background: transparent; color: inherit; font-size: 16px;
-}
-.sheet-action.allow { color: #1a9d4b; border-color: #1a9d4b; }
-.sheet-action.deny { color: #c0392b; border-color: #c0392b; }
-.sheet-action.auto { color: #2d6cdf; border-color: #2d6cdf; }
-
-/* No tab bar any more */
-.bottom-nav { display: none; }
-.content { padding-bottom: calc(var(--spacing-md) + env(safe-area-inset-bottom, 0px)); }
-
-
-/* Numbers alone unless boxes were asked for */
-.hint-layer.numbers-only .hint-box { display: none; }
-.hint-layer.numbers-only .hint-box.singled { display: block; border-color: #ff3b30; }
-
-.hint-tag {
-    transform: translate(-50%, -50%);
-    font-size: 12px;
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: rgba(255, 179, 0, 0.95);
-    color: #1a1a1a;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.5);
-}
-.hint-tag.singled {
-    background: #ff3b30; color: #fff;
-    transform: translate(-50%, -50%) scale(1.35);
-    transition: transform 120ms ease-out;
-}
-.screen-stage { transition: transform 90ms ease-out; touch-action: none; }
-
-/* The Mac's pointer, drawn over the stream.
-   The real cursor is in the captured frame but it is a dozen pixels on a
-   phone-sized image — invisible in practice, and impossible to grab. This is
-   the same position drawn large enough to see and to drag. */
-.cursor-marker {
     position: absolute;
-    width: 44px; height: 44px;            /* a finger-sized target */
-    margin: -22px 0 0 -22px;
-    display: grid; place-items: center;
-    touch-action: none;
-    cursor: grab;
-    z-index: 5;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 88dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: var(--sp-2) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
+    border-radius: var(--r-4) var(--r-4) 0 0;
+    background: var(--surface);
+    box-shadow: var(--overlay-shadow);
+    animation: sheet-up 240ms cubic-bezier(0.32, 0.72, 0, 1);
 }
-.cursor-marker.hidden { display: none; }
-.cursor-ring {
-    width: 18px; height: 18px;
-    border: 2px solid #00e5ff;
-    border-radius: 50%;
-    background: rgba(0, 229, 255, 0.18);
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 10px rgba(0, 229, 255, 0.5);
-    transition: transform 80ms ease-out;
+@keyframes sheet-up {
+    from { transform: translateY(100%); }
+    to   { transform: none; }
 }
-.cursor-marker.aiming .cursor-ring {
-    transform: scale(1.5);
-    background: rgba(0, 229, 255, 0.35);
-}
-/* A crosshair so the exact point is unambiguous when aiming at small targets. */
-.cursor-ring::before, .cursor-ring::after {
-    content: ''; position: absolute; background: #00e5ff;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
-}
-.cursor-ring::before { width: 1px; height: 30px; }
-.cursor-ring::after { width: 30px; height: 1px; }
 
-/* A form read off the Mac. Each box is captioned with the field it fills, so
-   a password can never silently go into the wrong one. */
-.form-field { display: block; margin-bottom: 14px; }
-.form-field > span {
+.sheet-grip {
+    width: 36px;
+    height: 5px;
+    margin: var(--sp-1) auto var(--sp-3);
+    border-radius: 999px;
+    background: var(--line-strong);
+    opacity: 0.5;
+}
+
+.sheet-body h2 {
+    margin-bottom: var(--sp-1);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.sheet-body h3 {
+    margin: var(--sp-5) 0 var(--sp-2);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+.sheet-action {
     display: block;
-    font-size: 13px;
-    margin-bottom: 5px;
-    opacity: 0.75;
+    width: 100%;
+    min-height: 52px;
+    margin-top: var(--sp-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-1);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 500;
+    transition: background-color 120ms ease;
+}
+.sheet-action:active { background: var(--surface-2); }
+.sheet-action.allow { color: var(--ok); border-color: var(--ok); }
+.sheet-action.auto  { color: var(--accent); border-color: var(--accent); }
+.sheet-action.deny  { color: var(--danger); border-color: var(--danger); }
+
+
+/* ── Rows and inputs inside sheets ─────────────────────────────────────── */
+
+.setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    min-height: 52px;
+    padding: var(--sp-3) var(--sp-4);
+    margin-bottom: var(--sp-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-1);
+    background: var(--surface-2);
+    font-size: 15px;
+    cursor: pointer;
 }
 
-/* A TCC consent sheet offers no action, so the card explains instead of
-   pretending. Styled as information, not as a disabled control. */
-.approval-tcc-notice p { margin: 0 0 8px; font-size: 14px; line-height: 1.5; }
-.approval-tcc-notice p:last-child { margin-bottom: 0; }
-.approval-tcc-advice { opacity: 0.7; }
+/* A real switch, not a browser checkbox. */
+.setting-row input[type="checkbox"] {
+    position: relative;
+    flex: none;
+    width: 52px;
+    height: 32px;
+    margin: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 999px;
+    background: var(--line-strong);
+    cursor: pointer;
+    transition: background-color 180ms ease;
+}
+.setting-row input[type="checkbox"]::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    /* White in both themes on purpose — that is what an iOS switch knob is,
+       and it reads against both the grey and the green track. */
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition: transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.setting-row input[type="checkbox"]:checked { background: var(--ok); }
+/* 52 − 28 − 2 − 2 = 20, so the knob is inset equally at both ends. */
+.setting-row input[type="checkbox"]:checked::after { transform: translateX(20px); }
+
+.setting-note {
+    margin-bottom: var(--sp-2);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-2);
+}
+
+.setting-input {
+    width: 100%;
+    min-height: 48px;
+    margin-bottom: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-1);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 16px;               /* stops iOS zooming on focus */
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.setting-input::placeholder { color: var(--text-3); }
+.setting-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.setting-input[readonly] {
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-family: var(--mono);
+    font-size: 13px;
+}
+
+/* A form read off the Mac, rendered here from a Spec. Each box is captioned
+   with the field it fills, so a password cannot silently go into the wrong
+   one — and tapping a box arms it, so "type andres" has somewhere to land. */
+.spec-panel { display: flex; flex-direction: column; gap: var(--sp-1); }
+
+.spec-heading {
+    margin: var(--sp-3) 0 var(--sp-1);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+.spec-field {
+    display: block;
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-2);
+    /* Transparent by default so the armed ring does not shift the layout. */
+    border: 2px solid transparent;
+    border-radius: var(--r-1);
+    transition: border-color 120ms ease, background-color 120ms ease;
+}
+.spec-field > span {
+    display: block;
+    margin-bottom: var(--sp-1);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-2);
+}
+.spec-field .setting-input { margin-bottom: 0; }
+
+/* The field your voice will land in. Named in the caption too, so it does
+   not rely on the ring alone. */
+.spec-field.armed {
+    border-color: var(--accent);
+    background: var(--accent-tint);
+}
+.spec-field.armed > span::after {
+    content: ' — say it';
+    font-weight: 700;
+    color: var(--accent);
+}
+.setting-row.spec-field { margin-bottom: var(--sp-2); }
+.setting-row.spec-field > span::after { content: none; }
+
+
+/* ── Policy ────────────────────────────────────────────────────────────── */
+
+.policy-global { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.policy-option {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    width: 100%;
+    min-height: 52px;
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-1);
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.4;
+    text-align: left;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}
+/* A radio mark, so the chosen one is readable without relying on the border
+   colour alone. */
+.policy-option::before {
+    content: '';
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--line-strong);
+    border-radius: 50%;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.policy-option.selected {
+    border-color: var(--accent);
+    background: var(--accent-tint);
+}
+.policy-option.selected::before {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 4px var(--accent);
+}
+
+.policy-hint {
+    margin: var(--sp-3) 0 var(--sp-2);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-2);
+}
+
+.policy-entries { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.policy-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-height: 60px;
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-1);
+    background: var(--surface-2);
+}
+.policy-row .name {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.spec-field select,
+.policy-row select {
+    min-height: 44px;
+    /* Draw our own chevron and give it room. The native one sits hard
+       against the right edge at whatever size the platform feels like, so
+       the control read as lopsided: comfortable padding on the left, none
+       on the right, and an arrow too small to aim at. */
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 0 40px 0 var(--sp-3);
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background-color: var(--surface);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b8d96' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    /* 14px in from the edge — the same gap as the text has on the left. */
+    background-position: right 13px center;
+    background-size: 15px 15px;
+    color: var(--text);
+    font-size: 14px;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .spec-field select,
+    :root:not([data-theme="light"]) .policy-row select {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23878b95' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    }
+}
+:root[data-theme="dark"] .spec-field select,
+:root[data-theme="dark"] .policy-row select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23878b95' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+.policy-row .forget {
+    flex: none;
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+    border-radius: 6px;
+    color: var(--danger);
+    font-size: 13px;
+    font-weight: 600;
+}
+.policy-row .forget:active { background: var(--danger-tint); }
+
+.policy-reset {
+    width: 100%;
+    min-height: 48px;
+    margin-top: var(--sp-3);
+    border: 1px solid var(--danger);
+    border-radius: var(--r-1);
+    color: var(--danger);
+    font-size: 15px;
+    font-weight: 600;
+    transition: background-color 120ms ease;
+}
+.policy-reset:active { background: var(--danger-tint); }
+
+
+/* ── Confirm modal ─────────────────────────────────────────────────────── */
+
+.modal {
+    position: fixed;
+    inset: 0;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--sp-4);
+}
+.modal.hidden { display: none; }
+
+.modal-overlay { position: absolute; inset: 0; background: var(--scrim); }
+
+.modal-content {
+    position: relative;
+    width: 100%;
+    max-width: 360px;
+    max-height: 85dvh;
+    overflow-y: auto;
+    padding: var(--sp-5) var(--sp-4) var(--sp-4);
+    border-radius: var(--r-3);
+    background: var(--surface);
+    box-shadow: var(--overlay-shadow);
+    animation: modal-in 180ms ease-out;
+}
+@keyframes modal-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: none; }
+}
+
+.modal-header { margin-bottom: var(--sp-2); }
+.modal-header h2 {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    text-align: center;
+}
+
+.modal-body { margin-bottom: var(--sp-5); }
+.modal-body p {
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--text-2);
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+/* Destructive action on top, Cancel underneath — the iOS action-sheet order,
+   which also keeps the safe choice under your thumb. */
+.modal-actions { display: flex; flex-direction: column; gap: var(--sp-2); }
+/* The confirming action is destructive, so it wears the danger fill rather
+   than the accent, which everywhere else means "safe to press". */
+.modal-actions .btn-primary { background: var(--danger); color: var(--on-fill); }
+.modal-actions .btn-primary:active { background: var(--danger-press); }
+
+
+/* ── Toast ─────────────────────────────────────────────────────────────── */
+
+/* Confirmation that something reached the Mac. Answering an approval used to
+   make the card vanish with nothing said, so a sent decision looked exactly
+   like a dropped tap. Sits above the sheets and the modal, and clears the
+   home indicator.
+
+   Hidden with opacity, NOT display:none and NOT visibility:hidden — both of
+   those remove the element from the accessibility tree, and a live region has
+   to already be in the tree before its text changes or the change is never
+   announced. That is also why app.js toggles .shown rather than .hidden. */
+.toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
+    z-index: 600;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    /* max-content so a short message stays on one line — the text is an
+       anonymous flex item and would otherwise shrink and wrap early. */
+    width: max-content;
+    max-width: min(340px, calc(100vw - var(--sp-5) * 2));
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--line);
+    /* A rectangle, not a pill: a long option name legitimately runs to two
+       lines, and a two-line pill reads as a mistake. */
+    border-radius: var(--r-2);
+    background: var(--surface);
+    box-shadow: var(--overlay-shadow);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 8px);
+    transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.toast.shown {
+    opacity: 1;
+    transform: translateX(-50%);
+}
+
+.toast::before {
+    content: '';
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+}
+.toast.bad::before { background: var(--danger); }
+
+
+/* ── Utilities ─────────────────────────────────────────────────────────── */
+
+.hidden { display: none !important; }
+
+
+/* ── Wider screens ─────────────────────────────────────────────────────── */
+
+/* Phone-first; this only stops the layout stretching on a tablet or desktop. */
+@media (min-width: 600px) {
+    .content { align-items: center; }
+    .content > * { width: 100%; max-width: 560px; }
+    .sheet-body {
+        left: 50%;
+        right: auto;
+        width: min(560px, 100%);
+        transform: translateX(-50%);
+        animation: sheet-up-wide 240ms cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    @keyframes sheet-up-wide {
+        from { transform: translate(-50%, 100%); }
+        to   { transform: translateX(-50%); }
+    }
+}
+
+
+/* ── Motion ────────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Colour-carried meaning disappears here, so the borders the theme draws
+   with colour are restored explicitly. */
+@media (forced-colors: active) {
+    .approval-card,
+    .option-btn,
+    .setting-row,
+    .policy-option,
+    .voice-result,
+    .toast,
+    .ios-hint { border: 1px solid CanvasText; }
+    .status-dot { forced-color-adjust: none; }
+
+    /* The risk fills are flattened here, so weight carries the distinction
+       instead. The RISK word in .risk-indicator still carries it in text. */
+    .option-btn.risk-medium { border-width: 2px; }
+    .option-btn.risk-high { border-width: 3px; }
+}
+
+/* A notification path that is refusing every send. Not a toast: a
+   toast is for something that just happened, and this is a state the
+   phone cannot otherwise detect — a push that never arrives looks
+   exactly like nothing having happened. */
+.push-warning {
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--danger, #c0392b);
+    background: color-mix(in srgb, var(--danger, #c0392b) 12%, transparent);
+    color: var(--text, inherit);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+/* The notifications row in Settings. Same shape as the policy blocks
+   above it, which set their own layout; without this its paragraph and
+   button collapsed against each other. */
+.push-setting {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin-bottom: 14px;
+}

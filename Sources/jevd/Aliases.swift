@@ -25,7 +25,9 @@ final class Aliases: @unchecked Sendable {
 
     func set(_ spoken: String, to bundleId: String) {
         lock.lock()
-        map[spoken.lowercased()] = bundleId
+        // Trimmed as well as lowercased, because the lookup trims. An
+        // alias saved with a stray space could never be found again.
+        map[spoken.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)] = bundleId
         let snapshot = map
         lock.unlock()
         save(snapshot)
@@ -49,6 +51,13 @@ final class Aliases: @unchecked Sendable {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        // Born 0600, like everything else jev keeps. This one
+        // was tightened only by the next launch's sweep, so it
+        // sat readable for the whole session it was made in.
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil,
+                                           attributes: [.posixPermissions: 0o600])
+        }
         try? data.write(to: url, options: .atomic)
     }
 }

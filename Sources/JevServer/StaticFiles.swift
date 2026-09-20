@@ -45,11 +45,25 @@ actor StaticFiles {
         return result
     }
 
+    /// Inside the web root, and not merely starting with its name.
+    ///
+    /// A bare `hasPrefix` says `/…/webfoo/secret` is inside `/…/web`,
+    /// because the string starts the same way. `GET /../webfoo/secret`
+    /// standardises to exactly that, and static files are served with no
+    /// token — only `/api/` and `/ws` require one. Requiring the separator
+    /// is what makes "inside" mean inside. (`..` traversal proper was
+    /// already blocked by `standardizingPath` plus this test.)
     private func isPathSafe(_ fullPath: String, within webRoot: String) -> Bool {
-        let webRootResolved = (webRoot as NSString).standardizingPath
-        let pathResolved = (fullPath as NSString).standardizingPath
-
-        return pathResolved.hasPrefix(webRootResolved)
+        // Resolve symlinks, not just "..". `standardizingPath` is purely
+        // lexical, so `web/x -> /Users/you/.ssh` made `GET /x/id_rsa`
+        // look like it was inside the root — and static files need no
+        // token. Needs write access to `web/` to exploit, so this is
+        // depth rather than a live hole, but it is one call.
+        let webRootResolved = URL(fileURLWithPath: webRoot).resolvingSymlinksInPath().path
+        let pathResolved = URL(fileURLWithPath: fullPath).resolvingSymlinksInPath().path
+        if pathResolved == webRootResolved { return true }
+        let boundary = webRootResolved.hasSuffix("/") ? webRootResolved : webRootResolved + "/"
+        return pathResolved.hasPrefix(boundary)
     }
 
     // MARK: - File I/O

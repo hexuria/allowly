@@ -5,6 +5,7 @@ import JevCore
 import JevAX
 import JevCapture
 import JevServer
+import JevCua
 import JevDecide
 
 #if canImport(Speech)
@@ -73,7 +74,15 @@ final class KeychainManager {
         }
 
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        // Checked, because the failure mode is a FIXED token. An ignored
+        // errSecFailure leaves the buffer all zeros, which base64s to a
+        // run of A's — written to disk and reused for the life of the
+        // install, since the loader prefers whatever file already
+        // exists. A guessable bearer token is full remote control.
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            JevLog.writeNow("[jev] FATAL: the system would not provide random bytes for a pairing token")
+            fatalError("Refusing to start with a predictable pairing token")
+        }
         let token = Data(bytes).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
@@ -81,9 +90,11 @@ final class KeychainManager {
 
         try? FileManager.default.createDirectory(
             at: tokenFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? token.write(to: tokenFileURL, atomically: true, encoding: .utf8)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: tokenFileURL.path)
+        // Born 0600. Writing then chmodding leaves a window, however
+        // small, where the pairing token is world-readable.
+        FileManager.default.createFile(atPath: tokenFileURL.path,
+                                       contents: Data(token.utf8),
+                                       attributes: [.posixPermissions: 0o600])
         JevLog.write("[jev] pairing token created")
         return token
     }
@@ -171,115 +182,6 @@ struct PermissionChecker {
     }
 }
 
-// MARK: - Audit Logging
-
-struct AuditLogger {
-    static let shared = AuditLogger()
-
-    private let fileURL: URL
-    private let queue = DispatchQueue(label: "com.jev.audit", attributes: .concurrent)
-
-    init() {
-        let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let jevDir = supportDir.appendingPathComponent("jev")
-        try? FileManager.default.createDirectory(at: jevDir, withIntermediateDirectories: true)
-        fileURL = jevDir.appendingPathComponent("audit.jsonl")
-    }
-
-    func log(command: Command, result: ExecutionResult) {
-        queue.async(flags: .barrier) {
-            let entry: [String: Any] = [
-                "timestamp": ISO8601DateFormatter().string(from: Date()),
-                "command": encodeCommand(command),
-                "status": result.status.rawValue,
-                "reason": result.reason
-            ]
-
-            guard let jsonData = try? JSONSerialization.data(withJSONObject: entry),
-                  let jsonString = String(data: jsonData, encoding: .utf8) else {
-                return
-            }
-
-            let logEntry = jsonString + "\n"
-
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                if let handle = FileHandle(forWritingAtPath: fileURL.path) {
-                    handle.seekToEndOfFile()
-                    handle.write(logEntry.data(using: .utf8) ?? Data())
-                    try? handle.close()
-                }
-            } else {
-                try? logEntry.write(to: fileURL, atomically: true, encoding: .utf8)
-            }
-        }
-    }
-
-    private func encodeCommand(_ command: Command) -> String {
-        switch command {
-        case .launchApp(let bundleId):
-            return "launchApp(\(bundleId))"
-        case .pressButton(let requestId, let optionId):
-            return "pressButton(\(requestId), \(optionId))"
-        case .quitApp(let bundleId):
-            return "quitApp(\(bundleId))"
-        case .toggleApp(let bundleId):
-            return "toggleApp(\(bundleId))"
-        case .showApp(let bundleId):
-            return "showApp(\(bundleId))"
-        case .hideApp(let bundleId):
-            return "hideApp(\(bundleId))"
-        case .clickControl(let label):
-            return "clickControl(\(label))"
-        case .typeText(let text):
-            return "typeText(\(text.prefix(40)))"
-        case .clickPoint(let x, let y):
-            return "clickPoint(\(x),\(y))"
-        case .scroll(let direction, let amount):
-            return "scroll(\(direction),\(amount))"
-        case .switchWorkspace(let id):
-            return "switchWorkspace(\(id))"
-        case .pressKeys(let spec):
-            return "pressKeys(\(spec))"
-        case .rightClickControl(let label):
-            return "rightClickControl(\(label))"
-        case .showHints:
-            return "showHints"
-        case .showHintsForApp(let bundleId):
-            return "showHintsForApp(\(bundleId))"
-        case .showHintsEverywhere:
-            return "showHintsEverywhere"
-        case .showHintsScoped(let kind, let region):
-            return "showHintsScoped(\(kind),\(region))"
-        case .showHintBox(let number):
-            return "showHintBox(\(number))"
-        case .systemAction(let name, let value):
-            return "systemAction(\(name),\(value))"
-        case .selectHint(let number):
-            return "selectHint(\(number))"
-        case .hideHints:
-            return "hideHints"
-        case .pointerAction(let kind):
-            return "pointerAction(\(kind))"
-        case .requestInput(let field, let secret):
-            return "requestInput(\(field), secret: \(secret))"
-        case .showForm:
-            return "showForm"
-        case .openURL(let url):
-            return "openURL(\(url))"
-        case .fillField(let label, _):
-            // The value is deliberately not recorded: this is how passwords
-            // and other secrets get filled.
-            return "fillField(\(label), <redacted>)"
-        case .sequence(let label, let steps):
-            return "sequence(\(label), \(steps.count) steps)"
-        case .runCommand(let prefix, let fullCmd):
-            return "runCommand(\(prefix), \(fullCmd))"
-        case .answerAgentPrompt(let requestId, let optionId):
-            return "answerAgentPrompt(\(requestId), \(optionId))"
-        }
-    }
-}
-
 // MARK: - Command Executor
 
 final class CommandExecutor {
@@ -301,42 +203,6 @@ final class CommandExecutor {
     /// command. Their yes IS the authorisation — re-checking the allowlist
     /// afterwards made "Allow once" impossible, since allowing once by
     /// definition adds nothing to the list.
-    /// Work out which kind of thing a spoken noun means.
-    ///
-    /// Jev is the general answer here: mapping an arbitrary word onto one of a
-    /// handful of fixed kinds is a closed choice, which is exactly what it is
-    /// good at, and it needs no per-site table to keep up to date.
-    static func resolveGuideNoun(_ noun: String) async -> HintScope.Kind? {
-        let context = Phrasebook.context()
-        if let known = HintScope.Kind.spoken[noun] { return known }
-        if let sited = AppProfiles.guideKind(for: noun, in: context) {
-            JevLog.write("[jev] guides: “\(noun)” means \(sited.rawValue) on \(context.host ?? "")")
-            return sited
-        }
-        guard let apiKey = JevAPI.loadAPIKey() else { return nil }
-
-        let kinds = HintScope.Kind.allCases.map(\.rawValue)
-        let result = await JevAPI.ask(
-            state: [
-                "asked_for": noun,
-                "frontmost_app": context.appName,
-                "page": context.host ?? "",
-            ],
-            questions: [
-                "kind": .choice(
-                    instructions: "Someone asked a Mac assistant to number “\(noun)” on screen so they can pick one by number. Which kind of on-screen element are they talking about? On a web page, tiles and cards and search results are links.",
-                    labels: kinds)
-            ],
-            apiKey: apiKey)
-
-        guard case .success(let answers) = result,
-              let answer = answers.choice("kind"), answer.confidence >= 0.45,
-              let kind = HintScope.Kind(rawValue: answer.choice) else { return nil }
-        JevLog.write("[jev] guides: Jev reads “\(noun)” as \(kind.rawValue) "
-            + "(\(String(format: "%.2f", answer.confidence)))")
-        return kind
-    }
-
     /// Set by the runtime: opens the text sheet on the paired phone.
     /// Typing is the one input path that must never touch the microphone.
     /// Returns false when no phone is listening, so the command can say so
@@ -344,8 +210,23 @@ final class CommandExecutor {
     nonisolated(unsafe) static var onInputRequested: ((String, Bool) -> Bool)?
     /// Set by the runtime: shows a scanned form on the paired phone.
     nonisolated(unsafe) static var onFormFound: (([FormScanner.Field]) -> Bool)?
+    /// Ask the phone to draw numbers over its picture of the screen.
+    nonisolated(unsafe) static var onNumbersRequested: ((Bool) -> Bool)?
 
-    func execute(_ command: Command, humanApproved: Bool = false) async -> ExecutionResult {
+    /// Looking and pointing now go through Cua Driver, which holds its own
+    /// Accessibility grant and refuses rather than guesses. See JevCua.
+    static let cua = CuaBackend()
+
+    /// - Parameter answeredCard: a PERSON tapped an option on a card for
+    ///   this exact request. Deliberately separate from `humanApproved`,
+    ///   which also covers "the model decided this was routine" — that is a
+    ///   fine reason to skip the app allowlist and a terrible one to skip
+    ///   the list of buttons jev must never press on its own. Not
+    ///   propagated into a sequence's steps, so a sequence can never carry
+    ///   a person's tap into a button press they did not see.
+    func execute(_ command: Command,
+                 humanApproved: Bool = false,
+                 answeredCard: Bool = false) async -> ExecutionResult {
         switch command {
         case .launchApp(let bundleId):
             return executeAppLaunch(bundleId: bundleId, humanApproved: humanApproved)
@@ -369,16 +250,16 @@ final class CommandExecutor {
             return hideApp(bundleId)
 
         case .clickControl(let label):
-            return JevIntent.clickFrontmostControl(labelled: label)
+            return await Self.cua.click(labelled: label)
 
         case .typeText(let text):
-            return JevIntent.typeIntoFrontmost(text)
+            return await Self.cua.type(text)
 
         case .clickPoint(let x, let y):
-            return JevIntent.click(x: x, y: y)
+            return await Self.cua.click(normalisedX: x, y: y)
 
         case .scroll(let direction, let amount):
-            return JevIntent.scroll(direction: direction, amount: amount)
+            return await Self.cua.scroll(direction: direction, amount: amount)
 
         case .switchWorkspace(let id):
             return AeroSpace.switchTo(id)
@@ -387,41 +268,10 @@ final class CommandExecutor {
             return Keystrokes.press(spec)
 
         case .rightClickControl(let label):
-            return JevIntent.rightClickFrontmostControl(labelled: label)
+            return await Self.cua.click(labelled: label, button: "right")
 
         case .fillField(let label, let text):
-            return JevIntent.fill(field: label, with: text)
-
-        case .showHintsEverywhere:
-            let all = Hints.shared.refresh(scope: .everythingOnScreen)
-            return all.isEmpty
-                ? .failed(reason: "Nothing on screen exposes anything clickable")
-                : .ok(reason: "Showing \(all.count) numbers across every visible window")
-
-        case .showHintsForApp(let bundleId):
-            let named = Hints.shared.refresh(scope: .app(bundleIdentifier: bundleId))
-            let appName = AppCatalog.shared.all.first { $0.bundleIdentifier == bundleId }?.name ?? bundleId
-            return named.isEmpty
-                ? .failed(reason: "\(appName) exposes nothing clickable")
-                : .ok(reason: "Showing \(named.count) numbers in \(appName)")
-
-        case .showHintsScoped(let rawKindName, let regionName):
-            // A "?" prefix means the noun was not in any fixed list. Ask the
-            // site's profile, then Jev; fall back to numbering everything,
-            // which is at least never wrong, only noisy.
-            var kindName = rawKindName
-            if rawKindName.hasPrefix("?") {
-                let noun = String(rawKindName.dropFirst())
-                kindName = await Self.resolveGuideNoun(noun)?.rawValue ?? ""
-            }
-            let kind = HintScope.Kind(rawValue: kindName)
-            let region = HintScope.Region(rawValue: regionName)
-            let scoped = Hints.shared.refresh(scope: .focusedWindow, kind: kind, region: region)
-            let what = [kind.map(\.rawValue), region.map { "the \($0.rawValue)" }]
-                .compactMap { $0 }.joined(separator: " in ")
-            return scoped.isEmpty
-                ? .failed(reason: "Nothing matching \(what.isEmpty ? "that" : what) on screen")
-                : .ok(reason: "Showing \(scoped.count) \(what.isEmpty ? "targets" : what)")
+            return await Self.cua.fill(field: label, with: text)
 
         case .systemAction(let name, let value):
             switch name {
@@ -437,32 +287,75 @@ final class CommandExecutor {
             default:            return .failed(reason: "Unknown system action “\(name)”")
             }
 
-        case .showHintBox(let number):
-            return Hints.shared.hint(number: number) == nil
-                ? .failed(reason: "There is no number \(number)")
-                : .ok(reason: "Outlining \(number)")
-
-        case .showHints:
-            let hints = Hints.shared.refresh()
-            return hints.isEmpty
-                ? .failed(reason: "Nothing on screen exposes anything clickable")
-                : .ok(reason: "Showing \(hints.count) numbers")
-
-        case .selectHint(let number):
-            return Hints.shared.select(number)
-
-        case .hideHints:
-            Hints.shared.clear()
-            return .ok(reason: "Numbers hidden")
-
         case .pointerAction(let kind):
             // "this" and "here" mean wherever the pointer is. The phone shows
             // it and lets you drag it, so pointing is a gesture and the words
             // stay short.
             return Pointer.perform(kind, at: Pointer.location())
 
+        case .showNumbers(let on):
+            // Nothing happens on the Mac. The phone draws the numbers over
+            // its own screenshot, so the Mac looks exactly as it did.
+            guard let show = Self.onNumbersRequested, show(on) else {
+                return .failed(reason: "No phone is connected to show them on")
+            }
+            return .ok(reason: on ? "Numbers on screen" : "Numbers off")
+
         case .showForm:
-            let fields = FormScanner.frontmostFields()
+            let fields: [FormScanner.Field]
+            do {
+                // Give the unlabelled ones a name here, not later.
+                //
+                // `FormScanner.nameUnlabelled` looks for labels starting
+                // with "Field " and nothing was ever producing one, so the
+                // renamer never fired and the phone was shown a form with
+                // blank captions that could not be filled back. The number
+                // is the box's position among the fields, which is also how
+                // `CuaBackend.fill` finds it again.
+                let (found, totalFields, formWindow) = try await Self.cua.formFields()
+                // Names the form itself uses, so a placeholder never
+                // collides with one. A form whose first box is genuinely
+                // called "Field 3" and whose third box is unlabelled would
+                // otherwise show two boxes with the same name, and filling
+                // the unlabelled one would silently write into box 1 —
+                // `fill` matches by name before position, as it should.
+                let taken = Set(found.map { $0.label.trimmingCharacters(in: .whitespaces).lowercased() })
+                fields = found.enumerated().map { index, field in
+                    let named = field.label.trimmingCharacters(in: .whitespaces)
+                    guard named.isEmpty else {
+                        // A page can set aria-label="jev:box:1/3" on its
+                        // own input. Used as an address that would resolve
+                        // to box 1 instead, so a hostile page could put an
+                        // input it reads at position 1 and collect
+                        // whatever you typed into the box it labelled.
+                        // A name the form chose is a name, never an address.
+                        return FormScanner.Field(
+                            label: named, secret: field.secret, kind: field.kind,
+                            realLabel: CuaBackend.placeholderOrdinal(named) == nil
+                                ? named
+                                : CuaBackend.positionalAddress(index + 1, of: totalFields, inWindow: formWindow))
+                    }
+                    // Caption and address are different jobs.
+                    //
+                    // The caption is for you to read, so it avoids names the
+                    // form already uses — two boxes called "Field 2" on one
+                    // card is confusing. The ADDRESS is what comes back to
+                    // the Mac, and it is positional and unmistakable, so no
+                    // amount of caption collision can send your value into
+                    // the wrong box.
+                    let caption = [CuaBackend.placeholderName(index + 1),
+                                   CuaBackend.fallbackName(index + 1)]
+                        .first { !taken.contains($0.lowercased()) }
+                        ?? CuaBackend.fallbackName(index + 1)
+                    return FormScanner.Field(label: caption, secret: field.secret, kind: field.kind,
+                                             realLabel: CuaBackend.positionalAddress(index + 1,
+                                                                                     of: totalFields, inWindow: formWindow))
+                }
+            } catch {
+                // Say which of the two it is. "Nothing fillable here" is a
+                // lie when the truth is that the screen could not be read.
+                return .failed(reason: "\(error)")
+            }
             guard !fields.isEmpty else {
                 return .failed(reason: "Nothing fillable in the frontmost window")
             }
@@ -471,7 +364,9 @@ final class CommandExecutor {
             }
             _ = show
             // Only pays for a model call when the form left fields unnamed.
-            let named = await FormScanner.nameUnlabelled(fields, apiKey: JevAPI.loadAPIKey())
+            let named = await FormScanner.nameUnlabelled(
+                fields, nearby: await Self.cua.visibleLabels(limit: 40),
+                apiKey: JevAPI.loadAPIKey())
             // Labels only. A field's contents never reach the log, which is
             // the whole reason forms are filled from the phone.
             JevLog.write("[jev] form: " + named.map {
@@ -508,6 +403,12 @@ final class CommandExecutor {
                 : .failed(reason: "The browser refused \(url)")
 
         case .sequence(let label, let steps):
+            // Whether every step actually landed, not just whether each
+            // was delivered. The sequence used to return a bare `.ok`,
+            // which would have reported a swallowed press inside it as
+            // done. No sequence contains a `.pressButton` today; the
+            // laundering would be silent when one does.
+            var everythingLanded = true
             // Steps need a beat between them: focusing a field and typing into
             // it in the same instant races, and the text lands nowhere.
             for sub in steps {
@@ -515,6 +416,7 @@ final class CommandExecutor {
                 if result.status == .failed {
                     return .failed(reason: "\(label) stopped at “\(result.reason)”")
                 }
+                if !result.landed { everythingLanded = false }
                 // A new tab or a freshly focused field needs longer to settle
                 // than a plain keystroke does.
                 let settle: Duration = {
@@ -524,10 +426,11 @@ final class CommandExecutor {
                 }()
                 try? await Task.sleep(for: settle)
             }
-            return .ok(reason: label)
+            return .ok(reason: label, landed: everythingLanded)
 
         case .pressButton(let requestId, let optionId):
-            return await executeButtonPress(requestId: requestId, optionId: optionId)
+            return await executeButtonPress(requestId: requestId, optionId: optionId,
+                                            answeredCard: answeredCard)
 
         case .runCommand(let prefix, let fullCommand):
             if prefix == "__jev_reset" {
@@ -696,7 +599,8 @@ final class CommandExecutor {
         return .failed(reason: "\(name) was asked to launch but has not started")
     }
 
-    private func executeButtonPress(requestId: String, optionId: String) async -> ExecutionResult {
+    private func executeButtonPress(requestId: String, optionId: String,
+                                    answeredCard: Bool = false) async -> ExecutionResult {
         guard let request = await store.get(id: requestId) else {
             return .failed(reason: "Request not found")
         }
@@ -705,8 +609,14 @@ final class CommandExecutor {
             return .failed(reason: "Option not found in request")
         }
 
-        guard !policy.dangerousButtonLabels.contains(where: { option.label.lowercased().contains($0.lowercased()) }) else {
-            return .failed(reason: "Option label is dangerous and cannot be auto-pressed")
+        // Only when nobody asked for it. The reason string always said
+        // "cannot be AUTO-pressed", and the guard was running on the human's
+        // own tap as well — so a card whose button happened to contain
+        // "delete", "send", "trust" or "grant" was unanswerable from the
+        // phone, and said so in a sentence nobody ever saw.
+        guard answeredCard
+                || !policy.dangerousButtonLabels.contains(where: { option.label.lowercased().contains($0.lowercased()) }) else {
+            return .failed(reason: "“\(option.label)” is one jev will never press on its own — answer it at the Mac")
         }
 
         // A TCC consent sheet ignores synthetic input by design. Returning success
@@ -721,12 +631,26 @@ final class CommandExecutor {
         }
 
         let presser = ButtonPresser(policy: policy)
-        let result = presser.pressButton(in: element, withLabel: option.label)
-        DialogRegistry.shared.discard(id: requestId)
+        let result = await presser.pressButton(in: element, withLabel: option.label,
+                                               humanApproved: answeredCard)
 
         switch result {
-        case .success(let message):
-            return .ok(reason: message)
+        case .success(let message, let dialogGone):
+            // Only on success. Discarding unconditionally threw away the
+            // handle to a dialog that is still on screen the moment a
+            // press did not land — Chrome busy for a second is enough —
+            // and the card raised to tell you about it was then withdrawn
+            // by the sweep within two seconds, because a discarded id
+            // reports as dead. The dialog became permanently unreachable,
+            // and the watcher only fires again on a NEW window.
+            //
+            // …and only when the dialog actually went away. `.success`
+            // from the accessibility API means the press was delivered,
+            // not that anything happened: a macOS consent sheet accepts
+            // it and ignores it. Discarding there threw away the handle
+            // to a sheet that is still on screen.
+            if dialogGone { DialogRegistry.shared.discard(id: requestId) }
+            return .ok(reason: message, landed: dialogGone)
         case .notFound(let message):
             return .failed(reason: message)
         case .forbidden(let message):
@@ -768,13 +692,25 @@ final class CommandExecutor {
 
         do {
             try process.run()
-            process.waitUntilExit()
-
+            // Read BEFORE waiting. A command writing more than the pipe
+            // buffer — about 64 KB — blocks on the write while we block
+            // on the exit, and the executor wedges for good. Latent only
+            // because the allowlist ships empty; live the day anyone
+            // adds a prefix.
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
 
             if process.terminationStatus == 0 {
-                return .ok(reason: "Command executed: \(output)")
+                // Not the whole of stdout. `reason` is journalled, written
+                // to disk and served by /api/journal, and a command's
+                // output is arbitrary — latent only because the allowlist
+                // ships empty, and live the day anyone adds a prefix.
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let head = trimmed.prefix(200)
+                return .ok(reason: trimmed.isEmpty
+                    ? "Command ran, no output"
+                    : "Command ran: \(head)\(trimmed.count > 200 ? "…" : "")")
             } else {
                 return .failed(reason: "Command failed with status \(process.terminationStatus)")
             }
@@ -967,15 +903,35 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         policy = appPolicy
         executor = appExecutor
 
+        // Before anything writes: everything jev keeps is owner-only.
+        JevLog.protectSupportFiles()
+
         // Run self-tests
+        CuaDriver.log = { JevLog.write($0) }
         var testFailures = SelfTest.run()
         // The push crypto is unverifiable from the outside — a wrong key
         // derivation just means a notification that never arrives — so it
         // round-trips against a local receiver at every launch.
         testFailures.append(contentsOf: runBlocking { await webPushSelfTest() })
+        testFailures.append(contentsOf: vapidSubjectSelfTest())
+        // The approval store is an actor, so its checks need the same
+        // treatment. Three of the last two rounds' findings were in here
+        // and none of them had a test.
+        testFailures.append(contentsOf: runBlocking { await SelfTest.runStore() })
+        testFailures.append(contentsOf: SelfTest.checkHeadings(DialogWatcher.heading))
+        testFailures.append(contentsOf: SelfTest.checkWidgetNoise { DialogSerialiser.isWidgetNoise($0, appName: $1) })
+        testFailures.append(contentsOf: SelfTest.checkButtonChoice(DialogSerialiser.chooseButton))
+        testFailures.append(contentsOf: SelfTest.checkConsentButtons(TCCDetector.looksLikeConsentButtons))
+        testFailures.append(contentsOf: SelfTest.checkRisk(DialogWatcher.risk))
+        testFailures.append(contentsOf: SelfTest.checkAutoPressable(DialogWatcher.isKnownSafeLabel))
+        testFailures.append(contentsOf: SelfTest.checkReasonEcho(JevRuntime.reasonEchoes))
+        testFailures.append(contentsOf: SelfTest.checkConsentSheet(TCCDetector.isConsentSheet))
+        testFailures.append(contentsOf: SelfTest.checkPaths(HTTPPath.canonicalPath))
         // What you say must keep meaning what it meant.
         testFailures.append(contentsOf: VocabularySelfTest.run())
         testFailures.append(contentsOf: CommandCodableSelfTest.run())
+        testFailures.append(contentsOf: CuaSelfTest.run())
+        testFailures.append(contentsOf: HIDBridgeSelfTest.run())
         JevLog.write("[jev] self-tests: \(testFailures.isEmpty ? "pass" : "FAIL \(testFailures)")")
         if !testFailures.isEmpty {
             printOnboardingWarning("Self-tests failed:")
@@ -1089,7 +1045,8 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let device = Tailnet.displayName()
         let serveActive = Tailnet.serveIsActive()
         let pairingURL = Tailnet.pairingURL(token: token, localPort: 8787)
-        JevLog.write("[jev] pairing dialog: device=\(device) serve=\(serveActive) url=\(pairingURL)")
+        JevLog.write("[jev] pairing dialog: device=\(device) serve=\(serveActive) "
+            + "url=\(Tailnet.loggableURL(token: token, localPort: 8787))")
 
         let stack = NSStackView()
         stack.orientation = .vertical

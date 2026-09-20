@@ -1,37 +1,40 @@
 {
-  "name": "Jev Control",
+  "name": "Jev",
   "short_name": "Jev",
-  "description": "Remote control for your Mac",
+  "description": "Answer your Mac's prompts from your phone",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "orientation": "portrait-primary",
-  "background_color": "#ffffff",
-  "theme_color": "#000000",
+  "orientation": "any",
+  "background_color": "#0c0d10",
+  "theme_color": "#0c0d10",
   "icons": [
     {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%23000' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>",
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192' rx='42'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>",
       "sizes": "192x192",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%23000' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>",
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='104' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>",
       "sizes": "192x192",
       "type": "image/svg+xml",
       "purpose": "maskable"
     }
   ],
-  "categories": ["productivity", "utilities"],
+  "categories": [
+    "productivity",
+    "utilities"
+  ],
   "shortcuts": [
     {
-      "name": "Pending Approvals",
+      "name": "Pending approvals",
       "short_name": "Approvals",
-      "description": "View pending approvals",
-      "url": "/?tab=approvals",
+      "description": "See what is waiting on you",
+      "url": "/",
       "icons": [
         {
-          "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'><rect fill='%23000' width='96' height='96'/><text x='50%' y='50%' font-size='60' font-weight='bold' fill='%23fff' text-anchor='middle' dominant-baseline='central'>!</text></svg>",
+          "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'><rect fill='%230a63d8' width='96' height='96' rx='21'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='58' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>!</text></svg>",
           "sizes": "96x96",
           "type": "image/svg+xml"
         }

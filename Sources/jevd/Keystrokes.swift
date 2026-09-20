@@ -26,6 +26,14 @@ enum Keystrokes {
         "minus": 27, "equal": 24, "comma": 43, "period": 47, "slash": 44,
         "backslash": 42, "semicolon": 41, "quote": 39, "grave": 50,
         "leftbracket": 33, "rightbracket": 30,
+        // The punctuation as it is actually typed, not only spelled out.
+        // "cmd+-" is how a person writes zoom-out, and the parser splits
+        // it to ["cmd", "-"], which matched nothing — so the previous fix
+        // to the hyphen parsing moved the error message and left the
+        // command just as broken.
+        "-": 27, "=": 24, ",": 43, ".": 47, "/": 44,
+        "\\": 42, ";": 41, "'": 39, "`": 50, "[": 33, "]": 30,
+        "plus": 24, "dash": 27, "hyphen": 27,
     ]
 
     private static let modifiers: [String: CGEventFlags] = [
@@ -37,11 +45,29 @@ enum Keystrokes {
     ]
 
     static func press(_ spec: String) -> ExecutionResult {
-        let parts = spec.lowercased()
-            .replacingOccurrences(of: " plus ", with: "+")
-            .split(whereSeparator: { $0 == "+" || $0 == "-" && spec.contains("+") })
+        // Trimmed FIRST. The separator rule below consults the spec, and
+        // testing an untrimmed one against a trimmed split meant a single
+        // trailing space flipped the rule and silently ate the key:
+        // "cmd+- " failed with `Unknown key "cmd"`.
+        let spec = spec.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalised = spec.lowercased().replacingOccurrences(of: " plus ", with: "+")
+
+        // A hyphen separates unless it IS the key.
+        //
+        // Two earlier spellings of this rule were both wrong. The first,
+        // `$0 == "+" || $0 == "-" && spec.contains("+")`, binds as
+        // `"+" || ("-" && …)` and made `cmd-q` fail outright. The
+        // second keyed on "does the whole spec end in -", which disabled
+        // hyphen-splitting for the ENTIRE spec, so `cmd--` collapsed to
+        // one token. Written out as statements this time, because the
+        // one-expression versions are what kept hiding the mistake.
+        let endsInHyphen = normalised.hasSuffix("-")
+        let splittable = endsInHyphen ? String(normalised.dropLast()) : normalised
+        var parts = splittable
+            .split(whereSeparator: { $0 == "+" || $0 == "-" })
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        if endsInHyphen { parts.append("-") }
 
         guard let keyName = parts.last else {
             return .failed(reason: "No key in “\(spec)”")

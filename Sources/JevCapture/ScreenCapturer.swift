@@ -35,10 +35,15 @@ public actor ScreenCapturer {
     /// - Returns: JPEG data, or nil if capture fails.
     public func captureDisplay(
         maxDimension: Int = 1024,
-        quality: CGFloat = 0.75
+        quality: CGFloat = 0.75,
+        /// The phone wants the pointer in the picture. A change-detector does
+        /// not: with the cursor in frame, anything that moves the mouse
+        /// differs from the frame before it, so "did this command change the
+        /// screen" was answered yes every single time.
+        showsCursor: Bool = true
     ) async -> Data? {
         if #available(macOS 14.0, *) {
-            if let image = await captureDisplaySCK() {
+            if let image = await captureDisplaySCK(showsCursor: showsCursor) {
                 return jpegData(from: image, maxDimension: maxDimension, quality: quality)
             }
         }
@@ -70,7 +75,7 @@ public actor ScreenCapturer {
     }
 
     @available(macOS 14.0, *)
-    private func captureDisplaySCK() async -> NSImage? {
+    private func captureDisplaySCK(showsCursor: Bool = true) async -> NSImage? {
         do {
             let availableContent = try await SCShareableContent.current
             // The same display the pointer and every tap coordinate are
@@ -91,7 +96,7 @@ public actor ScreenCapturer {
             let configuration = SCStreamConfiguration()
             configuration.width = display.width
             configuration.height = display.height
-            configuration.showsCursor = true
+            configuration.showsCursor = showsCursor
             let stream = try await SCScreenshotManager.captureImage(
                 contentFilter: contentFilter,
                 configuration: configuration

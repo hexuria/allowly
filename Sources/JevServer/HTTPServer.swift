@@ -112,6 +112,40 @@ private enum BindAddressType {
 
 // MARK: - HTTP Server
 
+public enum HTTPPath {
+/// One spelling of a path, decided once, before anything reads it.
+///
+/// This is an authentication bypass if it is not done.
+///
+/// `requiresAuth` asked `path.hasPrefix("/api/")`; the Router split the
+/// path on "/" with Swift's default `omittingEmptySubsequences: true`.
+/// For `//api/pending` those disagree — the prefix test says no, the
+/// split says `["api", "pending"]` and dispatches. So EVERY /api route
+/// was reachable with no credential at all by typing one extra slash:
+/// the pending list, `/api/decide` (the nonce is client-minted, so the
+/// replay guard does not help), `/api/type` for arbitrary keystrokes,
+/// `/api/screenshot` for a picture of the screen.
+///
+/// And it was not hypothetical. `pairingURL` ends in `/?token=…`, the
+/// phone does `url.split('?')[0]`, so `baseUrl` keeps its trailing
+/// slash and every single request the app has ever made went to
+/// `//api/…`. The app worked because it sent the header anyway — which
+/// is exactly why nobody noticed the door was open.
+///
+/// Two places agreeing by hand is what failed. One canonical form, at
+/// the edge, is what replaces it.
+    public static func canonicalPath(_ raw: String) -> String {
+        let route = raw.split(separator: "?", maxSplits: 1,
+                              omittingEmptySubsequences: false).first.map(String.init) ?? raw
+        let query = raw.dropFirst(route.count)
+        let segments = route.split(separator: "/", omittingEmptySubsequences: true)
+        let collapsed = "/" + segments.joined(separator: "/")
+        // A trailing slash is part of the path's identity for a directory
+        // index, but jev serves "/" and named files only.
+        return collapsed + query
+    }
+}
+
 public actor HTTPServer {
     public struct Config: Sendable {
         public let bearerToken: String
@@ -207,8 +241,15 @@ public actor HTTPServer {
     }
 
     /// The address the listener is pinned to, for display in the menu bar.
+    ///
+    /// The stored value, not a second call to `findBindAddress()`. That
+    /// re-derives, and re-derivation can disagree with what was actually
+    /// bound — it throws when no tailnet interface is up, and the caller's
+    /// `?? "127.0.0.1"` then printed "listening on 127.0.0.1" for a server
+    /// listening on the tailnet address, on the one line someone reads
+    /// when pairing is broken. nil now means "not started".
     public func boundAddress() -> String? {
-        try? findBindAddress().0
+        allowedLocalAddress
     }
 
     private func handleNewConnection(_ nwConnection: NWConnection) async {
@@ -301,6 +342,14 @@ public actor HTTPServer {
         }
     }
 
+    public nonisolated func onJournal(_ handler: @escaping () async -> String) {
+        Task { await router.onJournal(handler) }
+    }
+
+    public nonisolated func onControls(_ handler: @escaping () async -> String) {
+        Task { await router.onControls(handler) }
+    }
+
     public nonisolated func onDecide(_ handler: @escaping (String, String, Nonce) async -> ExecutionResult) {
         Task {
             await router.onDecide(handler)
@@ -329,9 +378,6 @@ public actor HTTPServer {
         Task { await router.onSwipe(handler) }
     }
 
-    public nonisolated func onDisplayInfo(_ handler: @escaping () async -> String) {
-        Task { await router.onDisplayInfo(handler) }
-    }
 
     public nonisolated func onTap(_ handler: @escaping (Double, Double, String) async -> String) {
         Task { await router.onTap(handler) }
@@ -349,6 +395,10 @@ public actor HTTPServer {
         Task { await router.onSetPolicy(handler) }
     }
 
+    public nonisolated func onPermission(_ handler: @escaping (String) async -> String) {
+        Task { await router.onPermission(handler) }
+    }
+
     public nonisolated func onCursor(_ handler: @escaping @Sendable () async -> String) {
         Task { await router.onCursor(handler) }
     }
@@ -359,14 +409,6 @@ public actor HTTPServer {
 
     public nonisolated func onSubscribe(_ handler: @escaping (String) async -> String) {
         Task { await router.onSubscribe(handler) }
-    }
-
-    public nonisolated func onHints(_ handler: @escaping () async -> String) {
-        Task { await router.onHints(handler) }
-    }
-
-    public nonisolated func onControls(_ handler: @escaping () async -> String) {
-        Task { await router.onControls(handler) }
     }
 
     public nonisolated func onWebSocketConnect(_ handler: @escaping (WebSocketSession) -> Void) {
@@ -440,6 +482,23 @@ private actor HTTPConnection {
 
             // Wait for the end of the header block before parsing anything.
             guard let headerEnd = Self.headerTerminator(in: inbound) else {
+                // A header block has a size. Without a ceiling this loop
+                // grows the buffer for as long as a client withholds the
+                // blank line, and static routes need no token — so
+                // anything that can reach the tailnet can do it.
+                //
+                // Checked ONLY while the terminator is still missing. The
+                // first version tested the whole accumulated buffer on
+                // every chunk, body included, so a push-to-talk longer
+                // than about a minute of AAC crossed the line and came
+                // back 431: "failed to process voice command", on a
+                // recording that was perfectly fine.
+                guard inbound.count <= Self.headerCeiling else {
+                    inbound.removeAll()
+                    await sendHTTPResponse(status: 431, body: "Request Header Fields Too Large")
+                    nwConnection.cancel()
+                    return
+                }
                 await receiveData()
                 return
             }
@@ -447,10 +506,19 @@ private actor HTTPConnection {
             // If the request declares a body, wait for all of it too.
             if let request = parseHTTPRequest(inbound),
                let lengthText = request.headers["content-length"],
-               let expected = Int(lengthText),
-               inbound.count - headerEnd < expected {
-                await receiveData()
-                return
+               let expected = Int(lengthText) {
+                // A body has a bound too — just a much larger one, sized
+                // for a long push-to-talk rather than for a header.
+                guard expected <= Self.bodyCeiling, inbound.count <= Self.bodyCeiling else {
+                    inbound.removeAll()
+                    await sendHTTPResponse(status: 413, body: "Payload Too Large")
+                    nwConnection.cancel()
+                    return
+                }
+                if inbound.count - headerEnd < expected {
+                    await receiveData()
+                    return
+                }
             }
 
             guard let request = parseHTTPRequest(inbound) else {
@@ -489,18 +557,45 @@ private actor HTTPConnection {
     /// Index just past the blank line that ends the headers, or nil if it has
     /// not arrived yet. Tolerates bare LF as well as CRLF.
     static func headerTerminator(in data: Data) -> Int? {
-        let bytes = [UInt8](data)
+        // Only ever the first `headerCeiling` bytes (plus the four the
+        // terminator itself occupies). A header block longer than that
+        // is refused with 431 a few lines up, so scanning past it can
+        // only ever fail — and it failed expensively: this copies the
+        // buffer it is handed, and it is called once per arriving chunk
+        // plus twice inside `parseHTTPRequest`. On a 32 MiB upload —
+        // which the body ceiling now advertises as acceptable — that is
+        // four full copies of an ever-growing buffer per 64 KiB chunk,
+        // tens of gigabytes of memcpy to find a marker that is in the
+        // first few hundred bytes.
+        let bytes = [UInt8](data.prefix(Self.headerCeiling + 4))
+        // Whichever comes first, not CRLFCRLF everywhere before LFLF
+        // anywhere. Scanning the entire prefix for the one and only then
+        // the other meant a request with bare-LF line endings whose BODY
+        // contained a CRLFCRLF — any multipart upload — took its header
+        // end from inside the body. No browser writes bare-LF headers,
+        // so this was unreachable in practice; "unreachable in practice"
+        // is not a property a parser should depend on.
+        var crlf: Int?
         if bytes.count >= 4 {
-            for i in 0...(bytes.count - 4) where bytes[i] == 13 && bytes[i+1] == 10 && bytes[i+2] == 13 && bytes[i+3] == 10 {
-                return i + 4
+            for i in 0...(bytes.count - 4)
+            where bytes[i] == 13 && bytes[i+1] == 10 && bytes[i+2] == 13 && bytes[i+3] == 10 {
+                crlf = i + 4
+                break
             }
         }
+        var lf: Int?
         if bytes.count >= 2 {
             for i in 0...(bytes.count - 2) where bytes[i] == 10 && bytes[i+1] == 10 {
-                return i + 2
+                lf = i + 2
+                break
             }
         }
-        return nil
+        switch (crlf, lf) {
+        case let (c?, l?): return min(c, l)
+        case let (c?, nil): return c
+        case let (nil, l?): return l
+        case (nil, nil): return nil
+        }
     }
 
     private func parseHTTPRequest(_ data: Data) -> HTTPRequest? {
@@ -527,7 +622,7 @@ private actor HTTPConnection {
         guard parts.count >= 3 else { return nil }
 
         let method = String(parts[0])
-        let path = String(parts[1])
+        let path = HTTPPath.canonicalPath(String(parts[1]))
 
         var headers: [String: String] = [:]
         var bodyStartIndex = 1
@@ -555,6 +650,11 @@ private actor HTTPConnection {
 
         return HTTPRequest(method: method, path: path, headers: headers, body: body, bodyData: bodyBytes)
     }
+
+    /// A header block is never large. 64 KiB is generous for one.
+    static let headerCeiling = 64 * 1024
+    /// A body can be: `/api/voice` posts recorded audio.
+    static let bodyCeiling = 32 * 1024 * 1024
 
     private func sendHTTPResponse(
         status: Int,
@@ -714,6 +814,8 @@ private enum HTTPStatusCode: Int {
     case badRequest = 400
     case unauthorized = 401
     case notFound = 404
+    case payloadTooLarge = 413
+    case headerFieldsTooLarge = 431
     case internalServerError = 500
 
     var text: String {
@@ -723,6 +825,8 @@ private enum HTTPStatusCode: Int {
         case .badRequest: "Bad Request"
         case .unauthorized: "Unauthorized"
         case .notFound: "Not Found"
+        case .payloadTooLarge: "Payload Too Large"
+        case .headerFieldsTooLarge: "Request Header Fields Too Large"
         case .internalServerError: "Internal Server Error"
         }
     }
