@@ -73,25 +73,47 @@ enum VocabularySelfTest {
                 failures.append("destination: \(name)")
             }
         }
-        destination("a spoken host is a destination", "youtube dot com", true)
-        destination("a written host is a destination", "github.com", true)
-        destination("a full URL is a destination", "https://example.com/x", true)
-        destination("one word is a destination", "facebook", true)
-        destination("two words are a destination", "stack overflow", true)
-        destination("a filler word does not count against it", "to the verge", true)
+        // Written or spoken, an address opens a page.
+        for place in ["youtube dot com", "github.com", "https://example.com/x",
+                      "facebook", "youtube", "stack overflow", "to the verge",
+                      "my gmail", "news dot ycombinator dot com", "amazon", "wikipedia",
+                      "docs dot google dot com slash spreadsheets",
+                      // "and" sits inside real names too, so it cannot
+                      // disqualify an address on its own.
+                      "bath and body works dot com"] {
+            destination("a place: \(place)", place, true)
+        }
 
-        // The ones that were being turned into domains.
-        destination("a conjunction means two things were asked for",
-                    "youtube and search hello", false)
-        destination("…however short", "youtube and search", false)
-        destination("a sentence is not a host", "my account settings page", false)
-        destination("nor is a task", "youtube then play something", false)
-        destination("an empty argument is nothing", "", false)
+        // Everything here was, or would have been, turned into a domain.
+        // Both of the first two were said aloud on a real phone:
+        //     "go to YouTube and search hello"  -> youtubeandsearchhello.com
+        //     "go to youtube dot com and search hellboy"
+        //                                       -> youtube.comandsearchhellboy
+        // The second survived the first fix, because that fix asked "is there
+        // a dot?" before "is this more than one instruction?" — and a spoken
+        // address contains " dot ". A task is recognised first now.
+        for task in ["youtube and search hello",
+                     "youtube dot com and search hellboy",
+                     "youtube dot com and search hell boy",
+                     "youtube and play lofi",
+                     "amazon and buy coffee filters",
+                     "amazon dot com and add coffee filters to my cart",
+                     "github and find the jev repo",
+                     "youtube then play something",
+                     "twitter and post a reply",
+                     "reddit and scroll to the top",
+                     "my email and reply to the last one",
+                     "google and search for weather",
+                     "netflix and watch something",
+                     "youtube dot com and subscribe to that channel",
+                     "my account settings page",
+                     ""] {
+            destination("a task: \(task)", task, false)
+        }
 
-        // A host said aloud still wins over the word count: "docs dot google
-        // dot com slash spreadsheets" is long and is still an address.
-        destination("a long spoken address is still an address",
-                    "docs dot google dot com slash spreadsheets", true)
+        // Whole words only, or a domain loses to a verb hiding inside it.
+        destination("playstation is not play", "playstation dot com", true)
+        destination("searchencrypt is not search", "searchencrypt dot com", true)
 
         // MARK: The phrasebook outranks the on-screen control gate.
         //

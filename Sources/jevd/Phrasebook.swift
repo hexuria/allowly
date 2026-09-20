@@ -745,30 +745,49 @@ enum Phrasebook {
     ///
     /// `normalisedDestination` removes every space and appends ".com" to
     /// anything without a dot, which is right for "go to facebook" and
-    /// catastrophic for a sentence: "go to YouTube and search hello" became
-    /// `youtubeandsearchhello.com`, a domain that does not exist, invented
-    /// from words the person said. It was claimed here because a browser was
-    /// frontmost, which is true of every browser task — so the binding took
-    /// the sentence before anything could recognise it as one.
+    /// catastrophic for a sentence. Two real failures, both said aloud:
     ///
-    /// A destination is a host, or a name short enough to be one. A phrase
-    /// with a conjunction is two things, and the second one is never part of
-    /// an address.
+    ///     "go to YouTube and search hello"
+    ///         -> youtubeandsearchhello.com
+    ///     "go to youtube dot com and search hellboy"
+    ///         -> youtube.comandsearchhellboy
+    ///
+    /// The second one survived the first fix, because that fix asked "does it
+    /// contain a dot?" before "is it more than one instruction?" — and a
+    /// spoken address contains " dot ". Order matters: an address that is
+    /// followed by an instruction is still two things.
+    ///
+    /// So the question asked first is whether a TASK is being described, and
+    /// only then whether what remains looks like a place.
     static func namesADestination(_ raw: String) -> Bool {
         let text = raw.lowercased().trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return false }
 
-        // Spelled or written out, this is an address and nothing else.
+        // Whole words, so "playstation" is not "play" and "searchengine" is
+        // not "search". A domain is one token by the time it is spoken; a
+        // task always has a verb sitting on its own.
+        let words = Set(text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        let taskVerbs: Set<String> = [
+            "search", "searching", "find", "play", "watch", "buy", "order",
+            "click", "press", "type", "scroll", "download", "post", "reply",
+            "send", "share", "subscribe", "follow", "like", "add", "checkout",
+        ]
+        if !words.isDisjoint(with: taskVerbs) { return false }
+
+        // "then" always joins two instructions. "and" usually does, but it
+        // also sits inside real names — bath and body works — so it only
+        // counts against a destination alongside a verb, which the check
+        // above has already ruled out.
+        if words.contains("then") { return false }
+
+        // Now the easy part. Said or written, this is an address.
         if text.contains(".") || text.hasPrefix("http") || text.contains(" dot ") { return true }
 
-        // "and", "then", "to search" — more than one thing is being asked for.
-        for joiner in [" and ", " then ", " & "] where text.contains(joiner) { return false }
-
-        // Otherwise a host is one or two words: "github", "stack overflow".
-        // Three is a sentence, and guessing a domain from a sentence is how
-        // this went wrong.
-        let words = text.split(separator: " ").filter { $0 != "to" && $0 != "the" && $0 != "my" }
-        return words.count <= 2
+        // Otherwise a host is a short name: "github", "stack overflow".
+        // Anything longer is a sentence, and guessing a domain from a
+        // sentence is how both of the failures above happened.
+        let meaningful = words.subtracting(["to", "the", "my", "a", "an"])
+        return meaningful.count <= 2
     }
 
     /// Speech writes "facebook.com" as "facebook dot com", and a bare word is
