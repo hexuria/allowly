@@ -700,11 +700,19 @@ actor JevRuntime {
         server.onCommand { [weak self] text, ordinalsAreTheirs in
             guard let self else { return .failed(reason: "Shutting down") }
             let started = Date()
-            // NSWorkspace only. Phrasebook.context() also asks the browser
-            // for its current page, which spawns osascript and blocks until
-            // it answers — an Apple Event on the hot path of every command,
-            // purely to fill a log field.
-            let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown"
+            // The world, read once. Every stage below interprets the sentence
+            // against this same reading, so none of them re-reads the screen
+            // mid-sentence and none of them has to be handed an empty scope to
+            // avoid blocking. See Scope.
+            let scope = await Scope.current()
+            let frontApp = scope.app.isEmpty ? "unknown" : scope.app
+            // One line per command saying what the world looked like. Without
+            // it a stale-scope miss and a precedence miss are the same log.
+            JevLog.write("[jev] scope: app=\(frontApp)"
+                + (scope.context.host.map { " page=\($0)" } ?? "")
+                + " controls=\(scope.visibleLabels.count)"
+                + (scope.underPointer.map { " pointer=“\($0.prefix(30))”" } ?? "")
+                + " running=\(scope.runningApps.count)")
             // Every route below ends here, so there is exactly one line per
             // command and it always says which path claimed it.
             func journal(_ route: String, _ command: String,
@@ -776,9 +784,9 @@ actor JevRuntime {
                                heard: text)
             }
 
-            if let pending = await self.takePendingArgument(for: text) {
+            if let pending = await self.takePendingArgument(for: text, in: scope) {
                 let phrase = pending + " " + text
-                let parsed = VoiceCommand.parse(phrase)
+                let parsed = VoiceCommand.parse(phrase, in: scope.context)
                 // On this route the answer is ALWAYS a value the person
                 // supplied — that is what the route is for. So it is never
                 // written down, whatever command it turns into.
@@ -849,7 +857,7 @@ actor JevRuntime {
             }
 
             let pressed = JevIntent.startsWithPressVerb(text)
-            if pressed, let onScreen = await self.controlMatching(text) {
+            if pressed, let onScreen = await self.controlMatching(text, in: scope) {
                 JevLog.write("[jev] on screen: “\(onScreen)” — you said press, so pressing it")
                 return journal("screen/press", "clickControl(\(onScreen))", await self.dispatch(
                     VoiceCommand.Parsed(command: .clickControl(label: onScreen),
@@ -858,7 +866,7 @@ actor JevRuntime {
                     kind: .clickControl(label: onScreen))
             }
 
-            if let parsed = VoiceCommand.parse(text) {
+            if let parsed = VoiceCommand.parse(text, in: scope.context) {
                 // Take a fingerprint of the screen either side, for the
                 // commands that cannot report their own effect. A keystroke
                 // says "delivered", never "it worked".
@@ -936,14 +944,14 @@ actor JevRuntime {
 
             // A command that is right but incomplete: ask for the rest
             // rather than throwing the sentence away.
-            if let phrase = Phrasebook.awaitingArgument(text, in: Phrasebook.context()) {
+            if let phrase = Phrasebook.awaitingArgument(text, in: scope.context) {
                 await self.rememberPendingArgument(phrase)
                 return journal("asking", phrase, .ok(reason: Self.askFor(phrase)))
             }
 
             // No verb and no shortcut: a bare word that happens to name a
             // button on screen is almost certainly that button.
-            if !pressed, let onScreen = await self.controlMatching(text) {
+            if !pressed, let onScreen = await self.controlMatching(text, in: scope) {
                 JevLog.write("[jev] on screen: “\(onScreen)” — nothing else claims that word")
                 return journal("screen/bare", "clickControl(\(onScreen))", await self.dispatch(
                     VoiceCommand.Parsed(command: .clickControl(label: onScreen),
@@ -971,11 +979,11 @@ actor JevRuntime {
                     unparsed: true)
             }
 
-            let seen = await CommandExecutor.cua.frontmostContext()
             switch await JevIntent.resolve(transcript: text,
                                            alternatives: await self.readings(for: text),
-                                           frontmostApp: seen.app,
-                                           controls: seen.labels,
+                                           frontmostApp: scope.app.isEmpty ? nil : scope.app,
+                                           controls: scope.visibleLabels,
+                                           context: scope.context,
                                            apiKey: apiKey) {
             case .failure(let error):
                 JevLog.write("[jev] intent: \(error.description)")
@@ -1444,7 +1452,7 @@ actor JevRuntime {
     /// Short and recent, both on purpose. A minute later you have moved on,
     /// and a whole sentence is a new command rather than an answer — only
     /// something the length of "2" or "the design one" is a missing piece.
-    private func takePendingArgument(for text: String) -> String? {
+    private func takePendingArgument(for text: String, in scope: Scope) -> String? {
         guard let pending = _pendingArgument else { return nil }
         // A newer question outranks an older one. Both channels are
         // checked in a fixed order, so an unanswered "what level?" from
@@ -1479,7 +1487,7 @@ actor JevRuntime {
         guard VoiceCommand.parse(text) == nil else { return nil }
         // And so is a command that is merely unfinished — saying "set volume
         // to" twice asked the question and then answered it with itself.
-        guard Phrasebook.awaitingArgument(text, in: Phrasebook.context()) == nil else { return nil }
+        guard Phrasebook.awaitingArgument(text, in: scope.context) == nil else { return nil }
         _pendingArgument = nil
         return pending.phrase
     }
@@ -1623,7 +1631,7 @@ actor JevRuntime {
         return hits.count == 1 ? hits[0] : nil
     }
 
-    private func controlMatching(_ text: String) async -> String? {
+    private func controlMatching(_ text: String, in scope: Scope) async -> String? {
         // The phrasebook owns its own vocabulary.
         //
         // This gate runs BEFORE `VoiceCommand.parse`, so without this
@@ -1648,9 +1656,14 @@ actor JevRuntime {
         // out-competed by the control. That is a narrower hazard than
         // hanging the daemon, and `VocabularySelfTest` pins the global
         // vocabulary that matters.
-        guard !Phrasebook.claimsExactly(text, in: Phrasebook.neutral) else { return nil }
+        // The real scope, not `neutral`. The empty scope existed only so this
+        // would not shell out from inside the actor; the scope was read once
+        // before any stage ran, so there is nothing left to block on — and
+        // "go to X" is now judged with the browser it was actually said to.
+        guard !Phrasebook.claimsExactly(text, in: scope.context) else { return nil }
         guard let phrase = Self.controlPhrase(from: text) else { return nil }
-        let labels = await CommandExecutor.cua.visibleLabels()
+        // The same reading every other stage saw, not a fresh one.
+        let labels = scope.visibleLabels
         return Self.exactlyOneControl(named: phrase, among: labels)
     }
 

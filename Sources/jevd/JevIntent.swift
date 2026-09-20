@@ -40,6 +40,7 @@ enum JevIntent {
     static func resolve(transcript: String, alternatives: [String] = [],
                         frontmostApp: String?,
                         controls: [String],
+                        context: Phrasebook.Context? = nil,
                         apiKey: String) async -> Result<Resolution, IntentError> {
         let apps = AppCatalog.shared.all.map(\.name)
         // Whoever supplied the controls also says which app they came from,
@@ -76,7 +77,7 @@ enum JevIntent {
         // closed-choice classifier is for — so "close all tabs", "shut every
         // tab" and "get rid of the tabs" all land on the same workflow without
         // anyone enumerating synonyms.
-        let capabilities = Phrasebook.catalog()
+        let capabilities = Phrasebook.catalog(in: context)
         questions["capability"] = .choice(
             instructions: "If the user is asking for one of these known actions, which one? Choose 'none' if none of them fits.",
             labels: capabilities + ["none"]
@@ -182,7 +183,7 @@ enum JevIntent {
            // capability is more specific about the verb and completely wrong
            // about the intent.
            operation.choice != "web_task",
-           let parsed = Phrasebook.build(canonical: capability.choice),
+           let parsed = Phrasebook.build(canonical: capability.choice, in: context),
            // A pointer press never outranks a named control; and when the
            // words were a press, nothing else does either.
            !(preferNamedControl && (Self.isPointerAction(parsed.command) || spokenAsAPress)) {

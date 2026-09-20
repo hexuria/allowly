@@ -25,7 +25,8 @@ enum VoiceCommand {
         }
     }
 
-    static func parse(_ transcript: String, catalog: AppCatalog = .shared) -> Parsed? {
+    static func parse(_ transcript: String, catalog: AppCatalog = .shared,
+                      in context: Phrasebook.Context? = nil) -> Parsed? {
         var text = transcript
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
@@ -37,7 +38,7 @@ enum VoiceCommand {
         // count, parse what is left, then repeat it.
         if let (stripped, count) = repeatCount(in: text), count > 1 {
             text = stripped
-            if let once = parse(text, catalog: catalog) {
+            if let once = parse(text, catalog: catalog, in: context) {
                 let steps = Array(repeating: once.command, count: count)
                 return Parsed(command: .sequence(label: "\(once.description) ×\(count)", steps: steps),
                               description: "\(once.description) ×\(count)")
@@ -48,7 +49,7 @@ enum VoiceCommand {
         // Fixed phrases win over "verb + app name". Otherwise "show numbers"
         // resolves to the Numbers app and "show desktop" to anything called
         // Desktop — the literal vocabulary has to be checked first.
-        if let parsed = Phrasebook.parse(text) { return parsed }
+        if let parsed = Phrasebook.parse(text, in: context) { return parsed }
 
         // Directional verbs: "show terminal" should always show, not flip
         // it away when it happens to already be visible.

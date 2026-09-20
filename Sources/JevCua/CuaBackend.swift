@@ -576,13 +576,43 @@ public struct CuaBackend: Sendable {
         guard let target = try? await frontmostTarget(),
               let found = try? await elements(of: target) else { return (nil, []) }
         var seen = Set<String>()
-        let labels = found
+        let actionable = found
             .filter { Self.clickableRoles.contains($0.role) || Self.fieldRoles.contains($0.role) }
+        let labels = actionable
             .compactMap { seen.insert($0.label).inserted ? $0.label : nil }
             .prefix(limit)
             .map { $0 }
-        await Self.cache.store((target.appName, labels))
+        // Frames ride along in the same snapshot, so "what is under the
+        // pointer" is a hit-test against the reading every other stage saw,
+        // not a second walk of the window.
+        let placed = actionable.compactMap { element -> (label: String, frame: CGRect)? in
+            guard let frame = element.frame else { return nil }
+            return (label: element.label, frame: frame)
+        }
+        await Self.cache.store((target.appName, labels), placed: placed)
         return (target.appName, labels)
+    }
+
+    /// The label of the control under a point, from the current snapshot.
+    ///
+    /// The innermost scope. Where the pointer rests is the strongest
+    /// statement of what "this" means, and a sentence should be resolved
+    /// against it before the window, before the app, before anything global —
+    /// the same order macOS itself resolves a keystroke, first responder
+    /// outward. Nil when nothing actionable is there or nothing has been read.
+    public func labelUnderPointer(at point: CGPoint) async -> String? {
+        if await Self.cache.recent() == nil { _ = await frontmostContext() }
+        return Self.labelUnder(point: point, in: await Self.cache.placed())
+    }
+
+    /// Pure, so it can be asserted: the SMALLEST frame containing the point,
+    /// because a button sits inside a toolbar sits inside a window and all
+    /// three contain the pointer.
+    public static func labelUnder(point: CGPoint,
+                                 in placed: [(label: String, frame: CGRect)]) -> String? {
+        placed.filter { $0.frame.contains(point) && !$0.label.isEmpty }
+            .min { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }?
+            .label
     }
 
     /// One spoken command asks what is on screen several times over: once to
@@ -594,6 +624,7 @@ public struct CuaBackend: Sendable {
     /// far too short to still be believed by the time you say the next thing.
     private actor Snapshot {
         private var value: (app: String?, labels: [String])?
+        private var frames: [(label: String, frame: CGRect)] = []
         private var takenAt = Date.distantPast
         private let lifetime: TimeInterval = 2.0
 
@@ -602,8 +633,14 @@ public struct CuaBackend: Sendable {
             return value
         }
 
-        func store(_ fresh: (app: String?, labels: [String])) {
+        func placed() -> [(label: String, frame: CGRect)] {
+            Date().timeIntervalSince(takenAt) < lifetime ? frames : []
+        }
+
+        func store(_ fresh: (app: String?, labels: [String]),
+                   placed: [(label: String, frame: CGRect)]) {
             value = fresh
+            frames = placed
             takenAt = Date()
         }
     }

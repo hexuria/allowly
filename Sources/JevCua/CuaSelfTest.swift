@@ -702,6 +702,26 @@ public enum CuaSelfTest {
         check("off-space explained",
               CuaBackend.humanise("ax_window_unresolved: window_id 1 exists").contains("another Space"))
 
+        // What is under the pointer: the innermost scope. The smallest
+        // containing frame wins, because a button sits inside a toolbar sits
+        // inside a window and all three contain the point.
+        let placed: [(label: String, frame: CGRect)] = [
+            ("Window", CGRect(x: 0, y: 0, width: 1000, height: 800)),
+            ("Toolbar", CGRect(x: 0, y: 0, width: 1000, height: 60)),
+            ("Save", CGRect(x: 900, y: 10, width: 80, height: 40)),
+            ("", CGRect(x: 900, y: 10, width: 80, height: 40)),
+        ]
+        func pointed(_ name: String, _ p: CGPoint, _ expected: String?) {
+            if CuaBackend.labelUnder(point: p, in: placed) != expected {
+                failures.append("pointer: \(name)")
+            }
+        }
+        pointed("the button, not the toolbar it sits in", CGPoint(x: 920, y: 30), "Save")
+        pointed("the toolbar where there is no button", CGPoint(x: 100, y: 30), "Toolbar")
+        pointed("the window body", CGPoint(x: 500, y: 400), "Window")
+        pointed("outside everything is nothing", CGPoint(x: 2000, y: 2000), nil)
+        pointed("an unlabelled control never wins", CGPoint(x: 920, y: 30), "Save")
+
         return failures
     }
 }

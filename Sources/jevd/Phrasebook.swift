@@ -247,19 +247,27 @@ enum Phrasebook {
     /// Every capability, as canonical phrases. This doubles as the closed
     /// choice list handed to Jev: it can only ever pick something that really
     /// exists, and each choice may be a multi-step sequence.
-    static func catalog() -> [String] {
-        bindings.compactMap { binding in
+    ///
+    /// Takes the scope rather than reading it, for two reasons that were
+    /// both measured: reading it here cost one osascript-backed `context()`
+    /// call PER BINDING, and reading it here and again in `build(canonical:)`
+    /// a model round-trip later meant the list was filtered under one scope
+    /// and the chosen entry built under another.
+    static func catalog(in explicitContext: Context? = nil) -> [String] {
+        let context = explicitContext ?? self.context()
+        return bindings.compactMap { binding in
             // Only argument-free capabilities: a classifier returns a label,
             // so it cannot supply a URL or a body of text.
             guard let phrase = binding.phrases.first,
-                  binding.build("", context()) != nil else { return nil }
+                  binding.build("", context) != nil else { return nil }
             return phrase
         }
     }
 
-    /// Build a capability chosen by its canonical phrase.
-    static func build(canonical: String) -> VoiceCommand.Parsed? {
-        let context = self.context()
+    /// Build a capability chosen by its canonical phrase — in the same scope
+    /// the catalogue was offered under, or the two can disagree.
+    static func build(canonical: String, in explicitContext: Context? = nil) -> VoiceCommand.Parsed? {
+        let context = explicitContext ?? self.context()
         for binding in bindings where binding.phrases.first == canonical {
             return binding.build("", context)
         }
