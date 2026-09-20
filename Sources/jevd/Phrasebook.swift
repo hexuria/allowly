@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import JevCore
+import JevWeb
 
 /// The literal vocabulary: phrases that map to a fixed sequence of steps.
 ///
@@ -738,56 +739,73 @@ enum Phrasebook {
     }
 
     private static func looksLikeURL(_ text: String) -> Bool {
-        text.contains(".") || text.hasPrefix("http")
+        // " dot " counts. Speech writes an address that way, and without it
+        // "go to github dot com" was only recognised as an address when a
+        // browser happened to be frontmost — the same sentence meant
+        // different things depending on what was in front of it.
+        text.contains(".") || text.hasPrefix("http") || text.contains(" dot ")
     }
 
-    /// Whether "go to X" is naming a place rather than describing a task.
+    /// Whether "go to X" is naming a place this code can be *sure* about.
     ///
-    /// `normalisedDestination` removes every space and appends ".com" to
-    /// anything without a dot, which is right for "go to facebook" and
-    /// catastrophic for a sentence. Two real failures, both said aloud:
+    /// Not "is this probably a domain". `normalisedDestination` removes every
+    /// space and appends ".com", so a wrong answer here does not degrade — it
+    /// invents an address out of someone's words and opens it. Three real
+    /// ones, all said aloud:
     ///
-    ///     "go to YouTube and search hello"
-    ///         -> youtubeandsearchhello.com
-    ///     "go to youtube dot com and search hellboy"
-    ///         -> youtube.comandsearchhellboy
+    ///     "go to YouTube and search hello"     -> youtubeandsearchhello.com
+    ///     "go to youtube dot com and search …" -> youtube.comandsearchhellboy
+    ///     "go to workspace three"              -> workspacethree.com
     ///
-    /// The second one survived the first fix, because that fix asked "does it
-    /// contain a dot?" before "is it more than one instruction?" — and a
-    /// spoken address contains " dot ". Order matters: an address that is
-    /// followed by an instruction is still two things.
+    /// Each was fixed by making the guess cleverer, and the next phrasing
+    /// broke it again. The guess is the bug. jev has a classifier that
+    /// decides open_url against web_task against everything else, measured at
+    /// 0.98 and above on exactly these sentences — so anything this function
+    /// is not certain about is now its problem, not this one's.
     ///
-    /// So the question asked first is whether a TASK is being described, and
-    /// only then whether what remains looks like a place.
+    /// What stays here is what needs no judgement: an address, or a site
+    /// named in a list this code owns. Those are instant and work offline,
+    /// which is the whole reason the phrasebook runs first. Everything else
+    /// declines and costs one model call, which is the right price for not
+    /// opening a domain nobody asked for.
     static func namesADestination(_ raw: String) -> Bool {
         let text = raw.lowercased().trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return false }
 
-        // Whole words, so "playstation" is not "play" and "searchengine" is
-        // not "search". A domain is one token by the time it is spoken; a
-        // task always has a verb sitting on its own.
         let words = Set(text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+
+        // Two instructions, not one place. Whole words, so "playstation" is
+        // not "play" and "searchencrypt" is not "search".
         let taskVerbs: Set<String> = [
             "search", "searching", "find", "play", "watch", "buy", "order",
             "click", "press", "type", "scroll", "download", "post", "reply",
             "send", "share", "subscribe", "follow", "like", "add", "checkout",
         ]
         if !words.isDisjoint(with: taskVerbs) { return false }
-
-        // "then" always joins two instructions. "and" usually does, but it
-        // also sits inside real names — bath and body works — so it only
-        // counts against a destination alongside a verb, which the check
-        // above has already ruled out.
         if words.contains("then") { return false }
 
-        // Now the easy part. Said or written, this is an address.
+        // Something more specific already understands this sentence. There is
+        // a parser for "go to workspace 3", spoken digits and all, that never
+        // ran because this binding claimed the words first.
+        if VoiceCommand.workspaceId(in: text) != nil { return false }
+
+        // An address, written or spoken. No judgement required.
         if text.contains(".") || text.hasPrefix("http") || text.contains(" dot ") { return true }
 
-        // Otherwise a host is a short name: "github", "stack overflow".
-        // Anything longer is a sentence, and guessing a domain from a
-        // sentence is how both of the failures above happened.
-        let meaningful = words.subtracting(["to", "the", "my", "a", "an"])
-        return meaningful.count <= 2
+        // A site this code already knows by name — the same list a web task
+        // starts from, so "go to youtube" and "play something on youtube"
+        // agree about where youtube is.
+        let bare = words.subtracting(["to", "the", "my", "a", "an"]).joined(separator: " ")
+        let spoken = text.replacingOccurrences(of: "^(to|the|my) ", with: "",
+                                               options: .regularExpression)
+        for site in WebStart.knownSites
+        where site.spoken == spoken || site.spoken == bare
+            || site.spoken.replacingOccurrences(of: " ", with: "") == bare {
+            return true
+        }
+
+        // Anything else is a guess, and guesses belong to the classifier.
+        return false
     }
 
     /// Speech writes "facebook.com" as "facebook dot com", and a bare word is

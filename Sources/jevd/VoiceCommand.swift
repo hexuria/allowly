@@ -172,7 +172,9 @@ enum VoiceCommand {
     ]
 
     /// Pull a workspace id out of phrases like "go to workspace three".
-    private static func workspaceId(in text: String) -> String? {
+    /// Internal rather than private so the "go to" binding can ask whether
+    /// this sentence is already claimed. See `Phrasebook.namesADestination`.
+    static func workspaceId(in text: String) -> String? {
         guard let range = text.range(of: "workspace") else { return nil }
         let tail = text[range.upperBound...].trimmingCharacters(in: .whitespaces)
         guard let token = tail.split(separator: " ").first.map(String.init) else { return nil }

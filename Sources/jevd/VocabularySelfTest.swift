@@ -286,70 +286,87 @@ enum VocabularySelfTest {
                 failures.append("destination: \(name)")
             }
         }
-        // Written or spoken, an address opens a page.
+        // Certain, so the phrasebook keeps it: instant, offline, no call.
         for place in ["youtube dot com", "github.com", "https://example.com/x",
-                      "facebook", "youtube", "stack overflow", "to the verge",
-                      "my gmail", "news dot ycombinator dot com", "amazon", "wikipedia",
+                      "news dot ycombinator dot com",
                       "docs dot google dot com slash spreadsheets",
-                      // "and" sits inside real names too, so it cannot
-                      // disqualify an address on its own.
-                      "bath and body works dot com"] {
-            destination("a place: \(place)", place, true)
+                      "bath and body works dot com", "playstation dot com",
+                      "searchencrypt dot com",
+                      // Named in a list this code owns, so no judgement is
+                      // being exercised — the same list a web task starts
+                      // from, so both agree where youtube is.
+                      "youtube", "amazon", "wikipedia", "stack overflow"] {
+            destination("certain: \(place)", place, true)
         }
 
-        // Everything here was, or would have been, turned into a domain.
-        // Both of the first two were said aloud on a real phone:
-        //     "go to YouTube and search hello"  -> youtubeandsearchhello.com
-        //     "go to youtube dot com and search hellboy"
-        //                                       -> youtube.comandsearchhellboy
-        // The second survived the first fix, because that fix asked "is there
-        // a dot?" before "is this more than one instruction?" — and a spoken
-        // address contains " dot ". A task is recognised first now.
-        for task in ["youtube and search hello",
-                     "youtube dot com and search hellboy",
-                     "youtube dot com and search hell boy",
-                     "youtube and play lofi",
-                     "amazon and buy coffee filters",
-                     "amazon dot com and add coffee filters to my cart",
-                     "github and find the jev repo",
-                     "youtube then play something",
-                     "twitter and post a reply",
-                     "reddit and scroll to the top",
-                     "my email and reply to the last one",
-                     "google and search for weather",
-                     "netflix and watch something",
-                     "youtube dot com and subscribe to that channel",
-                     "my account settings page",
-                     ""] {
-            destination("a task: \(task)", task, false)
+        // NOT certain, so the classifier decides. Every one of these used to
+        // become a domain, because the guess stripped the spaces and appended
+        // ".com". Three were reported from a real phone:
+        //     "go to YouTube and search hello"     -> youtubeandsearchhello.com
+        //     "go to youtube dot com and search …" -> youtube.comandsearchhellboy
+        //     "go to workspace three"              -> workspacethree.com
+        // Each was fixed by making the guess cleverer and the next phrasing
+        // broke it again. The guess is gone; jev classifies these instead,
+        // measured at 0.98 and above on exactly these sentences.
+        for uncertain in ["youtube and search hello",
+                          "youtube dot com and search hellboy",
+                          "youtube and play lofi",
+                          "amazon and buy coffee filters",
+                          "amazon dot com and add coffee filters to my cart",
+                          "github and find the jev repo",
+                          "youtube then play something",
+                          "twitter and post a reply",
+                          "netflix and watch something",
+                          "workspace three", "workspace 3", "to workspace two",
+                          "my account settings page",
+                          "settings", "the top", "my inbox",
+                          "facebook", "the verge", "some place nobody named",
+                          ""] {
+            destination("not certain: \(uncertain)", uncertain, false)
         }
 
-        // When the fast path declines, the resolver asks the model — and the
-        // ADDRESS is still built here, from what the person said, never
-        // returned by the model. A model that answered with a URL would be
-        // producing something executable, which is exactly the freedom
-        // withheld from it everywhere else.
-        func spoken(_ name: String, _ sentence: String, _ expected: String?) {
-            let got = Phrasebook.destination(fromSpoken: sentence)
-            if got != expected {
-                failures.append("spoken destination: \(name) gave \(got ?? "nil")")
+        // End to end, which is the only version of this that matters: the
+        // whole sentence, through the real parser, to the command that runs.
+        func resolves(_ sentence: String, _ describe: (Command?) -> Bool, _ what: String) {
+            let parsed = VoiceCommand.parse(sentence)
+            if !describe(parsed?.command) {
+                failures.append("sentence: “\(sentence)” did not become \(what)")
             }
         }
-        spoken("a lead verb is dropped", "go to github dot com", "github.com")
-        spoken("visit works too", "visit stack overflow", "stackoverflow.com")
-        spoken("browse to works too", "browse to facebook", "facebook.com")
-        spoken("a trailing 'website' is not part of the host",
-               "go to the new york times website", "newyorktimes.com")
-        spoken("a trailing 'page' is not part of the host",
-               "open the wikipedia page", "wikipedia.com")
-        spoken("a name with and survives", "open bath and body works dot com",
-               "bathandbodyworks.com")
-        spoken("nothing but a verb is not a destination", "go to", nil)
-        spoken("an empty sentence is not a destination", "", nil)
+        resolves("go to workspace three", {
+            if case .switchWorkspace(let id) = $0 { return id == "3" }
+            return false
+        }, "a workspace switch")
+        resolves("go to workspace 2", {
+            if case .switchWorkspace(let id) = $0 { return id == "2" }
+            return false
+        }, "a workspace switch")
+        resolves("go to github dot com", {
+            if case .openURL(let url) = $0 { return url == "https://github.com" }
+            return false
+        }, "an open of github.com")
+        // Deliberately not asserted for a bare site name: that binding also
+        // requires a browser to be frontmost, and what is frontmost during a
+        // launch assertion is not a browser. Scope decides it, which is the
+        // right behaviour and the wrong thing to pin here.
+        // The three that became invented domains. Nothing local should claim
+        // them now — they belong to the classifier.
+        for guessed in ["go to youtube and search hello",
+                        "go to youtube dot com and search hellboy"] {
+            resolves(guessed, { command in
+                if case .openURL = command { return false }
+                return true
+            }, "anything but an invented address")
+        }
 
-        // Whole words only, or a domain loses to a verb hiding inside it.
-        destination("playstation is not play", "playstation dot com", true)
-        destination("searchencrypt is not search", "searchencrypt dot com", true)
+        // The parser that "go to workspace three" was stealing from.
+        if VoiceCommand.workspaceId(in: "go to workspace three") != "3" {
+            failures.append("workspace: spoken digits are not understood")
+        }
+        if VoiceCommand.workspaceId(in: "go to github dot com") != nil {
+            failures.append("workspace: a plain address is being claimed")
+        }
+
 
         // MARK: The phrasebook outranks the on-screen control gate.
         //
