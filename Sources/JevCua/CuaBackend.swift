@@ -247,11 +247,84 @@ public struct CuaBackend: Sendable {
 
     // MARK: - Acting
 
-    public func click(labelled label: String, button: String = "left") async -> ExecutionResult {
+    /// - Parameter nth: which of several equally-named controls to press,
+    ///   1-based, in the order the screen reports them. Nil means "there
+    ///   had better be only one", which is the behaviour every caller had
+    ///   before this existed.
+    /// - Parameter outOf: how many candidates the person was told about.
+    ///   The ordinal is only meaningful against the shape it was counted
+    ///   in — the same reasoning `positionalAddress` already carries for
+    ///   form fields — so if the screen now offers a different number,
+    ///   the count they were given is stale and the answer is refused.
+    /// - Parameter inWindow: the window the candidates were counted in.
+    ///   An ordinal is only meaningful there — `positionalAddress` has
+    ///   carried a window id for this reason since it was written, and
+    ///   the ordinal path copied the count and forgot the window. On
+    ///   the approval-card path minutes can pass, and the click would
+    ///   land in whatever is frontmost by then.
+    public func click(labelled label: String, button: String = "left",
+                      nth: Int? = nil, outOf: Int? = nil,
+                      inWindow: Int? = nil) async -> ExecutionResult {
         do {
             let target = try await frontmostTarget()
+            if let inWindow, target.windowID != inWindow {
+                return .failed(reason: "You have moved to another window since I counted "
+                    + "those. Say it again to pick from what is in front of you now.")
+            }
             let found = try await elements(of: target)
-            guard let match = Self.bestMatch(for: label, in: found, roles: Self.clickableRoles) else {
+            let match: Element
+            switch Self.match(for: label, in: found, roles: Self.clickableRoles) {
+            case .one(let only):
+                // An ordinal asked of a screen that now offers exactly
+                // one is not satisfied by that one. The feed refreshed,
+                // or the list filtered: "there were three, give me the
+                // second" cannot be answered by the only remaining
+                // item, and clicking it would report success for a
+                // choice nobody made.
+                if let nth, nth != 1 || outOf.map({ $0 != 1 }) == true {
+                    return .failed(reason: "That list changed — there is only one "
+                        + "“\(label)” now. Say it again to pick from what is there.")
+                }
+                match = only
+            case .ambiguous(let candidates):
+                // An ordinal answers exactly this question, so if the
+                // person already gave one, use it.
+                //
+                // Ordered by where they are on screen, not by the order
+                // the driver happened to report them: the badges the
+                // person is reading are numbered in reading order, and
+                // "the second one" has to mean the same thing to both
+                // ends or the number picks a different button than the
+                // one under it.
+                let ordered = candidates.sorted(by: Self.readingOrder)
+                // Refuse when the shape changed under the answer.
+                if nth != nil, let outOf, outOf != ordered.count {
+                    return .failed(reason: "That list changed — there \(ordered.count == 1 ? "is" : "are") "
+                        + "\(ordered.count) “\(label)” now, not \(outOf). Say it again to pick from what is there.")
+                }
+                if let nth, nth >= 1, nth <= ordered.count {
+                    match = ordered[nth - 1]
+                    break
+                }
+                if let nth {
+                    return .failed(reason: "There \(ordered.count == 1 ? "is" : "are") only "
+                        + "\(ordered.count) called “\(label)” — you asked for number \(nth)")
+                }
+                // Say which problem it is. The old line said "Nothing
+                // called X" and then listed X, which reads as a bug in
+                // jev rather than a question for the person.
+                await Self.lastAmbiguity.record(label: label, window: target.windowID,
+                                                count: ordered.count)
+                return .failed(reason: Self.ambiguous(label, count: ordered.count,
+                                                      app: target.appName))
+            case .tangled(let candidates):
+                // A dead end on purpose. No ordinal, because the
+                // candidates are different kinds of control with one
+                // name, and picking by position would hand over
+                // whichever happens to sit second.
+                return .failed(reason: Self.tangled(label, candidates: candidates,
+                                                    app: target.appName))
+            case .none:
                 return .failed(reason: Self.notFound(label, in: found, app: target.appName))
             }
             guard match.enabled else {
@@ -563,11 +636,15 @@ public struct CuaBackend: Sendable {
             .filter { ($0.frame!.width * $0.frame!.height) > 120 }
             // Reading order: down the page, then across, so the numbers run
             // the way the eye does rather than the way the tree does.
-            .sorted {
-                let a = $0.frame!, b = $1.frame!
-                if abs(a.minY - b.minY) > 12 { return a.minY < b.minY }
-                return a.minX < b.minX
-            }
+            //
+            // THE SAME comparator the ordinal uses, which is the whole
+            // point: "number two" has to mean the same button to the
+            // phone drawing the badges and to the Mac choosing among
+            // candidates. They drifted apart once — a tolerance band
+            // here and a quantised bucket there — and measured over
+            // 3,000 random sets the two orders disagreed 9.8% of the
+            // time, whenever two controls straddled a bucket edge.
+            .sorted(by: Self.readingOrder)
             // Only what the phone can actually see. A control on the second
             // display has no fraction of THIS one, so it simply has no place
             // to be drawn — Geometry says so by returning nil rather than a
@@ -598,6 +675,20 @@ public struct CuaBackend: Sendable {
     /// be clickable — but when a row, its cell and its text all carry
     /// the same name, that is ONE thing with three accessibility
     /// wrappers, not three candidates to refuse between.
+    /// Controls that change a setting by being pressed.
+    ///
+    /// Shared, because two places reason about them and one of them was
+    /// blind: `collapseWrappers` knew about toggles and `match` did
+    /// not, so `{AXRow, AXCheckBox, AXCheckBox}` sailed past the guard
+    /// and offered "say number two" for a pair of permission switches.
+    public static let toggleRoles: Set<String> = [
+        "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle",
+    ]
+
+    /// Wrappers that are a target in their own right — you can select a
+    /// row — as opposed to a caption, which only names its control.
+    public static let containerRoles: Set<String> = ["AXRow", "AXCell"]
+
     public static let wrapperRoles: Set<String> = ["AXRow", "AXCell", "AXStaticText", "AXImage"]
 
     /// Outermost first, for when every candidate is packaging.
@@ -638,9 +729,30 @@ public struct CuaBackend: Sendable {
         // same name, that is a genuine ambiguity.
         // Every one of these is in `clickableRoles`; listing a role the
         // pool never contains would make the guard dead for it.
-        let toggles: Set<String> = ["AXCheckBox", "AXRadioButton", "AXDisclosureTriangle"]
-        if controls.count == 1, toggles.contains(controls[0].role),
-           candidates.contains(where: { $0.role == "AXRow" }) {
+        // ANY wrapper, not just AXRow.
+        //
+        // The guard tested `role == "AXRow"` specifically, so a toggle
+        // packaged in an AXCell — which is what a SwiftUI list reports,
+        // and what an outline reports when its row falls outside the
+        // element cap — was resolved and clicked with no question asked.
+        // Measured: AXCell+AXCheckBox, AXStaticText+AXCheckBox and
+        // AXImage+AXCheckBox all returned the checkbox.
+        // CONTAINERS, not captions.
+        //
+        // Widening this to every wrapper role was too much: an
+        // AXStaticText or AXImage carrying the toggle's own name IS the
+        // toggle's label, and collapsing it is the entire job of this
+        // function. Measured, the widened version refused the standard
+        // labelled checkbox — `<label>Dark Mode</label><input
+        // type=checkbox>` gives AXStaticText + AXCheckBox — so "click
+        // dark mode" stopped working on ordinary settings forms.
+        //
+        // A row or a cell is different: it is a thing you can select
+        // that HAPPENS to contain a switch, so the two are rival
+        // targets. That is the SwiftUI list case, where the container
+        // is reported as AXCell rather than AXRow.
+        if controls.count == 1, Self.toggleRoles.contains(controls[0].role),
+           candidates.contains(where: { Self.containerRoles.contains($0.role) }) {
             return nil
         }
         if controls.count == 1 { return controls[0] }
@@ -829,52 +941,222 @@ public struct CuaBackend: Sendable {
     /// Exact label wins, then a whole-word prefix, then containment. Never a
     /// fuzzy score: "Don't Save" and "Save" differ by one word and the wrong
     /// choice loses your document.
-    public static func bestMatch(for label: String, in elements: [Element], roles: Set<String>) -> Element? {
+    /// Top to bottom, then left to right, in reading order.
+    ///
+    /// The same ordering the numbered badges use, and it has to be, or
+    /// "the second one" means one button to the phone and a different
+    /// one to the Mac. The 12-point band is what stops two controls on
+    /// the same visual row swapping places because one sits a pixel
+    /// higher.
+    public static func readingOrder(_ a: Element, _ b: Element) -> Bool {
+        orderKey(a) < orderKey(b)
+    }
+
+    /// A TOTAL key, because the obvious comparator is not an ordering.
+    ///
+    /// Two measured violations of strict weak ordering in the version
+    /// this replaces. A tolerance band is intransitive by construction:
+    /// rows at y = 0, 10, 20 with a 12-point band give r2 < r1, r3 < r2
+    /// and r1 < r3, a cycle. And mixing framed with frameless elements
+    /// compared them on two different scales, giving another cycle.
+    /// Swift's sort did not trap on either (20,000 randomised trials),
+    /// so the cost was silent: the order simply was not reading order,
+    /// and "number two" pressed whichever button that happened to be.
+    ///
+    /// Quantising y to the band makes it transitive — two controls are
+    /// on the same row when they land in the same bucket, not when they
+    /// happen to be within twelve points of each other — and frameless
+    /// elements sort as one block at the end rather than interleaving.
+    private static func orderKey(_ e: Element) -> (Int, Int, Int, Int) {
+        guard let frame = e.frame else { return (1, 0, 0, e.index) }
+        // Clamped before the conversion. `Int(1e19)` is a fatal error,
+        // and `JSONSerialization` will hand us 1e19 quite happily — so
+        // a driver reporting an absurd coordinate would take the daemon
+        // down inside a sort, which is the one place nothing catches it.
+        func whole(_ value: Double) -> Int {
+            guard value.isFinite else { return 0 }
+            return Int(value.clamped(to: -1e9 ... 1e9))
+        }
+        return (0, whole((frame.minY / 12).rounded(.down)), whole(frame.minX), e.index)
+    }
+
+    /// What the matcher found: one thing, several equally good things, or
+    /// nothing at all.
+    ///
+    /// "Nothing" and "several" are OPPOSITE problems and they had one
+    /// message between them. Three buttons called "Follow" produced
+    /// `Nothing called “Follow” in Chrome. I can see: … “Follow” …` —
+    /// a sentence that denies the thing it then lists, and the advice it
+    /// implies (use a different word) is the advice that cannot work,
+    /// because the word was right and the count was the problem.
+    public enum Match: Sendable {
+        case one(Element)
+        /// Equally good candidates of ONE kind, which an ordinal can
+        /// pick between because the only thing separating them is where
+        /// they are.
+        case ambiguous([Element])
+        /// Several things share the name and they are NOT
+        /// interchangeable — a row and the switch inside it, a button
+        /// and a menu item. No ordinal is offered, because the person
+        /// has no way to know which is which and the wrong one changes
+        /// a setting.
+        case tangled([Element])
+        case none
+    }
+
+    /// `bestMatch`, but it says WHY it failed.
+    ///
+    /// The tier logic below is unchanged — this is the same function with
+    /// its refusal split in two, so a caller can tell the person which of
+    /// the two things went wrong.
+    public static func match(for label: String, in elements: [Element],
+                             roles: Set<String>) -> Match {
         let wanted = normalise(label)
-        guard !wanted.isEmpty else { return nil }
+        guard !wanted.isEmpty else { return .none }
         let pool = elements.filter { roles.contains($0.role) }
 
-        // Refuse an ambiguity here too, not just in the prefix tier
-        // below. Chrome's profile picker offers four buttons all called
-        // "Alex" — this file's own comments use it as the example —
-        // and `first(where:)` silently pressed whichever the driver
-        // happened to list first.
-        //
-        // But a row and the text inside it are not two candidates.
-        // `clickableRoles` deliberately includes the WRAPPERS —
-        // AXRow, AXCell, AXStaticText, AXImage — so that a list item
-        // can be clicked at all, and macOS gives the container and its
-        // label the same accessible name as a matter of course. A flat
-        // count refused "click General" in System Settings with
-        // "I can see: “General”, “General”", which is worse than the
-        // guess it replaced. So the real control wins over its own
-        // packaging, and only a tie BETWEEN CONTROLS is an ambiguity.
         let exact = pool.filter { normalise($0.label) == wanted }
-        if !exact.isEmpty { return Self.collapseWrappers(exact) }
+        if !exact.isEmpty {
+            if let only = Self.collapseWrappers(exact) { return .one(only) }
+            // Count the CONTROLS, not their packaging.
+            //
+            // `clickableRoles` deliberately includes AXRow, AXCell,
+            // AXStaticText and AXImage so a list item can be clicked at
+            // all, and macOS gives a control and its label the same
+            // accessible name as a matter of course. Handing the whole
+            // exact set back as candidates counted each button twice:
+            // measured on three Follow buttons each with its own static
+            // text, the person was told there were SIX, and "number
+            // two" resolved to the text node inside button one — the
+            // wrong control, clicked by position, reported as success.
+            //
+            // The same reasoning `collapseWrappers` already applies to
+            // pick a single winner, applied to a set: when real
+            // controls are present they are the candidates, and the
+            // wrappers are what they are wearing.
+            // Answerable by a number only when the candidates are the
+            // SAME KIND of thing.
+            //
+            // This is the narrow case and it has to stay narrow,
+            // because making an ambiguity answerable removes the
+            // protection the ambiguity WAS. A refusal is a dead end on
+            // purpose: {AXRow "Safari", AXCheckBox "Safari"} in Privacy
+            // settings is refused so that "click Safari" cannot flip a
+            // permission — and inviting "number two" hands over exactly
+            // that toggle, in one more word, with no way for the person
+            // to know which of the two identical names they are
+            // picking. Measured: reading order puts the row first and
+            // the switch second.
+            //
+            // Three buttons called "Follow" are different: same role,
+            // interchangeable in kind, and the only thing distinguishing
+            // them is where they sit — which is precisely what an
+            // ordinal expresses.
+            //
+            // So: strip the packaging, and offer a choice only if what
+            // is left is two or more of ONE role. Anything else stays a
+            // dead end.
+            let controls = exact.filter { !wrapperRoles.contains($0.role) }
+            // All wrappers is the classic list: two identical rows in
+            // Mail are the MOST interchangeable thing there is, and the
+            // first version of this rule made them a dead end because
+            // `controls` was empty. Fall back to judging the whole set.
+            // A named row never arrives alone: macOS gives the row, its
+            // cell and its text the same accessible name, so "two Inbox
+            // rows" is six elements across three roles and the
+            // one-role test failed on the very shape it was added for.
+            // Keep only the outermost wrapper present, which is the
+            // rule `collapseWrappers` already uses to pick a winner.
+            let outermost = exact.filter {
+                wrapperRank[$0.role] == exact.compactMap { wrapperRank[$0.role] }.min()
+            }
+            let pool = controls.count >= 2 ? controls
+                     : (outermost.count >= 2 ? outermost : exact)
+            let roles = Set(pool.map(\.role))
+            // A toggle anywhere in the name — in the pool or in the
+            // packaging around it — ends the conversation.
+            //
+            // Position is not a safe way to choose between switches:
+            // they are identical by name, they change state rather than
+            // navigate, and the person has no way to see which of two
+            // "Safari" switches is number two. Measured, this is the
+            // shape that slipped through "≥2 of one role":
+            // {AXRow, AXCheckBox, AXCheckBox} offered a numbered choice
+            // between two permission toggles and dropped the row — the
+            // only harmless target — out of the list entirely.
+            // Over the POOL, not everything sharing the name. Three
+            // interchangeable Follow buttons should stay answerable
+            // even if some unrelated "Follow" filter switch exists in a
+            // sidebar; what must not be answerable is a choice BETWEEN
+            // switches.
+            let anyToggle = pool.contains { Self.toggleRoles.contains($0.role) }
+            // Countable only if the person could actually see and press
+            // it. `numberedControls` already filters on exactly these —
+            // enabled, has a frame, big enough to hit — and the count
+            // in "there are N" has to mean the same set, or "number
+            // two" reaches a disabled or off-screen control the person
+            // never saw. A frameless candidate also sorted to position
+            // one, because its order key is zero.
+            // Geometry only counts when there is geometry. If the
+            // driver reported no frames at all — which it can — then
+            // dropping every frameless candidate would silently disable
+            // the whole feature, so in that case the only filter left
+            // is "can it be pressed".
+            let anyFramed = pool.contains { $0.frame != nil }
+            let reachable = pool.filter { candidate in
+                guard candidate.enabled else { return false }
+                guard anyFramed else { return true }
+                guard let f = candidate.frame else { return false }
+                return f.width * f.height > 120
+            }
+            if reachable.count >= 2, roles.count == 1, !anyToggle {
+                return .ambiguous(reachable)
+            }
+            // Exactly one you could actually press is not an ambiguity.
+            //
+            // Refusing here produced the very sentence this change set
+            // out to delete: "is a Button, and I cannot tell which you
+            // mean" about a page showing ONE Follow, with the duplicate
+            // disabled or frameless in a sticky header.
+            // …of ONE kind. Without `roles.count == 1` this shortcut
+            // resolved a tangled set whenever all but one member were
+            // unreachable — an AXLink and a frameless AXMenuItem both
+            // called "Inbox" silently picked the link, which is the
+            // invariant the whole `.tangled` case exists to hold.
+            if reachable.count == 1, roles.count == 1, !anyToggle {
+                return .one(reachable[0])
+            }
+            return .tangled(exact)
+        }
 
-        // Never across a negation. This function's own comment below has
-        // warned about "Save" becoming "Don't Save" since it was written,
-        // and the loose tiers did exactly that: on a two-control surface
-        // "Don't Save" is the ONLY thing containing "Save", so the
-        // single-candidate rule handed it back. Reachable with free text
-        // through the right-click binding, which takes any argument.
-        // Only a candidate that ADDS TO THE END of what was asked for.
-        // Containment let "Don't Save" answer to "Save" — this file's
-        // own comment below has warned about exactly that since it was
-        // written — and it read "Discard Invoice" as a match for
-        // "Invoice", which is one of two actions, not a narrowing.
         let prefixed = pool.filter {
             normalise($0.label).hasPrefix(wanted) && !Negation.differs(label, $0.label)
         }
-        // Collapsed the same way as the exact tier. Without it, "click
-        // Sound" in System Settings refused with "I can see: Sound &
-        // Haptics, Sound & Haptics, Sound & Haptics" — the same row
-        // three times, which is the failure the exact tier was fixed
-        // for arriving one tier down.
-        if let only = Self.collapseWrappers(prefixed) { return only }
+        if let only = Self.collapseWrappers(prefixed) { return .one(only) }
+        // A prefix tie is NOT answerable by a number, and saying it is
+        // was a mistake. These candidates have DIFFERENT names —
+        // "Delete Account" and "Delete Message" both start with
+        // "Delete" — so "there are 2 things called Delete" is false,
+        // and inviting someone to pick number two asks them to choose
+        // between two destructive actions the sentence never names, in
+        // an order they cannot see. It also reopened a case an earlier
+        // round closed deliberately: a row and its permission switch
+        // both prefixed by the app's name, where number two is the
+        // switch.
+        //
+        // `.none` sends it back to `notFound`, which at least lists
+        // what it can see.
+        return .none
+    }
 
-        // Two things match and we cannot tell them apart. Refusing is right:
-        // picking one at random is how "Save" becomes "Don't Save".
+    public static func bestMatch(for label: String, in elements: [Element], roles: Set<String>) -> Element? {
+        // One implementation, two shapes. Every existing caller and every
+        // assertion that reads "refuses an ambiguity" keeps working, and
+        // the tier rules cannot drift apart from `match`, which is the
+        // failure this whole matcher exists to avoid.
+        if case .one(let element) = match(for: label, in: elements, roles: roles) {
+            return element
+        }
         return nil
     }
 
@@ -923,6 +1205,82 @@ public struct CuaBackend: Sendable {
         return "Nothing called “\(label)” in \(app). I can see: \(names)"
     }
 
+    /// Several things answer to that name.
+    ///
+    /// A different sentence from `notFound`, because it is a different
+    /// problem: the word was right and the count was wrong, so "try
+    /// another word" is exactly the wrong advice. Say how many, and
+    /// point at the one thing that does resolve it.
+    public static func ambiguous(_ label: String, count: Int, app: String) -> String {
+        "There \(count == 1 ? "is" : "are") \(count) things called “\(label)” in \(app) — "
+            + "say which one, like “number two”"
+    }
+
+    /// How many equally-named controls a click found, if that is why it
+    /// failed.
+    ///
+    /// Read back out of the sentence rather than threaded through a new
+    /// return type, because `ExecutionResult` is the contract between
+    /// the executor and everything that records, journals and shows a
+    /// command, and widening it to carry one optional integer would
+    /// touch every one of them. The sentence is produced ten lines
+    /// above by `ambiguous(_:count:app:)` and is asserted against this
+    /// reader, so the two cannot drift.
+    /// Several things share the name and they are not the same kind of
+    /// thing.
+    ///
+    /// Deliberately WITHOUT the "say number two" invitation, and
+    /// deliberately not in the shape `ambiguityCount` reads — arming a
+    /// choice here is what would let one extra word flip a permission
+    /// switch that shares its row's name.
+    public static func tangled(_ label: String, candidates: [Element], app: String) -> String {
+        let kinds = candidates.map { $0.role.replacingOccurrences(of: "AX", with: "") }
+        var seen = Set<String>()
+        let named = kinds.filter { seen.insert($0).inserted }.joined(separator: " and a ")
+        return "“\(label)” in \(app) is a \(named), and I cannot tell which you mean. "
+            + "Say “show numbers” and pick one."
+    }
+
+    /// The window the last ambiguity was counted in.
+    ///
+    /// Held here rather than smuggled into the refusal sentence. The
+    /// first attempt appended `⁣w4211` after an invisible separator and
+    /// called the result invisible — but only the SEPARATOR is
+    /// invisible; `w4211` is plain ASCII and rendered, on the phone's
+    /// toast, in the approval card and in `commands.jsonl`, on the most
+    /// common refusal this change produces.
+    ///
+    /// A sentence shown to a person is not a transport.
+    public actor Ambiguity {
+        private var label: String?
+        private var window: Int?
+        private var count: Int?
+        private var at: Date?
+
+        public func record(label: String, window: Int, count: Int) {
+            self.label = label; self.window = window
+            self.count = count; self.at = Date()
+        }
+
+        /// The window that ambiguity was counted in, if it is the one
+        /// being asked about and it is recent.
+        public func window(forLabel wanted: String, count wantedCount: Int) -> Int? {
+            guard let label, let at, label == wanted, count == wantedCount,
+                  Date().timeIntervalSince(at) < 60 else { return nil }
+            return window
+        }
+    }
+
+    public static let lastAmbiguity = Ambiguity()
+
+    public static func ambiguityCount(in reason: String) -> Int? {
+        guard reason.hasPrefix("There is ") || reason.hasPrefix("There are ") else { return nil }
+        guard reason.contains("things called") else { return nil }
+        let words = reason.split(separator: " ")
+        guard words.count > 2 else { return nil }
+        return Int(words[2])
+    }
+
     /// The driver's refusal text is precise but written for a machine. The
     /// phone shows this to a person standing in another room.
     public static func humanise(_ reason: String) -> String {
@@ -936,3 +1294,8 @@ public struct CuaBackend: Sendable {
     }
 }
 
+private extension Double {
+    func clamped(to limits: ClosedRange<Double>) -> Double {
+        Swift.min(Swift.max(self, limits.lowerBound), limits.upperBound)
+    }
+}

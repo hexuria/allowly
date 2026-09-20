@@ -10,7 +10,10 @@ actor Router {
     typealias DecideHandler = (String, String, Nonce) async -> ExecutionResult
     typealias ScreenshotHandler = (String?) async -> Data?
     typealias VoiceUploadHandler = (Data) async -> String?
-    typealias CommandHandler = (String) async -> ExecutionResult
+    /// - Parameter ordinalsAreTheirs: the phone has numbered badges on
+    ///   screen, so a spoken number belongs to it, not to any question
+    ///   the Mac is waiting on.
+    typealias CommandHandler = (String, Bool) async -> ExecutionResult
     typealias VapidKeyHandler = () async -> String
     typealias SubscribeHandler = (String) async -> String
     typealias PolicyHandler = () async -> String
@@ -374,7 +377,10 @@ actor Router {
         // dictaphone: you spoke, it echoed, and nothing happened on the Mac.
         var payload: [String: Any] = ["transcript": transcript]
         if let runCommand = commandHandler {
-            let result = await runCommand(transcript)
+            // Parsed, not searched. `contains("badges=1")` is true for
+            // `?token=abadges=1` and for `?badges=10`.
+            let badgesUp = HTTPPath.queryValue(named: "badges", in: request.path) == "1"
+            let result = await runCommand(transcript, badgesUp)
             payload["decision"] = result.status == .ok ? "Done — \(result.reason)" : "Not run — \(result.reason)"
             payload["executed"] = result.status == .ok
         } else {
@@ -422,7 +428,9 @@ actor Router {
             return
         }
 
-        let result = await handler(payload.command)
+        // The typed command route has no badges — that state belongs to
+        // the phone's voice path.
+        let result = await handler(payload.command, false)
 
         do {
             let encoder = JSONEncoder()

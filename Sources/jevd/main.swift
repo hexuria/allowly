@@ -249,8 +249,9 @@ final class CommandExecutor {
             }
             return hideApp(bundleId)
 
-        case .clickControl(let label):
-            return await Self.cua.click(labelled: label)
+        case .clickControl(let label, let nth, let outOf, let inWindow):
+            return await Self.cua.click(labelled: label, nth: nth, outOf: outOf,
+                                        inWindow: inWindow)
 
         case .typeText(let text):
             return await Self.cua.type(text)
@@ -267,8 +268,9 @@ final class CommandExecutor {
         case .pressKeys(let spec):
             return Keystrokes.press(spec)
 
-        case .rightClickControl(let label):
-            return await Self.cua.click(labelled: label, button: "right")
+        case .rightClickControl(let label, let nth, let outOf, let inWindow):
+            return await Self.cua.click(labelled: label, button: "right",
+                                        nth: nth, outOf: outOf, inWindow: inWindow)
 
         case .fillField(let label, let text):
             return await Self.cua.fill(field: label, with: text)
@@ -925,6 +927,10 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         testFailures.append(contentsOf: SelfTest.checkRisk(DialogWatcher.risk))
         testFailures.append(contentsOf: SelfTest.checkAutoPressable(DialogWatcher.isKnownSafeLabel))
         testFailures.append(contentsOf: SelfTest.checkReasonEcho(JevRuntime.reasonEchoes))
+        testFailures.append(contentsOf: SelfTest.checkOrdinal(JevRuntime.ordinal))
+        testFailures.append(contentsOf: SelfTest.checkBadgeNumber(JevRuntime.badgeNumber))
+        testFailures.append(contentsOf: SelfTest.checkControlGate(
+            JevRuntime.controlPhrase, JevRuntime.exactlyOneControl))
         testFailures.append(contentsOf: SelfTest.checkConsentSheet(TCCDetector.isConsentSheet))
         testFailures.append(contentsOf: SelfTest.checkPaths(HTTPPath.canonicalPath))
         // What you say must keep meaning what it meant.

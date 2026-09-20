@@ -22,7 +22,16 @@ actor JevRuntime {
     private var watcher: DialogWatcher?
     private var sockets: [WebSocketSession] = []
     /// Commands parked awaiting a yes/no from the phone, by approval id.
-    private var pendingCommands: [String: Command] = [:]
+    /// A parked command, and the sentence that asked for it.
+    ///
+    /// The sentence is kept because the card path runs the command much
+    /// later, and an ambiguity discovered then has to be able to say
+    /// what the person actually asked for. Without it the stored
+    /// "what you said" became jev's own refusal, and the next approval
+    /// card read: You said "There are 3 things called Follow in
+    /// Chrome — say which one, like number two → number two".
+    private var pendingCommands: [String: (command: Command, said: String,
+                                          saidIsPrivate: Bool)] = [:]
     /// Permission requests from the Claude Code hook that are on the phone
     /// right now, waiting for a thumb, and the answers that have come back.
     ///
@@ -634,7 +643,7 @@ actor JevRuntime {
             return String(data: data, encoding: .utf8) ?? #"{"ok":false}"#
         }
 
-        server.onCommand { [weak self] text in
+        server.onCommand { [weak self] text, ordinalsAreTheirs in
             guard let self else { return .failed(reason: "Shutting down") }
             let started = Date()
             // NSWorkspace only. Phrasebook.context() also asks the browser
@@ -681,6 +690,38 @@ actor JevRuntime {
             // sentence had to be repeated just to add "2". If the last thing
             // asked for a value and this is short enough to be one, put them
             // together instead.
+            // A number belongs to the badges, and to nothing else.
+            //
+            // FIRST, before any channel. Placing it after
+            // `takePendingArgument` left that one channel able to
+            // consume it — "set volume to" pending, badges up, "two"
+            // set the volume AND the phone tapped badge 2.
+            //
+            // The test is what the PHONE claims, not what an ordinal
+            // means to the Mac. Those were two different grammars and
+            // they disagreed both ways: the Mac claimed "second" and
+            // the phone did not, so the word vanished and was reported
+            // as done; the phone claimed "press 2" and the Mac did
+            // not, so the digit was typed into the app AND the badge
+            // was pressed.
+            // …unless jev asked a question more recently than the
+            // badges went up.
+            //
+            // Deferring unconditionally made the refusal's own advice
+            // unfollowable whenever the phone's websocket was down: the
+            // Mac's "take the badges away" message is fire-and-forget,
+            // so the phone kept them up, kept sending `?badges=1`, and
+            // the answer was handed to a badge that means something
+            // else. An armed choice is a question this end is waiting
+            // on, and it wins.
+            if ordinalsAreTheirs, await self.hasAnswerableChoice(for: text) {
+                // fall through: the Mac takes it
+            } else if ordinalsAreTheirs, JevRuntime.badgeNumber(in: text) != nil {
+                return journal("badge/deferred", "the phone owns that number",
+                               .ok(reason: "That number is for the badge on your screen"),
+                               heard: text)
+            }
+
             if let pending = await self.takePendingArgument(for: text) {
                 let phrase = pending + " " + text
                 let parsed = VoiceCommand.parse(phrase)
@@ -711,6 +752,46 @@ actor JevRuntime {
                 return journal("finishing", pending,
                                .failed(reason: "“\(text)” does not work for \(pending)"),
                                heard: phrase, unparsed: true)
+            }
+
+            // "number two", answering the question the last refusal asked.
+            //
+            // Before the phrasebook and before the model, because a bare
+            // ordinal parses as nothing and would otherwise reach the
+            // decider, which cannot know what was on the screen when the
+            // question was asked. It runs the ordinary `.clickControl`
+            // route, so the label is still journalled, still rated, and
+            // still gated by policy — the number only says WHICH of the
+            // equally-named ones.
+            if let choice = await self.takePendingChoice(for: text) {
+                let described = "\(choice.rightClick ? "Right-click" : "Click") "
+                    + "“\(choice.label)” (\(choice.nth) of \(choice.count))"
+                // The label can BE the private value — "right click on"
+                // + a spoken password builds `.rightClickControl(label:
+                // <value>)`. The route that armed this redacted it; the
+                // answer has to as well, or it reaches jev.log and
+                // commands.jsonl in full.
+                JevLog.write("[jev] picking \(choice.nth) of \(choice.count) controls"
+                    + (choice.saidIsPrivate ? "" : " called “\(choice.label)”"))
+                // The same verb that asked the question.
+                let command: Command = choice.rightClick
+                    ? .rightClickControl(label: choice.label, nth: choice.nth,
+                                         outOf: choice.count, inWindow: choice.window)
+                    : .clickControl(label: choice.label, nth: choice.nth,
+                                    outOf: choice.count, inWindow: choice.window)
+                // `spokenAs` keeps the sentence that named the control,
+                // not the bare "number two" — the approval card quotes
+                // it, and "You said “number two”" tells someone
+                // approving a destructive click nothing at all.
+                // The privacy of the original sentence travels with
+                // it. The finishing route marks a spoken VALUE private
+                // so it never reaches the decider; an ambiguity in the
+                // middle used to drop that flag and post it anyway.
+                return journal("screen/nth", described, await self.dispatch(
+                    VoiceCommand.Parsed(command: command, description: described),
+                    spokenAs: "\(choice.said) → \(text)",
+                    spokenIsPrivate: choice.saidIsPrivate),
+                    kind: command, heard: text, unparsed: choice.saidIsPrivate)
             }
 
             let pressed = JevIntent.startsWithPressVerb(text)
@@ -1142,6 +1223,144 @@ actor JevRuntime {
         set { _pendingArgument = newValue }
     }
 
+    /// A click that found several equally-good controls, and the label
+    /// it was looking for.
+    ///
+    /// The refusal tells the person there are three and asks which; this
+    /// is what makes the answer mean something thirty seconds later.
+    /// Without it, "the second one" is a sentence with no subject and
+    /// goes to the model, which cannot know what was on screen.
+    /// An instance property, not a `nonisolated(unsafe) static`.
+    ///
+    /// The first version copied the shape of `_pendingArgument` above —
+    /// except that one is an ordinary actor-isolated property, so the
+    /// copy was of something that was not there. A static is
+    /// process-global and gives up the compiler check that would catch
+    /// a future `nonisolated` helper touching it.
+    private var _pendingChoice: (label: String, count: Int, said: String, rightClick: Bool,
+                                 saidIsPrivate: Bool, window: Int?, asked: Date)?
+    private var pendingChoice: (label: String, count: Int, said: String, rightClick: Bool,
+                                saidIsPrivate: Bool, window: Int?, asked: Date)? {
+        get { _pendingChoice }
+        set { _pendingChoice = newValue }
+    }
+
+    /// Did this utterance pick one of the controls we just asked about?
+    ///
+    /// Returns the label and the ordinal, or nil if this was not an
+    /// answer. Deliberately narrow: an ordinal and nothing else, inside
+    /// the same half-minute the question was asked, and never a phrase
+    /// that stands on its own as a command.
+    /// Is there a live question here that this utterance answers?
+    ///
+    /// Read-only — it does not consume the choice, because the caller
+    /// may still hand the word to the badges.
+    func hasAnswerableChoice(for text: String) -> Bool {
+        guard let pending = pendingChoice,
+              Date().timeIntervalSince(pending.asked) < 30,
+              let nth = Self.ordinal(in: text) else { return false }
+        return nth >= 1 && nth <= pending.count
+    }
+
+    func takePendingChoice(for text: String)
+        -> (label: String, nth: Int, count: Int, said: String,
+            rightClick: Bool, saidIsPrivate: Bool, window: Int?)? {
+        guard let pending = pendingChoice else { return nil }
+        guard Date().timeIntervalSince(pending.asked) < 30 else {
+            pendingChoice = nil
+            return nil
+        }
+        guard let nth = Self.ordinal(in: text), nth >= 1, nth <= pending.count else {
+            // Not an answer, so the question is over. Left armed, a
+            // stray "two" spoken in the room up to thirty seconds later
+            // would click something — and hands-free listens
+            // continuously, across launches.
+            pendingChoice = nil
+            return nil
+        }
+        pendingChoice = nil
+        return (pending.label, nth, pending.count, pending.said,
+                pending.rightClick, pending.saidIsPrivate, pending.window)
+    }
+
+    /// "two", "number 2", "the second one" — and nothing else.
+    ///
+    /// Anything longer is a new command. This is the same reasoning as
+    /// `takePendingArgument`: a whole sentence is a person moving on.
+    /// Would the PHONE read this as a badge number?
+    ///
+    /// A deliberate mirror of `pressNumber` in `web/app.js`, and a
+    /// different question from `ordinal`. `ordinal` answers "is this an
+    /// answer to the question jev asked?", which excludes "press 2"
+    /// because that is a keystroke. This answers "will the phone act on
+    /// this?", which includes it — the phone strips exactly these
+    /// verbs.
+    ///
+    /// They were the same predicate once and disagreed in both
+    /// directions: the Mac swallowed "second" (which the phone ignores)
+    /// and reported it as done, while "press 2" passed the Mac's test,
+    /// typed a digit into the app, AND pressed the badge.
+    ///
+    /// Kept in step by `SelfTest.checkBadgeNumber`, which carries the
+    /// same table as the JavaScript.
+    static func badgeNumber(in text: String) -> Int? {
+        var said = text.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[.!?]+$", with: "", options: .regularExpression)
+        for verb in ["click", "press", "tap", "pick", "choose", "select", "number", "option"]
+        where said.hasPrefix(verb + " ") {
+            said = String(said.dropFirst(verb.count + 1))
+            break
+        }
+        if said.hasPrefix("number ") { said = String(said.dropFirst(7)) }
+        said = said.trimmingCharacters(in: .whitespaces)
+        if let digits = Int(said), digits > 0 { return digits }
+        let words = ["one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10]
+        return words[said]
+    }
+
+    static func ordinal(in text: String) -> Int? {
+        let cleaned = text.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: " .!?,"))
+        let words = cleaned.split(separator: " ").map(String.init)
+        guard !words.isEmpty, words.count <= 5 else { return nil }
+        // "please" and "thanks" are how people actually talk, and "2nd"
+        // is what a speech recogniser routinely emits for "second".
+        // "press", "tap", "click" and "option" are NOT ignorable.
+        //
+        // They are how you say a keystroke: "press 2" types the digit,
+        // "press option 1" is ⌥1. Treating them as filler meant that
+        // for thirty seconds after any ambiguity those utterances
+        // clicked a candidate instead — and ordinals are checked before
+        // the phrasebook and before the model, so nothing downstream
+        // could recover them.
+        let ignorable: Set<String> = ["number", "the", "one", "please", "thanks",
+                                      "thank", "you"]
+        // …and a phrase that stands on its own as a command is never an
+        // answer. Same rule `takePendingArgument` states and this
+        // function's own docstring claimed without implementing.
+        if Phrasebook.claimsExactly(cleaned, in: Phrasebook.neutral) { return nil }
+        let meaningful = words.filter { !ignorable.contains($0) }
+        // "the one" and "number one" both mean the first; with every
+        // ignorable word gone, "one" has been eaten, so an utterance that
+        // is nothing BUT ignorable words means the first only when it
+        // actually said "one".
+        guard let token = meaningful.last ?? (words.contains("one") ? "one" : nil) else { return nil }
+        guard meaningful.count <= 1 else { return nil }
+        if let digits = Int(token) { return digits }
+        // "2nd", "3rd", "11th"
+        if token.count >= 3, let suffix = ["st", "nd", "rd", "th"].first(where: token.hasSuffix),
+           let digits = Int(token.dropLast(suffix.count)) {
+            return digits
+        }
+        let spelled = ["first": 1, "one": 1, "second": 2, "two": 2, "third": 3, "three": 3,
+                       "fourth": 4, "four": 4, "fifth": 5, "five": 5, "sixth": 6, "six": 6,
+                       "seventh": 7, "seven": 7, "eighth": 8, "eight": 8,
+                       "ninth": 9, "nine": 9, "tenth": 10, "ten": 10]
+        return spelled[token]
+    }
+
     private func rememberPendingArgument(_ phrase: String) {
         _pendingArgument = (phrase, Date())
     }
@@ -1153,6 +1372,21 @@ actor JevRuntime {
     /// something the length of "2" or "the design one" is a missing piece.
     private func takePendingArgument(for text: String) -> String? {
         guard let pending = _pendingArgument else { return nil }
+        // A newer question outranks an older one. Both channels are
+        // checked in a fixed order, so an unanswered "what level?" from
+        // earlier used to swallow the "number two" that answers "which
+        // Follow?" — and consume itself doing it, so the first attempt
+        // was lost with a message about volume.
+        if let choice = _pendingChoice, choice.asked > pending.asked,
+           Date().timeIntervalSince(choice.asked) < 30,
+           let nth = Self.ordinal(in: text), nth >= 1, nth <= choice.count {
+            // In range, so the choice channel really will take it.
+            // Without the range check both channels declined — this one
+            // yielded because "50" is an ordinal, the other rejected it
+            // as out of range AND disarmed — and the utterance was lost
+            // with the pending question consumed.
+            return nil
+        }
         guard Date().timeIntervalSince(pending.asked) < 30 else {
             _pendingArgument = nil
             return nil
@@ -1160,6 +1394,14 @@ actor JevRuntime {
         let words = text.split(separator: " ").count
         guard words <= 4 else { return nil }
         // Anything that stands on its own is a new command, not an answer.
+        // EXACTLY claimed, not merely near. `VoiceCommand.parse` falls
+        // back to a Levenshtein match, which is right for speech and
+        // wrong here: "click home" is within budget of a binding, so
+        // yielding on `parse` handed an ordinary button press to the
+        // pointer — measured, 20 of 43 common labels went that way,
+        // including Home, Share, Chat, More and Help. A pointer click
+        // at wherever the cursor was left is the unlabelled, unrated
+        // click this whole design exists to avoid.
         guard VoiceCommand.parse(text) == nil else { return nil }
         // And so is a command that is merely unfinished — saying "set volume
         // to" twice asked the question and then answered it with itself.
@@ -1237,7 +1479,7 @@ actor JevRuntime {
             // five minutes later the number went to jev.log in full.
             let parked = pendingCommands.removeValue(forKey: stale.id)
             await broadcastResolved(id: stale.id)
-            JevLog.write("[jev] withdrew “\(CommandJournal.safeDescription(stale.title, parked))”"
+            JevLog.write("[jev] withdrew “\(CommandJournal.safeDescription(stale.title, parked?.command))”"
                 + " — nobody answered it in time")
         }
         for request in await store.getAllPending() {
@@ -1258,7 +1500,10 @@ actor JevRuntime {
     /// word, because "save the file to Downloads" is not a request to press
     /// Save, and a loose match here would be worse than the shortcut
     /// collision it exists to fix.
-    private func controlMatching(_ text: String) async -> String? {
+    /// The control name inside "click the Save button", or nil.
+    ///
+    /// Pure, and separated out so the strictness below can be asserted.
+    static func controlPhrase(from text: String) -> String? {
         var phrase = text.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
@@ -1272,12 +1517,67 @@ actor JevRuntime {
         if phrase.hasPrefix("the ") { phrase = String(phrase.dropFirst(4)) }
         if phrase.hasSuffix(" button") { phrase = String(phrase.dropLast(7)) }
         phrase = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard phrase.count >= 2 else { return nil }
+        return phrase.count >= 2 ? phrase : nil
+    }
 
-        let labels = await CommandExecutor.cua.visibleLabels()
-        let hits = labels.filter { $0.lowercased() == phrase }
+    /// Does exactly one visible control answer to this name?
+    ///
+    /// EXACT, deliberately, and this is a decision rather than an
+    /// oversight. The obvious improvement is to score here the way
+    /// `CuaBackend.bestMatch` scores at the executor — but that matcher
+    /// has a prefix tier, and this gate runs BEFORE the phrasebook, so
+    /// the prefix tier would eat the vocabulary. Measured against the
+    /// real matcher, on pools that occur constantly:
+    ///
+    ///     "select all"  -> "all"  -> Allow        (a cookie banner)
+    ///     "click it"    -> "it"   -> Italic
+    ///     "click this"  -> "this" -> This Mac
+    ///     "click here"  -> "here" -> Here's what's new
+    ///
+    /// Every one of those is a real phrasebook binding, and the first
+    /// one presses Allow on a consent banner. "click this" and "click
+    /// here" mean the POINTER; no label should ever outrank them.
+    ///
+    /// So the gate stays strict and only its folding is shared with the
+    /// executor, via `CuaBackend.normalise` — curly apostrophes and
+    /// ellipses, which are what made the two disagree about the same
+    /// string.
+    static func exactlyOneControl(named phrase: String, among labels: [String]) -> String? {
+        let wanted = CuaBackend.normalise(phrase)
+        let hits = labels.filter { CuaBackend.normalise($0) == wanted }
         // Two buttons with the same name is not a decision we get to make.
         return hits.count == 1 ? hits[0] : nil
+    }
+
+    private func controlMatching(_ text: String) async -> String? {
+        // The phrasebook owns its own vocabulary.
+        //
+        // This gate runs BEFORE `VoiceCommand.parse`, so without this
+        // line any binding whose object happens to match a visible
+        // label is stolen — and strictness does not save it, which is
+        // the part that surprised me. "click away" means Escape, and on
+        // a page with a status control labelled "Away" the gate matched
+        // it EXACTLY and pressed the button instead. Narrowing the
+        // matcher would never have caught that; only precedence does.
+        //
+        // Same rule as `takePendingArgument`: anything that stands on
+        // its own is a command, not a control name.
+        // `neutral`, so the most common command on the system does not
+        // fire a synchronous Apple Event at the browser from inside the
+        // actor. `Phrasebook.neutral` was added in this same change for
+        // exactly this reason and then not used here: every "click …"
+        // paid an osascript round trip with no timeout, and a wedged
+        // Chrome would have blocked every other command behind it.
+        //
+        // The cost: an app-scoped override is not consulted, so a
+        // scoped binding whose name matches a visible control could be
+        // out-competed by the control. That is a narrower hazard than
+        // hanging the daemon, and `VocabularySelfTest` pins the global
+        // vocabulary that matters.
+        guard !Phrasebook.claimsExactly(text, in: Phrasebook.neutral) else { return nil }
+        guard let phrase = Self.controlPhrase(from: text) else { return nil }
+        let labels = await CommandExecutor.cua.visibleLabels()
+        return Self.exactlyOneControl(named: phrase, among: labels)
     }
 
     /// Apply the saved mode for this app, if any, before troubling the human.
@@ -1286,8 +1586,60 @@ actor JevRuntime {
     ///   leave the Mac.
     private func dispatch(_ parsed: VoiceCommand.Parsed, spokenAs text: String,
                           spokenIsPrivate: Bool = false) async -> ExecutionResult {
+        // Every route out of here passes through `noteAmbiguity`, so a
+        // refusal that said "there are three of those" is remembered
+        // wherever it came from — the press-verb shortcut, the bare
+        // word, or the model. Recording it at only one call site is how
+        // the answer works after "click follow" and not after
+        // "press follow".
+        let result = await dispatchInner(parsed, spokenAs: text, spokenIsPrivate: spokenIsPrivate)
+        await noteAmbiguity(from: result, command: parsed.command, said: text,
+                            saidIsPrivate: spokenIsPrivate)
+        return result
+    }
+
+    /// Remember an "which of these?" so the next ordinal can answer it.
+    private func noteAmbiguity(from result: ExecutionResult, command: Command,
+                               said: String, saidIsPrivate: Bool = false) async {
+        // Right-click goes through the same matcher, so it produces the
+        // same "say which one" invitation. It was arming nothing, so
+        // the question could not be answered — and had it armed, the
+        // answer rebuilt a LEFT click, silently changing the verb.
+        let target: (label: String, right: Bool)?
+        switch command {
+        case .clickControl(let label, let nth, _, _) where nth == nil:
+            target = (label, false)
+        case .rightClickControl(let label, let nth, _, _) where nth == nil:
+            target = (label, true)
+        default:
+            target = nil
+        }
+        guard let target, result.status == .failed,
+              let count = CuaBackend.ambiguityCount(in: result.reason) else {
+            return
+        }
+        let window = await CuaBackend.lastAmbiguity.window(forLabel: target.label,
+                                                           count: count)
+        pendingChoice = (label: target.label, count: count, said: said,
+                         rightClick: target.right, saidIsPrivate: saidIsPrivate,
+                         window: window, asked: Date())
+        // Take the badges down, because jev has just asked a question
+        // that only IT can answer.
+        //
+        // With numbered badges up the phone owns a spoken number — it
+        // taps that badge, and the Mac is told to leave ordinals alone.
+        // So arming a choice while they are up produced a refusal
+        // saying "say which one, like number two" whose own advice then
+        // pressed an unrelated badge. Whoever is asking owns the
+        // answer; asking clears the other claimant.
+        Task { [weak self] in await self?.broadcastNumbers(false) }
+    }
+
+    private func dispatchInner(_ parsed: VoiceCommand.Parsed, spokenAs text: String,
+                               spokenIsPrivate: Bool = false) async -> ExecutionResult {
         guard let bundleId = parsed.command.bundleIdentifier else {
-            return await requestApproval(for: parsed, spokenAs: text)
+            return await requestApproval(for: parsed, spokenAs: text,
+                                         spokenIsPrivate: spokenIsPrivate)
         }
 
         switch AppPolicyStore.shared.effectiveMode(for: bundleId) {
@@ -1306,7 +1658,8 @@ actor JevRuntime {
                                     spokenIsPrivate: spokenIsPrivate)
 
         case .none:
-            return await requestApproval(for: parsed, spokenAs: text)
+            return await requestApproval(for: parsed, spokenAs: text,
+                                         spokenIsPrivate: spokenIsPrivate)
         }
     }
 
@@ -1320,7 +1673,8 @@ actor JevRuntime {
     private func autoDecide(_ parsed: VoiceCommand.Parsed, spokenAs text: String, bundleId: String,
                             spokenIsPrivate: Bool = false) async -> ExecutionResult {
         guard let apiKey = JevAPI.loadAPIKey() else {
-            return await requestApproval(for: parsed, spokenAs: text)
+            return await requestApproval(for: parsed, spokenAs: text,
+                                         spokenIsPrivate: spokenIsPrivate)
         }
 
         let appName = AppCatalog.shared.all.first { $0.bundleIdentifier == bundleId }?.name ?? bundleId
@@ -1352,7 +1706,8 @@ actor JevRuntime {
         let result = await JevAPI.ask(state: state, questions: questions, apiKey: apiKey)
         guard case .success(let answers) = result else {
             JevLog.write("[jev] auto: Jev unavailable, asking you")
-            return await requestApproval(for: parsed, spokenAs: text)
+            return await requestApproval(for: parsed, spokenAs: text,
+                                         spokenIsPrivate: spokenIsPrivate)
         }
 
         let routine = answers.noul("routine") ?? 0
@@ -1364,7 +1719,8 @@ actor JevRuntime {
         // Run it when Jev thinks it is routine and not destructive. Either
         // doubt goes to you: the asymmetry is the whole safety argument.
         guard routine >= 0.6, destructive <= 0.4 else {
-            return await requestApproval(for: parsed, spokenAs: text)
+            return await requestApproval(for: parsed, spokenAs: text,
+                                         spokenIsPrivate: spokenIsPrivate)
         }
 
         let executed = await executor.execute(parsed.command, humanApproved: true)
@@ -1504,7 +1860,8 @@ actor JevRuntime {
         return true
     }
 
-    private func requestApproval(for parsed: VoiceCommand.Parsed, spokenAs text: String) async -> ExecutionResult {
+    private func requestApproval(for parsed: VoiceCommand.Parsed, spokenAs text: String,
+                                 spokenIsPrivate: Bool = false) async -> ExecutionResult {
         let id = UUID().uuidString
         let friendly: [String: String] = [
             "system.gesture": "scrolling",
@@ -1548,7 +1905,8 @@ actor JevRuntime {
             JevLog.write("[jev] duplicate approval suppressed: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
             return .ok(reason: "Already waiting for your answer on that")
         }
-        pendingCommands[id] = parsed.command
+        pendingCommands[id] = (command: parsed.command, said: text,
+                               saidIsPrivate: spokenIsPrivate)
         await broadcast(event: "approval", request: request)
         JevLog.write("[jev] asking for approval: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
         return .ok(reason: "Needs your approval — check the Approvals tab")
@@ -1562,7 +1920,8 @@ actor JevRuntime {
         // claim: two /api/decide calls landing inside that hop both see
         // the command and both run it. "A parked command runs at most
         // once" has to be structural, not a matter of timing.
-        guard let command = pendingCommands.removeValue(forKey: id) else { return nil }
+        guard let parked = pendingCommands.removeValue(forKey: id) else { return nil }
+        let command = parked.command
         // The store is the clock. `pendingCommands` has no expiry of its
         // own and only the 2-second sweep prunes it, so a card that aged
         // out still ran its command for up to two seconds after the store
@@ -1602,6 +1961,16 @@ actor JevRuntime {
         // A sequence reports its own label as the reason, and that label is
         // the description — "Search for “5555 4444 3333”".
         JevLog.write("[jev] approved (\(optionId)) -> \(result.status.rawValue): \(CommandJournal.safeDescription(result.reason, command))")
+        // The card path runs the command HERE, not through `dispatch`,
+        // so the ambiguity had to be recorded here too. Without this
+        // line the refusal asked "which one?" on every Mac whose
+        // pointer commands need a card — which is every Mac with no
+        // API key, and every Mac set to "ask me" — and no answer could
+        // ever be understood.
+        // The sentence the person actually said, parked with the
+        // command — not the refusal jev printed about it.
+        await noteAmbiguity(from: result, command: command, said: parked.said,
+                            saidIsPrivate: parked.saidIsPrivate)
         return result
     }
 

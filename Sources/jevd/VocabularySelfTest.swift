@@ -23,6 +23,72 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: The phrasebook outranks the on-screen control gate.
+        //
+        // `Runtime.controlMatching` runs before `VoiceCommand.parse`, so
+        // a binding whose object matches a visible label is stolen and
+        // becomes a button press. Measured: "click away" means Escape,
+        // and on a page with a control labelled "Away" the gate matched
+        // it EXACTLY — strictness is no defence, only precedence is.
+        //
+        // The gate yields whenever the phrasebook claims the phrase, so
+        // what has to hold is that the phrasebook really does claim
+        // these. If one of them stops parsing, the gate silently starts
+        // pressing buttons instead.
+        // Only the phrases that are COMPLETE commands on their own.
+        //
+        // "select cell" is not one — its binding refuses an empty
+        // argument, so the phrasebook does not run it and the gate
+        // correctly no longer claims it. Asserting otherwise was
+        // encoding the looser prefix-only rule that made "Print
+        // Invoice" unpressable.
+        for phrase in ["select all", "select everything", "click this", "click here",
+                       "click it", "click away", "next field", "tab"] {
+            if !Phrasebook.claimsExactly(phrase, in: finder) {
+                failures.append("vocab: the phrasebook no longer claims “\(phrase)”, "
+                    + "so the control gate will press a button of that name instead")
+            }
+        }
+
+        // …and the other direction, which matters just as much. The gate
+        // yields on an EXACT claim only, because yielding on a near
+        // match handed ordinary button presses to the pointer: with a
+        // Home link on screen, "click home" is within Levenshtein budget
+        // of a binding. Measured, 20 of 43 common button labels were
+        // taken that way. These must stay unclaimed so the button wins.
+        // Punctuated transcripts are real — three neighbouring functions
+        // already strip `.!?`, and `claimsExactly` did not, so one full
+        // stop turned "click away." into a button press.
+        for phrase in ["click away.", "select all.", "click this!", "click here?"] {
+            if !Phrasebook.claimsExactly(phrase, in: finder) {
+                failures.append("vocab: “\(phrase)” is not claimed once punctuated, "
+                    + "so the control gate will press a button of that name")
+            }
+        }
+
+        // The gate must not claim a sentence the phrasebook would then
+        // decline to build. It claimed on the prefix alone, so a button
+        // labelled "Print Invoice" became unpressable: the gate yielded
+        // and `parse` returned nil, and nothing pressed anything.
+        for phrase in ["print invoice", "save draft", "copy link", "cancel order",
+                       "bold text", "tab bar", "new tab group", "mute all",
+                       "click this week", "click away team"] {
+            if Phrasebook.claimsExactly(phrase, in: Phrasebook.neutral),
+               Phrasebook.parse(phrase, in: Phrasebook.neutral) == nil {
+                failures.append("vocab: the gate claims “\(phrase)” but the phrasebook "
+                    + "will not run it, so a button of that name cannot be pressed")
+            }
+        }
+
+        for phrase in ["click home", "click share", "click chat", "click more",
+                       "click help", "click play", "press ship", "tap hero",
+                       "click follow", "click chart", "click theme"] {
+            if Phrasebook.claimsExactly(phrase, in: finder) {
+                failures.append("vocab: the phrasebook now claims “\(phrase)”, "
+                    + "so a button of that name can no longer be pressed")
+            }
+        }
+
         // MARK: No phrase belongs to two bindings.
         //
         // The table is matched longest-first on each binding's FIRST
@@ -83,7 +149,7 @@ enum VocabularySelfTest {
 
         // The pre-existing "right click <target>" must survive: "this" is a
         // position, but a named control is still a named control.
-        if case .rightClickControl(let label)? = Phrasebook.parse("right click the submit button", in: finder)?.command {
+        if case .rightClickControl(let label, _, _, _)? = Phrasebook.parse("right click the submit button", in: finder)?.command {
             if !label.contains("submit") {
                 failures.append("“right click the submit button” lost its target (got “\(label)”)")
             }
