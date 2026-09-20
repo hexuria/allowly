@@ -111,6 +111,29 @@ enum VocabularySelfTest {
             destination("a task: \(task)", task, false)
         }
 
+        // When the fast path declines, the resolver asks the model — and the
+        // ADDRESS is still built here, from what the person said, never
+        // returned by the model. A model that answered with a URL would be
+        // producing something executable, which is exactly the freedom
+        // withheld from it everywhere else.
+        func spoken(_ name: String, _ sentence: String, _ expected: String?) {
+            let got = Phrasebook.destination(fromSpoken: sentence)
+            if got != expected {
+                failures.append("spoken destination: \(name) gave \(got ?? "nil")")
+            }
+        }
+        spoken("a lead verb is dropped", "go to github dot com", "github.com")
+        spoken("visit works too", "visit stack overflow", "stackoverflow.com")
+        spoken("browse to works too", "browse to facebook", "facebook.com")
+        spoken("a trailing 'website' is not part of the host",
+               "go to the new york times website", "newyorktimes.com")
+        spoken("a trailing 'page' is not part of the host",
+               "open the wikipedia page", "wikipedia.com")
+        spoken("a name with and survives", "open bath and body works dot com",
+               "bathandbodyworks.com")
+        spoken("nothing but a verb is not a destination", "go to", nil)
+        spoken("an empty sentence is not a destination", "", nil)
+
         // Whole words only, or a domain loses to a verb hiding inside it.
         destination("playstation is not play", "playstation dot com", true)
         destination("searchencrypt is not search", "searchencrypt dot com", true)

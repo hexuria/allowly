@@ -30,7 +30,7 @@ enum JevIntent {
 
     private static let operations = [
         "open_app", "quit_app", "toggle_app", "click_control", "type_text", "scroll",
-        "known_capability", "web_task", "unknown",
+        "known_capability", "open_url", "web_task", "unknown",
     ]
 
     /// - Parameter controls: the labels of what is actually on screen, read by
@@ -50,7 +50,7 @@ enum JevIntent {
 
         var questions: [String: JevAPI.Question] = [
             "operation": .choice(
-                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'web_task' means carrying out a goal on a website — searching a site, playing something, opening a result — as opposed to 'type_text', which types the words themselves wherever the cursor already is.",
+                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is.",
                 labels: operations
             ),
             "safe": .noul(
@@ -213,6 +213,19 @@ enum JevIntent {
                 command: .scroll(direction: direction.choice, amount: 5),
                 description: "Scroll \(direction.choice)",
                 confidence: min(operation.confidence, direction.confidence),
+                safety: safety
+            ))
+
+        case "open_url":
+            // The model said this names a place. The address is built from
+            // what the person said, here, rather than returned by the model.
+            guard let destination = Phrasebook.destination(fromSpoken: transcript) else {
+                return .failure(IntentError("Jev could not tell which site you meant"))
+            }
+            return .success(Resolution(
+                command: .openURL(url: "https://" + destination),
+                description: "Open \(destination)",
+                confidence: operation.confidence,
                 safety: safety
             ))
 

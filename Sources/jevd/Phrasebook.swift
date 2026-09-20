@@ -792,6 +792,40 @@ enum Phrasebook {
 
     /// Speech writes "facebook.com" as "facebook dot com", and a bare word is
     /// a search rather than a host.
+    /// Turn a whole spoken sentence into a destination, for the resolver.
+    ///
+    /// The model decides *whether* something is a place; this turns the
+    /// person's own words into the address. Keeping the two apart is the
+    /// point: a model that answered with a URL would be producing something
+    /// executable, which is the freedom withheld from it everywhere else. It
+    /// answers yes or no, and the words were the person's already.
+    static func destination(fromSpoken sentence: String) -> String? {
+        var text = sentence.lowercased().trimmingCharacters(in: .whitespaces)
+        let leads = ["go to", "browse to", "browse", "navigate to", "visit",
+                     "open the website", "open website", "open site", "open"]
+        // The bare verb with nothing after it is not a destination. Without
+        // this, "go to" — someone stopping mid-sentence — became `goto.com`,
+        // because the prefix only matched with a trailing space.
+        if leads.contains(text) { return nil }
+        for lead in leads where text.hasPrefix(lead + " ") {
+            text = String(text.dropFirst(lead.count + 1))
+            break
+        }
+        // "…website" and "…page" are how people name a site aloud; they are
+        // not part of the host.
+        for tail in [" website", " site", " page", " dot com website"]
+        where text.hasSuffix(tail) {
+            text = String(text.dropLast(tail.count))
+            break
+        }
+        text = text.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return nil }
+        let host = normalisedDestination(text)
+        // A host with nothing before the dot is not a host.
+        guard !host.isEmpty, host != ".com", !host.hasPrefix(".") else { return nil }
+        return host
+    }
+
     private static func normalisedDestination(_ raw: String) -> String {
         var text = raw
         // "log in to facebook" must not become the host "to facebook".
