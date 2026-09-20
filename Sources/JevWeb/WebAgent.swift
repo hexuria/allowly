@@ -39,6 +39,10 @@ public actor WebAgent {
         /// not be reported as one.
         case stuck(steps: Int, url: String, title: String)
         case exhausted(steps: Int, url: String, title: String)
+        /// jev asked before doing something consequential and was told no.
+        case refusedByPerson(what: String, steps: Int, url: String, title: String)
+        /// jev asked and nobody answered.
+        case unanswered(what: String, steps: Int, url: String, title: String)
         case failed(reason: String, steps: Int)
     }
 
@@ -67,15 +71,29 @@ public actor WebAgent {
         public let isRetry: Bool
     }
 
+    /// The answer to "may I click this?".
+    public enum Consent: Sendable { case yes, no, noAnswer }
+
     private let session: WebSession
     private let apiKey: String
     private let onProgress: @Sendable (Progress) -> Void
+    /// Whether a label is one to ask about. Supplied from outside because the
+    /// rating jev already uses for buttons lives in the accessibility layer,
+    /// and this module has no business depending on that.
+    private let needsConsent: @Sendable (String) -> Bool
+    /// Ask, with a picture of what is about to be clicked. Returns when the
+    /// person answers or the wait runs out.
+    private let askConsent: (@Sendable (String, String?) async -> Consent)?
 
     public init(session: WebSession, apiKey: String,
+                needsConsent: @escaping @Sendable (String) -> Bool = { _ in false },
+                askConsent: (@Sendable (String, String?) async -> Consent)? = nil,
                 onProgress: @escaping @Sendable (Progress) -> Void = { _ in }) {
         self.session = session
         self.apiKey = apiKey
         self.onProgress = onProgress
+        self.needsConsent = needsConsent
+        self.askConsent = askConsent
     }
 
     public func run(goal: String) async -> Outcome {
@@ -180,6 +198,31 @@ public actor WebAgent {
             // that as "could not find a way" was worse than reporting it.
             if let strength = decision.targetStrength, strength < Self.targetStrengthFloor {
                 return .stuck(steps: steps, url: lastURL, title: lastTitle)
+            }
+
+            // Ask before anything consequential, with a picture of the page
+            // as it is right now. The model has already been told not to
+            // choose these; this is what happens when it does anyway, or when
+            // a page words a purchase in a way no rule caught.
+            //
+            // Asked before the value for a field is worked out, so a refusal
+            // costs nothing and sends nothing.
+            if needsConsent(action.label) {
+                guard let askConsent else {
+                    return .refusedByPerson(what: action.label, steps: steps,
+                                            url: lastURL, title: lastTitle)
+                }
+                let picture = await session.screenshot()
+                switch await askConsent(action.label, picture) {
+                case .yes:
+                    break
+                case .no:
+                    return .refusedByPerson(what: action.label, steps: steps,
+                                            url: lastURL, title: lastTitle)
+                case .noAnswer:
+                    return .unanswered(what: action.label, steps: steps,
+                                       url: lastURL, title: lastTitle)
+                }
             }
 
             var typed: String?
