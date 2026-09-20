@@ -1290,12 +1290,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Transcription. Which recogniser hears you, and the key that
-        // decides it. Here rather than in a file because a key you have to
-        // find a path for is a key nobody sets.
-        let heardBy = GeminiTranscriber.isConfigured
-            ? "Gemini (\(GeminiTranscriber.model))" : "Built-in (Apple)"
-        let hearingItem = NSMenuItem(title: "Hearing you: \(heardBy)", action: nil, keyEquivalent: "")
+        // The key lives here rather than in a file, because a key you have
+        // to find a filesystem path for is a key nobody sets.
+        let hearingItem = NSMenuItem(title: "Gemini Transcribe", action: nil, keyEquivalent: "")
         let hearingMenu = NSMenu()
 
         let keyItem = NSMenuItem(
