@@ -24,8 +24,9 @@ enum JevIntent {
         let description: String
         /// Lowest confidence across the answers this decision rests on.
         let confidence: Double
-        /// Jev's calibrated view of whether this is safe to run unattended.
-        let safety: Double
+        /// Jev's view of whether this can run unattended, asked in the same
+        /// breath as "what is it" so the auto policy need not ask again.
+        let verdict: SafetyVerdict
     }
 
     private static let operations = [
@@ -56,9 +57,12 @@ enum JevIntent {
                 instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is. 'fill_detail' means typing one of the personal details already saved on this Mac — an email address, a phone number, a tax number — which the user refers to by name rather than saying the value. 'switch_workspace' means going to a numbered workspace or desktop.",
                 labels: operations
             ),
-            "safe": .noul(
-                instructions: "Is this request safe to carry out immediately without asking the user to confirm?"
-            ),
+            // The same two questions the auto policy used to ask in a second
+            // round trip once the sentence was resolved. Asked here, on the
+            // call already being made, they cost nothing and the policy
+            // reuses them — one judgement instead of two that could disagree.
+            "routine": .noul(instructions: SafetyVerdict.routineQuestion),
+            "destructive": .noul(instructions: SafetyVerdict.destructiveQuestion),
         // Hands free leaves the microphone open, so half of what arrives is
         // the room: a reply to someone, a video playing, thinking aloud. This
         // costs nothing — it rides on the call already being made — and it is
@@ -160,7 +164,8 @@ enum JevIntent {
         guard let operation = sound("operation") else {
             return .failure(IntentError("Jev returned no usable operation"))
         }
-        let safety = answers.noul("safe") ?? 0
+        let verdict = SafetyVerdict(routine: answers.noul("routine") ?? 0,
+                                    destructive: answers.noul("destructive") ?? 1)
         let addressed = answers.noul("addressed_to_the_mac") ?? 1
         if addressed < 0.35 {
             return .failure(IntentError("that did not sound like it was meant for the Mac"))
@@ -211,7 +216,7 @@ enum JevIntent {
                 command: parsed.command,
                 description: parsed.description,
                 confidence: capability.confidence,
-                safety: safety
+                verdict: verdict
             ))
         }
 
@@ -240,7 +245,7 @@ enum JevIntent {
                 command: .clickControl(label: control.choice),
                 description: "Click “\(control.choice)” in \(frontmost)",
                 confidence: control.confidence,
-                safety: safety
+                verdict: verdict
             ))
         }
 
@@ -253,7 +258,7 @@ enum JevIntent {
                 command: .switchWorkspace(id: workspace.choice),
                 description: "Go to workspace \(workspace.choice)",
                 confidence: min(operation.confidence, workspace.confidence),
-                safety: safety
+                verdict: verdict
             ))
 
         case "open_app", "quit_app", "toggle_app":
@@ -280,7 +285,7 @@ enum JevIntent {
                 command: command,
                 description: "\(verb) \(entry.name)",
                 confidence: min(operation.confidence, appAnswer.confidence),
-                safety: safety
+                verdict: verdict
             ))
 
         case "click_control":
@@ -291,7 +296,7 @@ enum JevIntent {
                 command: .clickControl(label: control.choice),
                 description: "Click “\(control.choice)” in \(frontmost)",
                 confidence: min(operation.confidence, control.confidence),
-                safety: safety
+                verdict: verdict
             ))
 
         case "scroll":
@@ -303,7 +308,7 @@ enum JevIntent {
                 command: .scroll(direction: direction.choice, amount: 5),
                 description: "Scroll \(direction.choice)",
                 confidence: min(operation.confidence, direction.confidence),
-                safety: safety
+                verdict: verdict
             ))
 
         case "fill_detail":
@@ -316,7 +321,7 @@ enum JevIntent {
                 command: .fillDetail(name: detail.choice),
                 description: "Type your \(PersonalDetails.canonicalName(detail.choice))",
                 confidence: min(operation.confidence, detail.confidence),
-                safety: safety
+                verdict: verdict
             ))
 
         case "open_url":
@@ -329,7 +334,7 @@ enum JevIntent {
                 command: .openURL(url: "https://" + destination),
                 description: "Open \(destination)",
                 confidence: operation.confidence,
-                safety: safety
+                verdict: verdict
             ))
 
         case "web_task":
@@ -354,7 +359,7 @@ enum JevIntent {
                 command: .webTask(goal: transcript),
                 description: "Carry out “\(transcript)” in your browser",
                 confidence: operation.confidence,
-                safety: safety
+                verdict: verdict
             ))
 
         case "type_text":
@@ -362,7 +367,7 @@ enum JevIntent {
                 command: .typeText(text: transcript),
                 description: "Type text into \(frontmost)",
                 confidence: operation.confidence,
-                safety: safety
+                verdict: verdict
             ))
 
         default:
@@ -528,4 +533,26 @@ extension JevIntent {
 }
 
 extension JevIntent {
+}
+
+/// Whether an action may run without a card, in Jev's calibrated view.
+///
+/// Two numbers rather than one "safe": asking whether the action is routine
+/// AND whether it could be hard to undo gives usable signal where a single
+/// "is this safe?" deferred on everything, including "scroll down".
+struct SafetyVerdict: Sendable, Equatable {
+    let routine: Double
+    let destructive: Double
+
+    static let routineQuestion =
+        "A Mac assistant has been asked to do this by its owner. Is it a routine, low-risk, easily reversible action that the assistant should simply carry out?"
+    static let destructiveQuestion =
+        "Could this destroy data, send a message, spend money, change a security setting, or otherwise be hard to undo?"
+
+    /// Run it when Jev thinks it is routine and not destructive. Either
+    /// doubt goes to the person: the asymmetry is the whole safety argument.
+    var allowsUnattended: Bool { routine >= 0.6 && destructive <= 0.4 }
+
+    /// Jev calls it hard to undo: whatever the policy, a person decides.
+    var looksDestructive: Bool { destructive > 0.5 }
 }

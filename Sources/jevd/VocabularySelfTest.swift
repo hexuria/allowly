@@ -308,7 +308,7 @@ enum VocabularySelfTest {
         // because letting the screen win stole "save", "back", "find".
         func pointing(at label: String?, workspaces: [String] = ["1", "2", "3"]) -> Scope {
             Scope(context: Phrasebook.neutral, app: "App", visibleLabels: [], fromCursor: true,
-                  activeApp: "App", cursorPid: nil, monitorApps: [], underPointer: label, runningApps: [],
+                  activeApp: "App", cursorPid: nil, appBundleId: nil, monitorApps: [], underPointer: label, runningApps: [],
                   installedApps: [], workspaces: workspaces, workspace: "1",
                   workspaceManager: .aerospace, takenAt: Date())
         }
@@ -318,7 +318,7 @@ enum VocabularySelfTest {
         // Waz closed a Chrome tab. The aim exists only for that disagreement.
         func scope(app: String, active: String, pid: Int?, cursor: Bool) -> Scope {
             Scope(context: Phrasebook.neutral, app: app, visibleLabels: [], fromCursor: cursor,
-                  activeApp: active, cursorPid: pid, monitorApps: [], underPointer: nil, runningApps: [],
+                  activeApp: active, cursorPid: pid, appBundleId: nil, monitorApps: [], underPointer: nil, runningApps: [],
                   installedApps: [], workspaces: [], workspace: nil,
                   workspaceManager: .spaces, takenAt: Date())
         }
@@ -333,6 +333,72 @@ enum VocabularySelfTest {
               "aim: no process to bring forward, no aim")
         check(scope(app: "", active: "Google Chrome", pid: 42, cursor: true).aim == nil,
               "aim: an unnamed app is not a target")
+
+        // What a permission is granted for. Typing and clicking are acts on
+        // the app in front, so "always allow" is per app — the same key
+        // "quit Chrome" uses — and only falls back to the old bucket when
+        // no app is known. Everything else keeps its own key.
+        func keyed(_ bundle: String?) -> Scope {
+            Scope(context: Phrasebook.neutral, app: "Safari", visibleLabels: [], fromCursor: true,
+                  activeApp: "Safari", cursorPid: 7, appBundleId: bundle, monitorApps: [],
+                  underPointer: nil, runningApps: [], installedApps: [], workspaces: [],
+                  workspace: nil, workspaceManager: .spaces, takenAt: Date())
+        }
+        let safari = keyed("com.apple.Safari")
+        check(safari.policyKey(for: .typeText(text: "x")) == "com.apple.Safari",
+              "policy: typing is granted per app")
+        check(safari.policyKey(for: .pressKeys(spec: "cmd+w")) == "com.apple.Safari",
+              "policy: a shortcut is granted per app")
+        check(safari.policyKey(for: .clickControl(label: "Go")) == "com.apple.Safari",
+              "policy: a click is granted per app")
+        check(safari.policyKey(for: .quitApp(bundleIdentifier: "com.google.Chrome")) == "com.google.Chrome",
+              "policy: an app command keeps the app it names")
+        check(safari.policyKey(for: .openURL(url: "https://a.b")) == "system.browser",
+              "policy: opening a page keeps its own bucket")
+        check(keyed(nil).policyKey(for: .typeText(text: "x")) == "system.keyboard",
+              "policy: with no app known, typing falls back to the old bucket")
+        check(keyed("").policyKey(for: .typeText(text: "x")) == "system.keyboard",
+              "policy: an empty bundle id is not an app")
+        check(safari.policyKey(for: .showNumbers(on: true)) == nil,
+              "policy: numbering needs no permission")
+
+        // "In Safari, close tab": the sentence names its app. Only a running
+        // app can be addressed, the longest name wins, and the address is
+        // dropped from what is parsed.
+        let procs = [Scope.Process(name: "Safari", pid: 7, bundleId: "com.apple.Safari"),
+                     Scope.Process(name: "Google Chrome", pid: 9, bundleId: "com.google.Chrome"),
+                     Scope.Process(name: "Google", pid: 11, bundleId: "x.google")]
+        let neutral: (Scope.Process) -> Phrasebook.Context = { _ in Phrasebook.neutral }
+        let fromChrome = scope(app: "Google Chrome", active: "Google Chrome", pid: 9, cursor: true)
+        let toSafari = fromChrome.addressing("In Safari, close tab", running: procs, context: neutral)
+        check(toSafari?.rest == "close tab" && toSafari?.scope.app == "Safari"
+              && toSafari?.scope.cursorPid == 7 && toSafari?.scope.appBundleId == "com.apple.Safari",
+              "addressing: “in Safari, close tab” is “close tab” in Safari")
+        check(toSafari?.scope.aim == Aim(pid: 7, app: "Safari"),
+              "addressing: a background app is aimed at")
+        check(fromChrome.addressing("in safari close tab", running: procs, context: neutral)?.rest == "close tab",
+              "addressing: the comma is optional")
+        check(fromChrome.addressing("in google chrome open new tab", running: procs, context: neutral)?.scope.app == "Google Chrome",
+              "addressing: the longest app name wins")
+        check(fromChrome.addressing("in google chrome open new tab", running: procs, context: neutral)?.rest == "open new tab",
+              "addressing: the whole name is dropped")
+        check(fromChrome.addressing("in safari", running: procs, context: neutral) == nil,
+              "addressing: an address with nothing after it is not a command")
+        check(fromChrome.addressing("install homebrew", running: procs, context: neutral) == nil,
+              "addressing: “install” is not “in”")
+        check(fromChrome.addressing("in the zone click go", running: procs, context: neutral) == nil,
+              "addressing: an app that is not running cannot be addressed")
+        check(fromChrome.addressing("in safaris close tab", running: procs, context: neutral) == nil,
+              "addressing: a name must end where the name ends")
+        check(fromChrome.addressing("in google chrome, close tab", running: procs, context: neutral)?.scope.aim == nil,
+              "addressing: the app already in front needs no aim")
+
+        // One verdict, wherever it was asked. Either doubt asks.
+        check(SafetyVerdict(routine: 0.9, destructive: 0.1).allowsUnattended, "verdict: routine and harmless runs")
+        check(!SafetyVerdict(routine: 0.5, destructive: 0.1).allowsUnattended, "verdict: not routine asks")
+        check(!SafetyVerdict(routine: 0.9, destructive: 0.5).allowsUnattended, "verdict: possibly destructive asks")
+        check(SafetyVerdict(routine: 0.9, destructive: 0.6).looksDestructive, "verdict: destructive is refused before policy")
+        check(!SafetyVerdict(routine: 0.2, destructive: 0.2).looksDestructive, "verdict: merely unusual is not destructive")
 
         let saveShortcut = VoiceCommand.Parsed(command: .pressKeys(spec: "cmd+s"), description: "Save")
         func level(_ name: String, _ text: String, pressed: Bool, onScreen: String?,

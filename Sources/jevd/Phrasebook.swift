@@ -35,7 +35,14 @@ enum Phrasebook {
     }
 
     static func context() -> Context {
-        let app = NSWorkspace.shared.frontmostApplication
+        context(for: NSWorkspace.shared.frontmostApplication, host: BrowserContext.currentHost())
+    }
+
+    /// The context of one app — the frontmost one, or one a sentence was
+    /// addressed to by name. The host is the caller's to supply: only the
+    /// frontmost browser's tab can be read, and a background browser's
+    /// page is unknown rather than guessed.
+    static func context(for app: NSRunningApplication?, host: String?) -> Context {
         let bundleId = app?.bundleIdentifier ?? ""
         let browserish = [
             "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
@@ -49,7 +56,7 @@ enum Phrasebook {
             bundleId: bundleId,
             appName: app?.localizedName ?? "the frontmost app",
             isBrowserLike: browserish.contains(bundleId) || isElectron,
-            host: BrowserContext.currentHost()
+            host: host
         )
     }
 

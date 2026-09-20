@@ -1,4 +1,5 @@
 import Foundation
+import JevCore
 import AppKit
 
 /// What was in front of the person when they spoke — gathered once, then
@@ -39,6 +40,8 @@ struct Scope: Sendable {
     let activeApp: String
     /// The process owning the window the labels came from.
     let cursorPid: Int?
+    /// The bundle id of the app the command acts on, for the permission key.
+    let appBundleId: String?
 
     /// Which app a keystroke should be aimed at before it is posted.
     ///
@@ -49,6 +52,78 @@ struct Scope: Sendable {
     var aim: Aim? {
         guard fromCursor, let pid = cursorPid, !app.isEmpty, app != activeApp else { return nil }
         return Aim(pid: pid, app: app)
+    }
+
+    /// What a permission is granted for.
+    ///
+    /// `Command.bundleIdentifier` files every keystroke and click under
+    /// "system.keyboard" and "system.pointer", so "always allow" granted for
+    /// typing into a terminal also covered typing into a bank. Typing and
+    /// clicking are acts ON an app, and here the app is known, so the grant
+    /// is per app — the same key "quit Chrome" already uses, which is what
+    /// "always allow this app" on the card was always taken to mean.
+    func policyKey(for command: Command) -> String? {
+        guard let bucket = command.bundleIdentifier else { return nil }
+        guard bucket == "system.keyboard" || bucket == "system.pointer",
+              let app = appBundleId, !app.isEmpty else { return bucket }
+        return app
+    }
+
+    /// A process that could be addressed by name.
+    struct Process: Sendable, Equatable {
+        let name: String
+        let pid: Int
+        let bundleId: String
+    }
+
+    /// Every app a sentence could be addressed to: the ones with a Dock icon.
+    static func runningProcesses() -> [Process] {
+        NSWorkspace.shared.runningApplications.compactMap { app in
+            guard app.activationPolicy == .regular, let name = app.localizedName else { return nil }
+            return Process(name: name, pid: Int(app.processIdentifier),
+                           bundleId: app.bundleIdentifier ?? "")
+        }
+    }
+
+    /// "In Safari, close tab": a sentence that names the app it is for.
+    ///
+    /// Returns the scope re-pointed at that app and the sentence with the
+    /// address removed, or nil when the sentence does not start that way —
+    /// "install Homebrew" is not addressed to anything. Only a running app
+    /// can be addressed, and the longest name wins so "Google Chrome" is not
+    /// read as "Google" followed by "chrome …".
+    ///
+    /// The addressed app's controls are not read — the words are parsed in
+    /// that app's vocabulary and the keystroke is aimed there, which is what
+    /// "in Safari, close tab" needs; naming a control in a window nobody can
+    /// see is a different request.
+    func addressing(_ text: String, running: [Process],
+                    context: (Process) -> Phrasebook.Context) -> (scope: Scope, rest: String)? {
+        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard lower.hasPrefix("in ") else { return nil }
+        let after = String(lower.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        let named = running
+            .filter { proc in
+                let name = proc.name.lowercased()
+                guard after.hasPrefix(name) else { return false }
+                let tail = after.dropFirst(name.count)
+                return tail.isEmpty || tail.first == "," || tail.first == " "
+            }
+            .max { $0.name.count < $1.name.count }
+        guard let target = named else { return nil }
+        let rest = after.dropFirst(target.name.count)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+        guard !rest.isEmpty else { return nil }
+        let scope = Scope(context: context(target),
+                          app: target.name, visibleLabels: [],
+                          // Deliberate, like a cursor: the address is the target.
+                          fromCursor: true, activeApp: activeApp,
+                          cursorPid: target.pid, appBundleId: target.bundleId,
+                          monitorApps: monitorApps, underPointer: nil,
+                          runningApps: runningApps, installedApps: installedApps,
+                          workspaces: workspaces, workspace: workspace,
+                          workspaceManager: workspaceManager, takenAt: takenAt)
+        return (scope, rest)
     }
     /// The apps with a normal window on the display the cursor is on — the
     /// monitor level, between window and workspace. "What can we see" on a
@@ -90,12 +165,16 @@ struct Scope: Sendable {
         let pointed = await CommandExecutor.cua.labelUnderPointer(at: point)
         // Whichever manager answers, not whichever binary exists.
         let manager = WorkspaceManager.detect()
+        // The app the labels came from, else the one macOS calls active.
+        let owner = seen.pid.flatMap { NSRunningApplication(processIdentifier: pid_t($0)) }
+            ?? NSWorkspace.shared.frontmostApplication
         return Scope(context: context,
                      app: seen.app ?? context.appName,
                      visibleLabels: seen.labels,
                      fromCursor: seen.underPointer,
                      activeApp: active,
                      cursorPid: seen.pid,
+                     appBundleId: owner?.bundleIdentifier,
                      monitorApps: Monitor.apps(visibleAt: point),
                      underPointer: pointed,
                      runningApps: running,
@@ -108,7 +187,7 @@ struct Scope: Sendable {
 
     /// For tests: nothing in front, nothing on screen.
     static let empty = Scope(context: Phrasebook.neutral, app: "", visibleLabels: [],
-                             fromCursor: false, activeApp: "", cursorPid: nil, monitorApps: [],
+                             fromCursor: false, activeApp: "", cursorPid: nil, appBundleId: nil, monitorApps: [],
                              underPointer: nil, runningApps: [], installedApps: [],
                              workspaces: [],
                              workspace: nil, workspaceManager: .spaces, takenAt: Date())
