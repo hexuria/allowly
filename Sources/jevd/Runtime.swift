@@ -32,7 +32,7 @@ actor JevRuntime {
     /// card read: You said "There are 3 things called Follow in
     /// Chrome — say which one, like number two → number two".
     private var pendingCommands: [String: (command: Command, said: String,
-                                          saidIsPrivate: Bool)] = [:]
+                                          saidIsPrivate: Bool, aim: Aim?, key: String?)] = [:]
     /// Cards that only report something. Tapping one must not be mistaken for
     /// answering a dialog: the fallback in `onDecide` turns any unclaimed id
     /// into a `pressButton`, which would go looking for a button on screen
@@ -221,6 +221,9 @@ actor JevRuntime {
         }
         self.watcher = watcher
         watcher.start()
+        // The watcher's focus and launch events now feed the scope instead
+        // of being dropped when the window is not a dialog.
+        Task { await ScopeStore.shared.start() }
         JevLog.write("[jev] Watching for dialogs.")
 
     }
@@ -700,11 +703,25 @@ actor JevRuntime {
         server.onCommand { [weak self] text, ordinalsAreTheirs in
             guard let self else { return .failed(reason: "Shutting down") }
             let started = Date()
-            // NSWorkspace only. Phrasebook.context() also asks the browser
-            // for its current page, which spawns osascript and blocks until
-            // it answers — an Apple Event on the hot path of every command,
-            // purely to fill a log field.
-            let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown"
+            // The world, read once. Every stage below interprets the sentence
+            // against this same reading, so none of them re-reads the screen
+            // mid-sentence and none of them has to be handed an empty scope to
+            // avoid blocking. See Scope.
+            let (scope, text) = await Self.addressed(Scope.current(), said: text)
+            let frontApp = scope.app.isEmpty ? "unknown" : scope.app
+            CommandExecutor.aim = scope.aim
+            // One line per command saying what the world looked like. Without
+            // it a stale-scope miss and a precedence miss are the same log.
+            JevLog.write("[jev] scope: app=\(frontApp)"
+                + (scope.fromCursor && scope.activeApp != scope.app && !scope.activeApp.isEmpty
+                    ? " (macOS says \(scope.activeApp))" : "")
+                + " monitor=\(scope.monitorApps.prefix(4).joined(separator: "|"))"
+                + (scope.context.host.map { " page=\($0)" } ?? "")
+                + " controls=\(scope.visibleLabels.count)"
+                + (scope.underPointer.map { " pointer=“\($0.prefix(30))”" } ?? "")
+                + " running=\(scope.runningApps.count) installed=\(scope.installedApps.count)"
+                + " wm=\(scope.workspaceManager.rawValue)"
+                + (scope.workspace.map { "@\($0)" } ?? ""))
             // Every route below ends here, so there is exactly one line per
             // command and it always says which path claimed it.
             func journal(_ route: String, _ command: String,
@@ -722,6 +739,8 @@ actor JevRuntime {
                 CommandJournal.record(heard: heard ?? text, route: route, command: command,
                                       kind: kind, result: result, started: started,
                                       app: frontApp, verified: verified, unparsed: unparsed)
+                // Every route ends here, so the aim cannot outlive its command.
+                CommandExecutor.aim = nil
                 return result
             }
 
@@ -776,9 +795,9 @@ actor JevRuntime {
                                heard: text)
             }
 
-            if let pending = await self.takePendingArgument(for: text) {
+            if let pending = await self.takePendingArgument(for: text, in: scope) {
                 let phrase = pending + " " + text
-                let parsed = VoiceCommand.parse(phrase)
+                let parsed = VoiceCommand.parse(phrase, in: scope.context)
                 // On this route the answer is ALWAYS a value the person
                 // supplied — that is what the route is for. So it is never
                 // written down, whatever command it turns into.
@@ -798,7 +817,7 @@ actor JevRuntime {
                     // is concerned, so the answer went to disk intact.
                     return journal("finishing", parsed.description,
                                    await self.dispatch(parsed, spokenAs: phrase,
-                                                       spokenIsPrivate: true),
+                                                       spokenIsPrivate: true, in: scope),
                                    kind: parsed.command, heard: phrase, unparsed: true)
                 }
                 // The phone still gets the whole sentence; the disk gets none
@@ -844,21 +863,25 @@ actor JevRuntime {
                 return journal("screen/nth", described, await self.dispatch(
                     VoiceCommand.Parsed(command: command, description: described),
                     spokenAs: "\(choice.said) → \(text)",
-                    spokenIsPrivate: choice.saidIsPrivate),
+                    spokenIsPrivate: choice.saidIsPrivate, in: scope),
                     kind: command, heard: text, unparsed: choice.saidIsPrivate)
             }
 
+            // Every stage proposes; one comparison chooses, cursor outward.
+            // See Candidates. The vocabulary keeps its effect check below.
             let pressed = JevIntent.startsWithPressVerb(text)
-            if pressed, let onScreen = await self.controlMatching(text) {
-                JevLog.write("[jev] on screen: “\(onScreen)” — you said press, so pressing it")
-                return journal("screen/press", "clickControl(\(onScreen))", await self.dispatch(
-                    VoiceCommand.Parsed(command: .clickControl(label: onScreen),
-                                        description: "Click “\(onScreen)”"),
-                    spokenAs: text),
-                    kind: .clickControl(label: onScreen))
+            let onScreen = await self.controlMatching(text, in: scope)
+            let chosen = Candidates.choose(text: text, scope: scope, pressed: pressed,
+                                           onScreen: onScreen,
+                                           parsed: VoiceCommand.parse(text, in: scope.context))
+            if let chosen, chosen.level != .global {
+                JevLog.write("[jev] \(chosen.route): \(chosen.parsed.description)")
+                return journal(chosen.route, chosen.parsed.description,
+                               await self.dispatch(chosen.parsed, spokenAs: text, in: scope),
+                               kind: chosen.parsed.command)
             }
 
-            if let parsed = VoiceCommand.parse(text) {
+            if let chosen, chosen.level == .global, case let parsed = chosen.parsed {
                 // Take a fingerprint of the screen either side, for the
                 // commands that cannot report their own effect. A keystroke
                 // says "delivered", never "it worked".
@@ -881,7 +904,7 @@ actor JevRuntime {
             // thing confidently.
             let beforeTask: Task<(EffectCheck.Fingerprint?, Date), Never>? =
                 checking ? Task { (await EffectCheck.sample(), Date()) } : nil
-                let result = await self.dispatch(parsed, spokenAs: text)
+                let result = await self.dispatch(parsed, spokenAs: text, in: scope)
                 let dispatchEnded = Date()
 
                 guard checking else {
@@ -936,19 +959,22 @@ actor JevRuntime {
 
             // A command that is right but incomplete: ask for the rest
             // rather than throwing the sentence away.
-            if let phrase = Phrasebook.awaitingArgument(text, in: Phrasebook.context()) {
+            if let phrase = Phrasebook.awaitingArgument(text, in: scope.context) {
                 await self.rememberPendingArgument(phrase)
                 return journal("asking", phrase, .ok(reason: Self.askFor(phrase)))
             }
 
             // No verb and no shortcut: a bare word that happens to name a
             // button on screen is almost certainly that button.
-            if !pressed, let onScreen = await self.controlMatching(text) {
+            // The window level, bubbled past global: a bare word that names a
+            // button and nothing else claimed. Same answer as above, not a
+            // second look.
+            if !pressed, let onScreen {
                 JevLog.write("[jev] on screen: “\(onScreen)” — nothing else claims that word")
                 return journal("screen/bare", "clickControl(\(onScreen))", await self.dispatch(
                     VoiceCommand.Parsed(command: .clickControl(label: onScreen),
                                         description: "Click “\(onScreen)”"),
-                    spokenAs: text),
+                    spokenAs: text, in: scope),
                     kind: .clickControl(label: onScreen))
             }
 
@@ -971,11 +997,13 @@ actor JevRuntime {
                     unparsed: true)
             }
 
-            let seen = await CommandExecutor.cua.frontmostContext()
             switch await JevIntent.resolve(transcript: text,
                                            alternatives: await self.readings(for: text),
-                                           frontmostApp: seen.app,
-                                           controls: seen.labels,
+                                           frontmostApp: scope.app.isEmpty ? nil : scope.app,
+                                           controls: scope.visibleLabels,
+                                           context: scope.context,
+                                           runningApps: scope.runningApps,
+                                           workspaces: scope.workspaces,
                                            apiKey: apiKey) {
             case .failure(let error):
                 JevLog.write("[jev] intent: \(error.description)")
@@ -990,11 +1018,11 @@ actor JevRuntime {
                                unparsed: true)
 
             case .success(let resolution):
-                JevLog.write("[jev] intent: \(resolution.description) confidence=\(String(format: "%.2f", resolution.confidence)) safety=\(String(format: "%.2f", resolution.safety))")
+                JevLog.write("[jev] intent: \(resolution.description) confidence=\(String(format: "%.2f", resolution.confidence)) routine=\(String(format: "%.2f", resolution.verdict.routine)) destructive=\(String(format: "%.2f", resolution.verdict.destructive))")
 
                 // A guess is not a mandate. Anything Jev is unsure of, or calls
-                // unsafe, goes to you rather than straight to the machine.
-                guard resolution.confidence >= 0.55, resolution.safety >= 0.5 else {
+                // hard to undo, goes to you rather than straight to the machine.
+                guard resolution.confidence >= 0.55, !resolution.verdict.looksDestructive else {
                     let parsed = VoiceCommand.Parsed(command: resolution.command, description: resolution.description)
                     // "Asked you" is not "did it".
                     //
@@ -1003,7 +1031,8 @@ actor JevRuntime {
                     // the phone must still be told ok — only the journal
                     // needs to say the command is merely pending. The route
                     // name carries that, and `verified` says it outright.
-                    let asked = await self.requestApproval(for: parsed, spokenAs: text)
+                    let asked = await self.requestApproval(for: parsed, spokenAs: text,
+                                                           key: scope.policyKey(for: parsed.command))
                     CommandJournal.record(heard: text, route: "model/asked",
                                           command: parsed.description, kind: parsed.command,
                                           result: asked, started: started,
@@ -1013,7 +1042,8 @@ actor JevRuntime {
 
                 let parsed = VoiceCommand.Parsed(command: resolution.command, description: resolution.description)
                 return journal("model", parsed.description,
-                               await self.dispatch(parsed, spokenAs: text),
+                               await self.dispatch(parsed, spokenAs: text, verdict: resolution.verdict,
+                                                   in: scope),
                                kind: parsed.command)
             }
         }
@@ -1051,7 +1081,14 @@ actor JevRuntime {
             }
             defer { if let transcoded { try? FileManager.default.removeItem(at: transcoded) } }
 
-            let result = await SpeechRecognizer().transcribe(audioURL: audioURL)
+            // Gemini when a key is configured, Apple otherwise and whenever
+            // Gemini cannot answer. Opt-in: with no key this is exactly the
+            // recogniser jev has always used.
+            let transcriber = FallbackTranscriber(
+                preferred: GeminiTranscriber(),
+                fallback: SpeechRecognizer(),
+                preferredIsConfigured: { GeminiTranscriber.isConfigured })
+            let result = await transcriber.transcribe(audioURL: audioURL)
             switch result {
             case .success(let heard):
                 // Shape, not words. Nothing has interpreted this yet, so
@@ -1074,6 +1111,19 @@ actor JevRuntime {
                 // request: if nothing parses, Jev should see every reading,
                 // not just the one that failed.
                 await self.rememberReadings(for: chosen, all: [heard.best] + heard.alternatives)
+                // When nothing understood any reading, record what was on
+                // offer. Without this a mis-hearing is undiagnosable: the log
+                // said "heard 4 words, 4 other readings" and never whether
+                // the right words were among them — which is the only
+                // question worth asking. Written through the same filter as
+                // everything else, so a reading that carries a value is
+                // withheld rather than printed.
+                if VoiceCommand.parse(chosen) == nil {
+                    let offered = ([heard.best] + heard.alternatives)
+                        .map { JevLog.safe($0) }
+                        .joined(separator: " | ")
+                    JevLog.write("[jev] voice: nothing parsed; readings were: \(offered)")
+                }
                 return chosen
             case .failure(let error):
                 JevLog.write("[jev] voice: transcription failed: \(error)")
@@ -1092,6 +1142,9 @@ actor JevRuntime {
             let started = Date()
             let command: Command = field.map { .fillField(label: $0, text: text) }
                 ?? .typeText(text: text)
+            // Typed from the phone: no scope was resolved, so it goes where
+            // focus is, which is what someone typing expects.
+            CommandExecutor.aim = nil
             let result = await executor.execute(command, humanApproved: true)
             // If the typed value is anywhere in the reason, the reason is
             // not ours and goes back through the ordinary redaction.
@@ -1424,7 +1477,7 @@ actor JevRuntime {
     /// Short and recent, both on purpose. A minute later you have moved on,
     /// and a whole sentence is a new command rather than an answer — only
     /// something the length of "2" or "the design one" is a missing piece.
-    private func takePendingArgument(for text: String) -> String? {
+    private func takePendingArgument(for text: String, in scope: Scope) -> String? {
         guard let pending = _pendingArgument else { return nil }
         // A newer question outranks an older one. Both channels are
         // checked in a fixed order, so an unanswered "what level?" from
@@ -1459,7 +1512,7 @@ actor JevRuntime {
         guard VoiceCommand.parse(text) == nil else { return nil }
         // And so is a command that is merely unfinished — saying "set volume
         // to" twice asked the question and then answered it with itself.
-        guard Phrasebook.awaitingArgument(text, in: Phrasebook.context()) == nil else { return nil }
+        guard Phrasebook.awaitingArgument(text, in: scope.context) == nil else { return nil }
         _pendingArgument = nil
         return pending.phrase
     }
@@ -1603,7 +1656,7 @@ actor JevRuntime {
         return hits.count == 1 ? hits[0] : nil
     }
 
-    private func controlMatching(_ text: String) async -> String? {
+    private func controlMatching(_ text: String, in scope: Scope) async -> String? {
         // The phrasebook owns its own vocabulary.
         //
         // This gate runs BEFORE `VoiceCommand.parse`, so without this
@@ -1628,9 +1681,14 @@ actor JevRuntime {
         // out-competed by the control. That is a narrower hazard than
         // hanging the daemon, and `VocabularySelfTest` pins the global
         // vocabulary that matters.
-        guard !Phrasebook.claimsExactly(text, in: Phrasebook.neutral) else { return nil }
+        // The real scope, not `neutral`. The empty scope existed only so this
+        // would not shell out from inside the actor; the scope was read once
+        // before any stage ran, so there is nothing left to block on — and
+        // "go to X" is now judged with the browser it was actually said to.
+        guard !Phrasebook.claimsExactly(text, in: scope.context) else { return nil }
         guard let phrase = Self.controlPhrase(from: text) else { return nil }
-        let labels = await CommandExecutor.cua.visibleLabels()
+        // The same reading every other stage saw, not a fresh one.
+        let labels = scope.visibleLabels
         return Self.exactlyOneControl(named: phrase, among: labels)
     }
 
@@ -1638,15 +1696,28 @@ actor JevRuntime {
     /// - Parameter spokenIsPrivate: the spoken words are a VALUE the
     ///   person supplied, not a command they issued, so they must not
     ///   leave the Mac.
+    /// "In Safari, close tab": re-point the scope at the app named, and
+    /// drop the address from the sentence. Anything else passes through.
+    private static func addressed(_ scope: Scope, said text: String) -> (Scope, String) {
+        guard let addressed = scope.addressing(text, running: Scope.runningProcesses(), context: {
+            Phrasebook.context(for: NSRunningApplication(processIdentifier: pid_t($0.pid)), host: nil)
+        }) else { return (scope, text) }
+        JevLog.write("[jev] addressed to \(addressed.scope.app)"
+            + (addressed.scope.aim == nil ? "" : " (not in front; will be brought forward)"))
+        return (addressed.scope, addressed.rest)
+    }
+
     private func dispatch(_ parsed: VoiceCommand.Parsed, spokenAs text: String,
-                          spokenIsPrivate: Bool = false) async -> ExecutionResult {
+                          spokenIsPrivate: Bool = false, verdict: SafetyVerdict? = nil,
+                          in scope: Scope) async -> ExecutionResult {
         // Every route out of here passes through `noteAmbiguity`, so a
         // refusal that said "there are three of those" is remembered
         // wherever it came from — the press-verb shortcut, the bare
         // word, or the model. Recording it at only one call site is how
         // the answer works after "click follow" and not after
         // "press follow".
-        let result = await dispatchInner(parsed, spokenAs: text, spokenIsPrivate: spokenIsPrivate)
+        let result = await dispatchInner(parsed, spokenAs: text, spokenIsPrivate: spokenIsPrivate,
+                                         verdict: verdict, in: scope)
         await noteAmbiguity(from: result, command: parsed.command, said: text,
                             saidIsPrivate: spokenIsPrivate)
         return result
@@ -1690,8 +1761,10 @@ actor JevRuntime {
     }
 
     private func dispatchInner(_ parsed: VoiceCommand.Parsed, spokenAs text: String,
-                               spokenIsPrivate: Bool = false) async -> ExecutionResult {
-        guard let bundleId = parsed.command.bundleIdentifier else {
+                               spokenIsPrivate: Bool = false, verdict: SafetyVerdict? = nil,
+                               in scope: Scope) async -> ExecutionResult {
+        // Per app where the app is known: see `Scope.policyKey`.
+        guard let bundleId = scope.policyKey(for: parsed.command) else {
             return await requestApproval(for: parsed, spokenAs: text,
                                          spokenIsPrivate: spokenIsPrivate)
         }
@@ -1705,7 +1778,7 @@ actor JevRuntime {
         if case .webTask = parsed.command,
            AppPolicyStore.shared.effectiveMode(for: bundleId) != .always {
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId)
         }
 
         switch AppPolicyStore.shared.effectiveMode(for: bundleId) {
@@ -1721,11 +1794,11 @@ actor JevRuntime {
 
         case .auto:
             return await autoDecide(parsed, spokenAs: text, bundleId: bundleId,
-                                    spokenIsPrivate: spokenIsPrivate)
+                                    spokenIsPrivate: spokenIsPrivate, verdict: verdict)
 
         case .none:
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId)
         }
     }
 
@@ -1737,10 +1810,18 @@ actor JevRuntime {
     /// "scroll down", and auto was indistinguishable from ask. Asking instead
     /// whether the action is routine and reversible gives usable signal.
     private func autoDecide(_ parsed: VoiceCommand.Parsed, spokenAs text: String, bundleId: String,
-                            spokenIsPrivate: Bool = false) async -> ExecutionResult {
+                            spokenIsPrivate: Bool = false,
+                            verdict: SafetyVerdict? = nil) async -> ExecutionResult {
+        // Already judged, in the same call that resolved the sentence. The
+        // literal parser's commands never went through that call, so they
+        // still ask here.
+        if let verdict {
+            return await act(on: verdict, parsed, spokenAs: text, bundleId: bundleId,
+                             spokenIsPrivate: spokenIsPrivate, from: "intent")
+        }
         guard let apiKey = JevAPI.loadAPIKey() else {
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId)
         }
 
         let appName = AppCatalog.shared.all.first { $0.bundleIdentifier == bundleId }?.name ?? bundleId
@@ -1761,34 +1842,33 @@ actor JevRuntime {
         ]
 
         let questions: [String: JevAPI.Question] = [
-            "routine": .noul(
-                instructions: "A Mac assistant has been asked to do this by its owner. Is it a routine, low-risk, easily reversible action that the assistant should simply carry out?"
-            ),
-            "destructive": .noul(
-                instructions: "Could this destroy data, send a message, spend money, change a security setting, or otherwise be hard to undo?"
-            ),
+            "routine": .noul(instructions: SafetyVerdict.routineQuestion),
+            "destructive": .noul(instructions: SafetyVerdict.destructiveQuestion),
         ]
 
         let result = await JevAPI.ask(state: state, questions: questions, apiKey: apiKey)
         guard case .success(let answers) = result else {
             JevLog.write("[jev] auto: Jev unavailable, asking you")
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId)
         }
 
-        let routine = answers.noul("routine") ?? 0
-        let destructive = answers.noul("destructive") ?? 1
-        JevLog.write(String(format: "[jev] auto: %@ routine=%.2f destructive=%.2f",
+        let judged = SafetyVerdict(routine: answers.noul("routine") ?? 0,
+                                   destructive: answers.noul("destructive") ?? 1)
+        return await act(on: judged, parsed, spokenAs: text, bundleId: bundleId,
+                         spokenIsPrivate: spokenIsPrivate, from: "auto")
+    }
+
+    /// Run it or ask, on one verdict, wherever the verdict came from.
+    private func act(on verdict: SafetyVerdict, _ parsed: VoiceCommand.Parsed, spokenAs text: String,
+                     bundleId: String, spokenIsPrivate: Bool, from source: String) async -> ExecutionResult {
+        JevLog.write(String(format: "[jev] %@: %@ routine=%.2f destructive=%.2f", source,
                             CommandJournal.safeDescription(parsed.description, parsed.command),
-                            routine, destructive))
-
-        // Run it when Jev thinks it is routine and not destructive. Either
-        // doubt goes to you: the asymmetry is the whole safety argument.
-        guard routine >= 0.6, destructive <= 0.4 else {
+                            verdict.routine, verdict.destructive))
+        guard verdict.allowsUnattended else {
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId)
         }
-
         let executed = await executor.execute(parsed.command, humanApproved: true)
         return executed.status == .ok
             ? .ok(reason: parsed.description)
@@ -1927,8 +2007,11 @@ actor JevRuntime {
     }
 
     private func requestApproval(for parsed: VoiceCommand.Parsed, spokenAs text: String,
-                                 spokenIsPrivate: Bool = false) async -> ExecutionResult {
+                                 spokenIsPrivate: Bool = false,
+                                 key: String? = nil) async -> ExecutionResult {
         let id = UUID().uuidString
+        // What "always" and "never" on the card will be granted for.
+        let key = key ?? parsed.command.bundleIdentifier
         let friendly: [String: String] = [
             "system.gesture": "scrolling",
             "system.workspace": "workspace switching",
@@ -1937,7 +2020,7 @@ actor JevRuntime {
             "system.browser": "opening a page",
             "system.webtask": "acting in your browser",
         ]
-        let appName = parsed.command.bundleIdentifier.flatMap { bundleId in
+        let appName = key.flatMap { bundleId in
             friendly[bundleId] ?? AppCatalog.shared.all.first { $0.bundleIdentifier == bundleId }?.name
         } ?? "this app"
 
@@ -1959,7 +2042,7 @@ actor JevRuntime {
                 // command and choosing "never allow this app" wrote a
                 // policy keyed "unknown", which then applied to every
                 // other command jev could not attribute either.
-                bundleIdentifier: parsed.command.bundleIdentifier ?? "unknown.bundle"
+                bundleIdentifier: key ?? "unknown.bundle"
             ),
             timestamp: Date(),
             screenshotReference: nil,
@@ -1974,7 +2057,7 @@ actor JevRuntime {
             return .ok(reason: "Already waiting for your answer on that")
         }
         pendingCommands[id] = (command: parsed.command, said: text,
-                               saidIsPrivate: spokenIsPrivate)
+                               saidIsPrivate: spokenIsPrivate, aim: CommandExecutor.aim, key: key)
         await broadcast(event: "approval", request: request)
         JevLog.write("[jev] asking for approval: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
         return .ok(reason: "Needs your approval — check the Approvals tab")
@@ -2068,7 +2151,8 @@ actor JevRuntime {
             return .failed(reason: "That one sat too long — say it again")
         }
 
-        let bundleId = command.bundleIdentifier
+        // The key the card was raised for, so "always" grants what it showed.
+        let bundleId = parked.key
 
         switch optionId {
         case "deny":
@@ -2093,7 +2177,11 @@ actor JevRuntime {
             return .failed(reason: "That is not one of the choices on the card")
         }
 
+        // Re-aim at what was meant when it was said, not at what is in front
+        // by the time the card was answered.
+        CommandExecutor.aim = parked.aim
         let result = await executor.execute(command, humanApproved: true)
+        CommandExecutor.aim = nil
         // A sequence reports its own label as the reason, and that label is
         // the description — "Search for “5555 4444 3333”".
         JevLog.write("[jev] approved (\(optionId)) -> \(result.status.rawValue): \(CommandJournal.safeDescription(result.reason, command))")

@@ -16,17 +16,25 @@ final class AppCatalog: @unchecked Sendable {
 
     private let lock = NSLock()
     private var entries: [Entry] = []
+    private var watchers: [DispatchSourceFileSystemObject] = []
+    private var pendingRefresh: DispatchWorkItem?
+    private(set) var lastRefreshed = Date.distantPast
 
-    /// Scan the usual application directories. Cheap enough to run at launch.
+    static let roots = [
+        "/Applications",
+        "/System/Applications",
+        "/System/Applications/Utilities",
+        "/Applications/Utilities",
+        NSHomeDirectory() + "/Applications",
+    ]
+
+    /// Scan the usual application directories. Cheap enough to run at launch
+    /// — and, since `watch()`, whenever one of them changes. It used to run
+    /// exactly once, so an app installed after launch could not be named
+    /// until jev was restarted, and a deleted one stayed offerable.
     func refresh() {
         var found: [String: Entry] = [:]
-        let roots = [
-            "/Applications",
-            "/System/Applications",
-            "/System/Applications/Utilities",
-            "/Applications/Utilities",
-            NSHomeDirectory() + "/Applications",
-        ]
+        let roots = Self.roots
 
         for root in roots {
             guard let items = try? FileManager.default.contentsOfDirectory(atPath: root) else { continue }
@@ -41,7 +49,48 @@ final class AppCatalog: @unchecked Sendable {
 
         lock.lock()
         entries = Array(found.values).sorted { $0.name < $1.name }
+        lastRefreshed = Date()
         lock.unlock()
+    }
+
+    /// Rescan when an application folder changes, rather than at every
+    /// command or never.
+    ///
+    /// The global scope is "everything that could be named": installed,
+    /// running, visible. Scanning it per command would be the slow way to be
+    /// current; scanning it once would be the stale way. The folders are
+    /// watched instead, and a change — an install, a delete, a drag to the
+    /// Trash — schedules one rescan after a short quiet period, so a copy
+    /// that writes a hundred files costs one scan rather than a hundred.
+    func watch() {
+        lock.lock(); defer { lock.unlock() }
+        guard watchers.isEmpty else { return }
+        for root in Self.roots {
+            let descriptor = open(root, O_EVTONLY)
+            guard descriptor >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: descriptor, eventMask: [.write, .rename, .delete],
+                queue: DispatchQueue.global(qos: .utility))
+            source.setEventHandler { [weak self] in self?.scheduleRefresh(because: root) }
+            source.setCancelHandler { close(descriptor) }
+            source.resume()
+            watchers.append(source)
+        }
+    }
+
+    private func scheduleRefresh(because root: String) {
+        lock.lock()
+        pendingRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let before = self.all.count
+            self.refresh()
+            let after = self.all.count
+            JevLog.write("[jev] apps: \(root) changed; catalog \(before) → \(after)")
+        }
+        pendingRefresh = work
+        lock.unlock()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     var all: [Entry] {

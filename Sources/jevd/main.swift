@@ -121,6 +121,28 @@ final class KeychainManager {
         var value: T?
     }
 
+    /// `retrieve`, but it cannot wedge the caller.
+    ///
+    /// A Keychain read can put a prompt on screen, and a prompt nobody is
+    /// there to answer blocks forever. That is not hypothetical here: reading
+    /// twelve saved details at launch hung the daemon before it logged a
+    /// single line, on a binary whose Keychain access had not been granted.
+    /// Anything on a startup path or a command path uses this.
+    func retrieveWithTimeout(key: String) -> String? {
+        Self.keychainWithTimeout { [serviceName] in
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: serviceName,
+                kSecAttrAccount as String: key,
+                kSecReturnData as String: true,
+            ]
+            var result: AnyObject?
+            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+                  let data = result as? Data else { return nil }
+            return String(data: data, encoding: .utf8)
+        } ?? nil
+    }
+
     func delete(key: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -229,6 +251,30 @@ final class CommandExecutor {
     /// Accessibility grant and refuses rather than guesses. See JevCua.
     static let cua = CuaBackend()
 
+    /// Set by the runtime for the length of one command: the app the
+    /// sentence was resolved against when that is not the active one. A
+    /// parked command carries its own and re-sets this when it finally runs,
+    /// so approval minutes later aims at what was meant, not at whatever is
+    /// in front by then.
+    nonisolated(unsafe) static var aim: Aim?
+
+    /// Make the aimed app active and wait for macOS to agree, so a keystroke
+    /// posted next lands there. Says so in the log either way: a keystroke
+    /// that went to the wrong window is the kind of failure nobody sees.
+    static func bring(_ aim: Aim) async {
+        guard let app = NSRunningApplication(processIdentifier: pid_t(aim.pid)) else {
+            JevLog.write("[jev] aim: \(aim.app) has no process; keystroke goes to the active app")
+            return
+        }
+        guard !app.isActive else { return }
+        app.activate()
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(30))
+            if app.isActive { break }
+        }
+        JevLog.write("[jev] aim: \(app.isActive ? "brought" : "could not bring") \(aim.app) forward")
+    }
+
     /// - Parameter answeredCard: a PERSON tapped an option on a card for
     ///   this exact request. Deliberately separate from `humanApproved`,
     ///   which also covers "the model decided this was routine" — that is a
@@ -266,6 +312,7 @@ final class CommandExecutor {
                                         inWindow: inWindow)
 
         case .typeText(let text):
+            if let aim = Self.aim { await Self.bring(aim) }
             return await Self.cua.type(text)
 
         case .clickPoint(let x, let y):
@@ -275,9 +322,19 @@ final class CommandExecutor {
             return await Self.cua.scroll(direction: direction, amount: amount)
 
         case .switchWorkspace(let id):
-            return AeroSpace.switchTo(id)
+            let manager = WorkspaceManager.detect()
+            if let result = WorkspaceManager.switchTo(id, using: manager) { return result }
+            // Plain macOS Spaces: a keystroke, sent like every other one.
+            guard let spec = WorkspaceManager.spacesShortcut(for: id) else {
+                return .failed(reason: "macOS Spaces can only jump to desktops 1–9 with the ⌃N shortcuts")
+            }
+            let pressed = await execute(.pressKeys(spec: spec), humanApproved: humanApproved)
+            return pressed.status == .ok
+                ? .ok(reason: "Pressed ⌃\(id) — works only if “Switch to Desktop \(id)” is enabled in Keyboard Shortcuts")
+                : pressed
 
         case .pressKeys(let spec):
+            if let aim = Self.aim { await Self.bring(aim) }
             return Keystrokes.press(spec)
 
         case .rightClickControl(let label, let nth, let outOf, let inWindow):
@@ -285,6 +342,7 @@ final class CommandExecutor {
                                         nth: nth, outOf: outOf, inWindow: inWindow)
 
         case .fillField(let label, let text):
+            if let aim = Self.aim { await Self.bring(aim) }
             return await Self.cua.fill(field: label, with: text)
 
         case .systemAction(let name, let value):
@@ -405,6 +463,24 @@ final class CommandExecutor {
                 ? "Asked your phone for the \(field) — it will not be spoken or logged"
                 : "Asked your phone for the \(field)")
 
+        case .fillDetail(let name):
+            // The value is fetched here, one line before it is typed, and is
+            // never put into a variable that outlives the call. Nothing above
+            // this point has ever held it.
+            let canonical = PersonalDetails.canonicalName(name)
+            guard PersonalDetails.field(named: name) != nil else {
+                return .failed(reason: "jev has no detail called \(canonical)")
+            }
+            guard let value = PersonalDetails.value(for: name), !value.isEmpty else {
+                return .failed(reason: "Nothing saved for \(canonical) — add it from the menu bar")
+            }
+            let typed = await Self.cua.type(value)
+            // Reports the NAME. The reason string reaches the phone, the log
+            // and the journal, so it must never carry what was typed.
+            return typed.status == .ok
+                ? .ok(reason: "Typed your \(canonical)")
+                : .failed(reason: "Could not type your \(canonical)")
+
         case .webTask(let goal, let startURL):
             return await executeWebTask(goal: goal, startURL: startURL)
 
@@ -420,6 +496,7 @@ final class CommandExecutor {
                 : .failed(reason: "The browser refused \(url)")
 
         case .sequence(let label, let steps):
+            if let aim = Self.aim { await Self.bring(aim) }
             // Whether every step actually landed, not just whether each
             // was delivered. The sequence used to return a bare `.ok`,
             // which would have reported a swallowed press inside it as
@@ -1075,6 +1152,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // pre-approve anything: unknown apps raise an approval on your phone,
         // and "Always allow" is what builds the list over time.
         AppCatalog.shared.refresh()
+        // …and keep it current: an app installed after launch could not be
+        // named until jev was restarted.
+        AppCatalog.shared.watch()
         let appPolicy = Policy.strictDefault()
         JevLog.write("[jev] app catalog: \(AppCatalog.shared.all.count) apps known, \(AppPolicyStore.shared.all.count) with a saved mode")
         let appExecutor = CommandExecutor(policy: appPolicy, store: appStore)
@@ -1158,7 +1238,36 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         populate(menu)
     }
 
+    /// An Edit menu, so ⌘V works.
+    ///
+    /// jev is an accessory app with no main menu, and macOS dispatches ⌘X/⌘C/
+    /// ⌘V through the main menu's key equivalents. With no menu there is
+    /// nothing for them to trigger, so every text field in the app silently
+    /// refused to paste — which is how someone is supposed to get an API key
+    /// in. Nothing appears in the menu bar for this; it exists only to give
+    /// the shortcuts somewhere to land.
+    private func installEditMenu() {
+        guard NSApp.mainMenu == nil else { return }
+        let main = NSMenu()
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        for (title, action, key) in [
+            ("Cut", #selector(NSText.cut(_:)), "x"),
+            ("Copy", #selector(NSText.copy(_:)), "c"),
+            ("Paste", #selector(NSText.paste(_:)), "v"),
+            ("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ] {
+            // No target: the responder chain finds whichever field is focused,
+            // which is the whole point.
+            edit.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+        }
+        editItem.submenu = edit
+        main.addItem(editItem)
+        NSApp.mainMenu = main
+    }
+
     private func setupMenuBar() {
+        installEditMenu()
         let statusBar = NSStatusBar.system
         let statusItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -1221,6 +1330,52 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // The key lives here rather than in a file, because a key you have
+        // to find a filesystem path for is a key nobody sets.
+        let hearingItem = NSMenuItem(title: "Gemini Transcribe", action: nil, keyEquivalent: "")
+        let hearingMenu = NSMenu()
+
+        let keyItem = NSMenuItem(
+            title: GeminiTranscriber.isConfigured ? "Replace Gemini key…" : "Set Gemini key…",
+            action: #selector(editGeminiKey), keyEquivalent: "")
+        keyItem.target = self
+        hearingMenu.addItem(keyItem)
+
+        if GeminiTranscriber.isConfigured {
+            let whereItem = NSMenuItem(
+                title: "Key \(GeminiTranscriber.sourceDescription())", action: nil, keyEquivalent: "")
+            whereItem.isEnabled = false
+            hearingMenu.addItem(whereItem)
+
+            let removeItem = NSMenuItem(title: "Remove Gemini key",
+                                        action: #selector(removeGeminiKey), keyEquivalent: "")
+            removeItem.target = self
+            hearingMenu.addItem(removeItem)
+        }
+        hearingItem.submenu = hearingMenu
+        menu.addItem(hearingItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // My details. Entered here rather than from the phone, deliberately:
+        // this is the one screen where a tax number is typed, and typing it
+        // at the Mac means it never crosses the network at all.
+        let detailsItem = NSMenuItem(title: "My details", action: nil, keyEquivalent: "")
+        let detailsMenu = NSMenu()
+        let savedNames = Set(PersonalDetails.saved().map(PersonalDetails.normalise))
+        for field in PersonalDetails.known {
+            let isSet = savedNames.contains(PersonalDetails.normalise(field.name))
+            let item = NSMenuItem(title: "\(field.name)\(isSet ? "  ✓" : "")",
+                                  action: #selector(editDetail(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = field.name
+            detailsMenu.addItem(item)
+        }
+        detailsItem.submenu = detailsMenu
+        menu.addItem(detailsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Voice language. The recogniser was pinned to en-US, which is the
         // wrong model for most people who speak English.
         let voiceItem = NSMenuItem(title: "Voice language", action: nil, keyEquivalent: "")
@@ -1234,6 +1389,19 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         systemItem.representedObject = ""
         systemItem.state = chosen == nil ? .on : .off
         voiceMenu.addItem(systemItem)
+
+        // Only Gemini can act on this. Pinning a language is right for
+        // English spoken with an accent and wrong for someone switching into
+        // another language mid-sentence, and only the person knows which they
+        // are about to do.
+        let autoItem = NSMenuItem(title: "Detect automatically  (Gemini only)",
+                                  action: #selector(pickVoiceLocale(_:)), keyEquivalent: "")
+        autoItem.target = self
+        autoItem.representedObject = VoiceLocale.autoDetect
+        autoItem.state = VoiceLocale.isAutoDetect ? .on : .off
+        autoItem.isEnabled = GeminiTranscriber.isConfigured
+        voiceMenu.addItem(autoItem)
+
         voiceMenu.addItem(NSMenuItem.separator())
 
         for identifier in VoiceLocale.supported() {
@@ -1241,7 +1409,8 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                   action: #selector(pickVoiceLocale(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = identifier
-            item.state = (chosen != nil && identifier == effective) ? .on : .off
+            item.state = (chosen != nil && !VoiceLocale.isAutoDetect && identifier == effective)
+                ? .on : .off
             voiceMenu.addItem(item)
         }
         voiceItem.submenu = voiceMenu
@@ -1360,6 +1529,86 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAutoApprove() {
         // Toggle auto-approve setting
+    }
+
+    @objc private func editGeminiKey() {
+        // An accessory app is not frontmost when its menu bar item is
+        // clicked, so a modal it opens is not key and cannot take a paste.
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Gemini transcription"
+        alert.informativeText = """
+            Paste a Google AI Studio key. jev will use \(GeminiTranscriber.model) for             everything you say, and fall back to the built-in recogniser whenever it             cannot answer.
+
+            The key is kept in your Keychain and never written to the log.
+            """
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        // Secure, and never pre-filled with what is stored: opening a menu
+        // should not put a key on screen.
+        let input = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        input.placeholderString = GeminiTranscriber.isConfigured
+            ? "Saved — paste a new key to replace it" : "AI Studio API key"
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            do { try GeminiTranscriber.saveAPIKey(input.stringValue) }
+            catch {
+                // Never echoes what was typed.
+                JevLog.write("[jev] could not save the Gemini key")
+            }
+        }
+        input.stringValue = ""
+    }
+
+    @objc private func removeGeminiKey() {
+        GeminiTranscriber.clearAPIKey()
+    }
+
+    @objc private func editDetail(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let field = PersonalDetails.field(named: name) else { return }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Your \(field.name)"
+        alert.informativeText = field.isSensitive
+            ? "Typed here and kept in your Keychain. jev will type it when you ask for it by name — "
+              + "it is never spoken, transcribed, logged, or sent to a model."
+            : "Typed here and kept in your Keychain. jev will type it when you ask for it by name."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        if PersonalDetails.value(for: field.name)?.isEmpty == false {
+            alert.addButton(withTitle: "Forget it")
+        }
+
+        // A secure field for the sensitive ones: shoulder-surfing is the one
+        // threat left once it is no longer spoken.
+        let input: NSTextField = field.isSensitive
+            ? NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+            : NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        // Deliberately NOT pre-filled with the stored value. Opening a menu
+        // should not put a tax number on screen.
+        input.placeholderString = PersonalDetails.value(for: field.name)?.isEmpty == false
+            ? "Saved — type a new value to replace it" : field.name
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            do { try PersonalDetails.save(name: field.name, value: input.stringValue) }
+            catch {
+                // Never echoes what was typed.
+                JevLog.write("[jev] could not save \(field.name)")
+            }
+        case .alertThirdButtonReturn:
+            PersonalDetails.forget(name: field.name)
+        default:
+            break
+        }
+        input.stringValue = ""
     }
 
     @objc private func pickVoiceLocale(_ sender: NSMenuItem) {

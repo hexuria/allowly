@@ -702,6 +702,48 @@ public enum CuaSelfTest {
         check("off-space explained",
               CuaBackend.humanise("ax_window_unresolved: window_id 1 exists").contains("another Space"))
 
+        // What is under the pointer: the innermost scope. The smallest
+        // containing frame wins, because a button sits inside a toolbar sits
+        // inside a window and all three contain the point.
+        let placed: [(label: String, frame: CGRect)] = [
+            ("Window", CGRect(x: 0, y: 0, width: 1000, height: 800)),
+            ("Toolbar", CGRect(x: 0, y: 0, width: 1000, height: 60)),
+            ("Save", CGRect(x: 900, y: 10, width: 80, height: 40)),
+            ("", CGRect(x: 900, y: 10, width: 80, height: 40)),
+        ]
+        func pointed(_ name: String, _ p: CGPoint, _ expected: String?) {
+            if CuaBackend.labelUnder(point: p, in: placed) != expected {
+                failures.append("pointer: \(name)")
+            }
+        }
+        pointed("the button, not the toolbar it sits in", CGPoint(x: 920, y: 30), "Save")
+        pointed("the toolbar where there is no button", CGPoint(x: 100, y: 30), "Toolbar")
+        pointed("the window body", CGPoint(x: 500, y: 400), "Window")
+        pointed("outside everything is nothing", CGPoint(x: 2000, y: 2000), nil)
+        pointed("an unlabelled control never wins", CGPoint(x: 920, y: 30), "Save")
+
+        // The window under a point, from list_windows. Frontmost wins among
+        // those containing it; off-screen and other-Space windows never do.
+        let windows: [[String: Any]] = [
+            ["pid": 1, "window_id": 10, "z_index": 3, "is_on_screen": true,
+             "bounds": ["x": 0, "y": 0, "width": 2000, "height": 1200]],           // Chrome, behind
+            ["pid": 2, "window_id": 20, "z_index": 1, "is_on_screen": true,
+             "bounds": ["x": 100, "y": 100, "width": 800, "height": 600]],         // Waz, in front
+            ["pid": 3, "window_id": 30, "z_index": 0, "is_on_screen": false,
+             "bounds": ["x": 100, "y": 100, "width": 800, "height": 600]],         // hidden
+            ["pid": 4, "window_id": 40, "z_index": 0, "on_current_space": false,
+             "bounds": ["x": 100, "y": 100, "width": 800, "height": 600]],         // other Space
+        ]
+        func underWindow(_ name: String, _ p: CGPoint, _ pid: Int?) {
+            if CuaBackend.windowUnder(point: p, in: windows)?["pid"] as? Int != pid {
+                failures.append("window: \(name)")
+            }
+        }
+        underWindow("the overlay in front, not the app behind it", CGPoint(x: 300, y: 300), 2)
+        underWindow("outside the overlay, the app behind", CGPoint(x: 1500, y: 900), 1)
+        underWindow("hidden and other-Space windows never win", CGPoint(x: 300, y: 300), 2)
+        underWindow("nothing under a point off every window", CGPoint(x: 3000, y: 3000), nil)
+
         return failures
     }
 }

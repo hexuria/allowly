@@ -24,6 +24,437 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: Transcription by Gemini, when there is a key for it.
+        //
+        // Both of the traps here fail SILENTLY — the request succeeds and the
+        // transcript is empty — so they are assertions rather than comments.
+        // Learned from Google's own demo client, not from the documentation.
+        let body = GeminiTranscriber.requestBody(
+            base64Audio: "AAAA", mimeType: "audio/aac",
+            vocabulary: ["Ghostty", "command 1"], languageCodes: ["en-PH"])
+        let generation = body["generationConfig"] as? [String: Any]
+        let audioConfig = generation?["audioTranscriptionConfig"] as? [String: Any]
+
+        // Without this the call returns 200 and an empty transcript.
+        if audioConfig?["wordTimestamp"] as? Bool != true {
+            failures.append("gemini: wordTimestamp must be true or the transcript is empty")
+        }
+        // `mode` parses on this endpoint and then returns nothing. It belongs
+        // only on the newer interactions surface, which jev does not use.
+        if audioConfig?["mode"] != nil {
+            failures.append("gemini: mode does not work on this endpoint")
+        }
+        if generation?["temperature"] as? Int != 0 {
+            failures.append("gemini: transcription must not be sampled")
+        }
+        // The hint list is the one thing that reliably rescues a short unusual
+        // word, and it carries over to Gemini as a custom vocabulary.
+        if (audioConfig?["customVocabulary"] as? [String])?.contains("Ghostty") != true {
+            failures.append("gemini: the vocabulary is not being sent")
+        }
+        if (try? JSONSerialization.data(withJSONObject: body)) == nil {
+            failures.append("gemini: the request body does not serialise")
+        }
+
+        // One language setting governs both recognisers. It is safe to send
+        // HERE and not everywhere: on the newer interactions surface a
+        // language code silently reverts `mode: "smart"` to verbatim, with
+        // HTTP 200 and no signal. jev uses neither that surface nor that mode.
+        if (audioConfig?["languageCodes"] as? [String]) != ["en-PH"] {
+            failures.append("gemini: the chosen language is not being sent")
+        }
+        // Empty is a value, not an omission: it is how this API is asked to
+        // detect the language itself, which is what someone switching between
+        // English and Tagalog mid-sentence needs.
+        let auto = GeminiTranscriber.requestBody(
+            base64Audio: "AAAA", mimeType: "audio/aac", vocabulary: [], languageCodes: [])
+        let autoGeneration = auto["generationConfig"] as? [String: Any]
+        let autoConfig = autoGeneration?["audioTranscriptionConfig"] as? [String: Any]
+        if (autoConfig?["languageCodes"] as? [String]) != [] {
+            failures.append("gemini: auto-detect must send an empty list, not nothing")
+        }
+
+        // "auto" is not a locale, so Apple must never be handed it.
+        let appleWouldUse = VoiceLocale.resolve(chosen: VoiceLocale.autoDetect,
+                                                system: "en_PH",
+                                                supported: ["en-PH", "en-US"])
+        if appleWouldUse == VoiceLocale.autoDetect {
+            failures.append("voice locale: auto leaked into the system recogniser")
+        }
+
+        // Where the key lives. Namespaced so it cannot collide with a saved
+        // detail or the pairing token, and describable without being shown.
+        if GeminiTranscriber.keychainKey == PersonalDetails.storageKey(for: "email") {
+            failures.append("gemini: the key collides with a saved detail")
+        }
+        if GeminiTranscriber.sourceDescription().count > 40 {
+            failures.append("gemini: the source description is too long for a menu")
+        }
+        // A description of where the key is must never be able to contain the
+        // key. It is built from three fixed strings; this holds that.
+        for source in ["from the environment", "in your Keychain", "from a file"]
+        where source.contains(where: { $0.isNumber }) {
+            failures.append("gemini: a source description carries a value")
+        }
+        // Naming the model is how the menu says which recogniser is in use,
+        // so it must never be empty.
+        if GeminiTranscriber.model.isEmpty {
+            failures.append("gemini: no model named")
+        }
+
+        // The phone calls everything ".webm" and sends MP4, so the container
+        // is sniffed. An unknown type is refused rather than guessed: a wrong
+        // guess is a failed request, and falling back is better than that.
+        func mime(_ ext: String, _ expected: String?) {
+            if GeminiTranscriber.mimeType(forExtension: ext) != expected {
+                failures.append("gemini: \(ext) maps wrongly")
+            }
+        }
+        mime("m4a", "audio/aac")
+        mime("M4A", "audio/aac")
+        mime("wav", "audio/wav")
+        mime("flac", "audio/flac")
+        // Not in Gemini's list, and jev already transcodes it for Apple too.
+        mime("webm", nil)
+        mime("txt", nil)
+        mime("", nil)
+
+        // The reply, including the shapes that are not a transcript.
+        func transcript(_ name: String, _ json: String, _ expected: String?) {
+            if GeminiTranscriber.transcript(fromBody: Data(json.utf8)) != expected {
+                failures.append("gemini: \(name)")
+            }
+        }
+        transcript("a normal reply yields its text",
+                   #"{"candidates":[{"content":{"parts":[{"text":"close tab"}]}}]}"#, "close tab")
+        transcript("parts are joined",
+                   #"{"candidates":[{"content":{"parts":[{"text":"close "},{"text":"tab"}]}}]}"#,
+                   "close tab")
+        // The silent failure this is all guarding against: a 200 with nothing
+        // in it must read as "nothing heard", never as an empty command.
+        transcript("an empty part is nothing heard",
+                   #"{"candidates":[{"content":{"parts":[{"text":"   "}]}}]}"#, nil)
+        transcript("no candidates is nothing heard", #"{"candidates":[]}"#, nil)
+        transcript("an error body is nothing heard", #"{"error":{"code":403}}"#, nil)
+        transcript("malformed JSON is nothing heard", "not json", nil)
+
+        // MARK: Gemini answers; Apple keeps listening.
+        //
+        // Gemini returns one reading. Three of the cheapest rescues in
+        // SpeechRepair only work with more than one, so Gemini alone silently
+        // turned them off. Apple's readings ride along as the alternatives.
+        let gemini = Heard(best: "close tab", alternatives: [], confidence: 1.0)
+        let builtIn = Heard(best: "close thab", alternatives: ["close tab", "closed app", ""],
+                            confidence: 0.6)
+        let both = FallbackTranscriber.merged(preferred: gemini, secondary: builtIn)
+        if both.best != "close tab" { failures.append("merge: Gemini's reading is not the answer") }
+        if both.alternatives != ["close thab", "closed app"] {
+            failures.append("merge: Apple's readings are not the alternatives (\(both.alternatives))")
+        }
+        if both.confidence != 1.0 { failures.append("merge: confidence is not Gemini's") }
+        // Nothing lost when Apple heard only one thing, nothing invented
+        // when it heard nothing.
+        let quiet = FallbackTranscriber.merged(
+            preferred: gemini, secondary: Heard(best: "", alternatives: [], confidence: 0))
+        if quiet.alternatives != [] { failures.append("merge: silence became an alternative") }
+
+        // MARK: What the recogniser is told to expect.
+        //
+        // Measured, on a Mac already listening in en-PH: "press cmd 1" came
+        // back as "prayers for man one", and "create new tab" as "create new
+        // dog". The first had no chance — keystroke words were never in the
+        // hint list at all. The second was: "new tab" is in there, and at a
+        // budget of 200 the biasing had been diluted to the point of not
+        // defending even the phrases it contained.
+        let hints = Transcription.recognitionHints()
+        func hinted(_ name: String, _ phrase: String) {
+            if !hints.contains(where: { $0.caseInsensitiveCompare(phrase) == .orderedSame }) {
+                failures.append("hint: \(name) — \(phrase) is not offered")
+            }
+        }
+        hinted("the press verb", "press")
+        hinted("the command key", "command")
+        hinted("its short form", "cmd")
+        hinted("a modifier", "shift")
+        hinted("a named key", "escape")
+        hinted("a whole shortcut", "command 1")
+        hinted("and the last one", "command 9")
+        // A bare digit is deliberately absent. "1" competes with every number
+        // anyone might say and biases nothing in particular, while spending a
+        // slot that "command 1" uses better.
+        if hints.contains("1") {
+            failures.append("hint: a bare digit is spending a slot")
+        }
+        hinted("the tab key, which is also a browser tab", "tab")
+        hinted("the phrase that came back as 'new dog'", "new tab")
+
+        // Biasing weakens as the list grows: every extra phrase competes with
+        // the ones that matter. The cap is the point, not an implementation
+        // detail, so it is asserted.
+        if hints.count > Transcription.hintBudget {
+            failures.append("hint: \(hints.count) phrases exceeds the budget")
+        }
+        if Transcription.hintBudget > 120 {
+            failures.append("hint: the budget is large enough to dilute itself")
+        }
+        // Duplicates spend the budget twice on one word.
+        if Set(hints.map { $0.lowercased() }).count != hints.count {
+            failures.append("hint: the list repeats itself")
+        }
+        if hints.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+            failures.append("hint: an empty phrase takes a slot and biases nothing")
+        }
+
+        // MARK: A reply is believed only if it is a real choice over what was sent.
+        //
+        // The browser loop checked this since it was written. The sentence
+        // resolver — the code that decides whether to open a URL or hand a
+        // signed-in shop to an agent — applied none of it, and read one scalar
+        // off a distribution it never looked at. "click free shipping to
+        // philippines" died at operation=0.57 with the right control at 0.78
+        // in the same reply.
+        typealias Answer = JevAPI.ChoiceAnswer
+        let offered: Set<String> = ["a", "b", "c"]
+        func answer(_ c: String, _ p: [String: Double], conf: Double = 0.9) -> Answer {
+            Answer(choice: c, confidence: conf, probabilities: p)
+        }
+        func soundness(_ name: String, _ a: Answer, _ expected: Bool) {
+            if a.isSound(offered: offered) != expected { failures.append("sound: \(name)") }
+        }
+        soundness("a real choice is sound", answer("a", ["a": 0.7, "b": 0.2, "c": 0.1]), true)
+        soundness("a choice outside the set is not", answer("z", ["a": 0.7, "b": 0.2, "c": 0.1]), false)
+        soundness("a distribution over other keys is not", answer("a", ["a": 0.5, "z": 0.5]), false)
+        soundness("not summing to one is not", answer("a", ["a": 0.5, "b": 0.1, "c": 0.1]), false)
+        soundness("an argmax disagreeing with the choice is not",
+                  answer("a", ["a": 0.2, "b": 0.7, "c": 0.1]), false)
+        soundness("a non-finite number is not", answer("a", ["a": .nan, "b": 0.5, "c": 0.5]), false)
+
+        // Decisive means "beat the runner-up by twice", at any size.
+        func decisive(_ name: String, _ a: Answer, _ expected: Bool) {
+            if a.isDecisive != expected { failures.append("decisive: \(name)") }
+        }
+        decisive("a clear lead is decisive", answer("a", ["a": 0.7, "b": 0.2, "c": 0.1]), true)
+        decisive("a toss-up is not", answer("a", ["a": 0.5, "b": 0.45, "c": 0.05]), false)
+        decisive("one of sixty at 0.3 is decisive", Answer(
+            choice: "1", confidence: 0.3,
+            probabilities: Dictionary(uniqueKeysWithValues: (1...60).map {
+                (String($0), $0 == 1 ? 0.3 : 0.7 / 59) })), true)
+        decisive("98 to 2 is decisive", answer("a", ["a": 0.98, "b": 0.02]), true)
+        decisive("a single option has no margin", answer("a", ["a": 1.0]), false)
+
+        // The offered set is recovered from the question, so a reply is
+        // checked against what was actually sent.
+        if JevAPI.Question.choice(instructions: "", labels: ["x", "y"]).offeredLabels != ["x", "y"] {
+            failures.append("offered: a choice question does not report its labels")
+        }
+        if JevAPI.Question.describedChoice(instructions: "", options: ["1": [:], "2": [:]])
+            .offeredLabels != ["1", "2"] {
+            failures.append("offered: a described choice does not report its keys")
+        }
+        if JevAPI.Question.noul(instructions: "").offeredLabels != nil {
+            failures.append("offered: a yes/no question claims labels")
+        }
+
+        // An unsound reply is no answer — and the resolver must treat it so
+        // rather than believe it or crash on it.
+        let replies = JevAPI.Answers(
+            choices: ["q": answer("z", ["a": 0.7, "b": 0.2, "c": 0.1])], nouls: [:])
+        if replies.soundChoice("q", offered: offered) != nil {
+            failures.append("sound: an unsound reply was believed")
+        }
+        if replies.soundChoice("missing", offered: offered) != nil {
+            failures.append("sound: a missing reply was invented")
+        }
+        if replies.soundChoice("q", offered: nil as Set<String>?) != nil {
+            failures.append("sound: a reply to a question with no options was believed")
+        }
+
+        // MARK: Workspaces belong to whichever manager answers.
+        //
+        // AeroSpace was chosen because its binary existed, so installed-but-
+        // quit gave `No workspace "3" (have: )`, and a yabai Mac got nothing.
+        // The pure parts are pinned here; detection itself is logged per
+        // command, because it depends on the Mac.
+        let yabaiJSON = Data(#"[{"index":1,"has-focus":false},{"index":2,"has-focus":true},{"index":3}]"#.utf8)
+        let spaces = WorkspaceManager.yabaiSpaces(fromJSON: yabaiJSON) ?? []
+        if spaces.map(\.index) != ["1", "2", "3"] { failures.append("yabai: indices misread") }
+        if spaces.first(where: \.focused)?.index != "2" { failures.append("yabai: focus misread") }
+        if WorkspaceManager.yabaiSpaces(fromJSON: Data("not json".utf8)) != nil {
+            failures.append("yabai: malformed output was believed")
+        }
+        // Spaces: ⌃1…⌃9 exist; nothing else can be pressed.
+        if WorkspaceManager.spacesShortcut(for: "3") != "ctrl+3" { failures.append("spaces: 3 is ⌃3") }
+        if WorkspaceManager.spacesShortcut(for: "10") != nil { failures.append("spaces: 10 has no shortcut") }
+        if WorkspaceManager.spacesShortcut(for: "three") != nil { failures.append("spaces: words are not spaces") }
+
+        // MARK: Focus events feed the scope.
+        //
+        // The pure ledger behind ScopeStore: a focus change is counted only
+        // when the pid actually changes, so the same window reporting focus
+        // twice does not look like two switches.
+        var ledger = ScopeStore.Ledger()
+        let t = Date()
+        ledger.noteFocus(pid: 10, at: t); ledger.noteFocus(pid: 10, at: t); ledger.noteFocus(pid: 20, at: t)
+        if ledger.focusChanges != 2 { failures.append("ledger: focus changes miscounted (\(ledger.focusChanges))") }
+        if ledger.focusedPid != 20 { failures.append("ledger: focused pid not the latest") }
+        ledger.noteApps(at: t)
+        if ledger.appChanges != 1 || ledger.lastEventAt != t { failures.append("ledger: app change not recorded") }
+
+        // MARK: One comparison, cursor outward.
+        //
+        // Precedence used to be a line number. These pin the order that
+        // replaced it, including the one asymmetry kept from the history:
+        // without a press verb a global phrase beats a bare screen match,
+        // because letting the screen win stole "save", "back", "find".
+        func pointing(at label: String?, workspaces: [String] = ["1", "2", "3"]) -> Scope {
+            Scope(context: Phrasebook.neutral, app: "App", visibleLabels: [], fromCursor: true,
+                  activeApp: "App", cursorPid: nil, appBundleId: nil, monitorApps: [], underPointer: label, runningApps: [],
+                  installedApps: [], workspaces: workspaces, workspace: "1",
+                  workspaceManager: .aerospace, takenAt: Date())
+        }
+        // Where a keystroke is aimed. A keystroke is posted with no target,
+        // so when the cursor's app and the active app disagree the command
+        // resolved for one would have landed in the other — "close tab" in
+        // Waz closed a Chrome tab. The aim exists only for that disagreement.
+        func scope(app: String, active: String, pid: Int?, cursor: Bool) -> Scope {
+            Scope(context: Phrasebook.neutral, app: app, visibleLabels: [], fromCursor: cursor,
+                  activeApp: active, cursorPid: pid, appBundleId: nil, monitorApps: [], underPointer: nil, runningApps: [],
+                  installedApps: [], workspaces: [], workspace: nil,
+                  workspaceManager: .spaces, takenAt: Date())
+        }
+        func check(_ ok: Bool, _ what: String) { if !ok { failures.append(what) } }
+        check(scope(app: "Waz", active: "Google Chrome", pid: 42, cursor: true).aim == Aim(pid: 42, app: "Waz"),
+              "aim: cursor in Waz while Chrome is active aims at Waz")
+        check(scope(app: "Google Chrome", active: "Google Chrome", pid: 42, cursor: true).aim == nil,
+              "aim: nothing to do when the cursor's app is the active one")
+        check(scope(app: "Waz", active: "Google Chrome", pid: 42, cursor: false).aim == nil,
+              "aim: labels that did not come from under the cursor aim nowhere")
+        check(scope(app: "Waz", active: "Google Chrome", pid: nil, cursor: true).aim == nil,
+              "aim: no process to bring forward, no aim")
+        check(scope(app: "", active: "Google Chrome", pid: 42, cursor: true).aim == nil,
+              "aim: an unnamed app is not a target")
+
+        // What a permission is granted for. Typing and clicking are acts on
+        // the app in front, so "always allow" is per app — the same key
+        // "quit Chrome" uses — and only falls back to the old bucket when
+        // no app is known. Everything else keeps its own key.
+        func keyed(_ bundle: String?) -> Scope {
+            Scope(context: Phrasebook.neutral, app: "Safari", visibleLabels: [], fromCursor: true,
+                  activeApp: "Safari", cursorPid: 7, appBundleId: bundle, monitorApps: [],
+                  underPointer: nil, runningApps: [], installedApps: [], workspaces: [],
+                  workspace: nil, workspaceManager: .spaces, takenAt: Date())
+        }
+        let safari = keyed("com.apple.Safari")
+        check(safari.policyKey(for: .typeText(text: "x")) == "com.apple.Safari",
+              "policy: typing is granted per app")
+        check(safari.policyKey(for: .pressKeys(spec: "cmd+w")) == "com.apple.Safari",
+              "policy: a shortcut is granted per app")
+        check(safari.policyKey(for: .clickControl(label: "Go")) == "com.apple.Safari",
+              "policy: a click is granted per app")
+        check(safari.policyKey(for: .quitApp(bundleIdentifier: "com.google.Chrome")) == "com.google.Chrome",
+              "policy: an app command keeps the app it names")
+        check(safari.policyKey(for: .openURL(url: "https://a.b")) == "system.browser",
+              "policy: opening a page keeps its own bucket")
+        check(keyed(nil).policyKey(for: .typeText(text: "x")) == "system.keyboard",
+              "policy: with no app known, typing falls back to the old bucket")
+        check(keyed("").policyKey(for: .typeText(text: "x")) == "system.keyboard",
+              "policy: an empty bundle id is not an app")
+        check(safari.policyKey(for: .showNumbers(on: true)) == nil,
+              "policy: numbering needs no permission")
+
+        // "In Safari, close tab": the sentence names its app. Only a running
+        // app can be addressed, the longest name wins, and the address is
+        // dropped from what is parsed.
+        let procs = [Scope.Process(name: "Safari", pid: 7, bundleId: "com.apple.Safari"),
+                     Scope.Process(name: "Google Chrome", pid: 9, bundleId: "com.google.Chrome"),
+                     Scope.Process(name: "Google", pid: 11, bundleId: "x.google")]
+        let neutral: (Scope.Process) -> Phrasebook.Context = { _ in Phrasebook.neutral }
+        let fromChrome = scope(app: "Google Chrome", active: "Google Chrome", pid: 9, cursor: true)
+        let toSafari = fromChrome.addressing("In Safari, close tab", running: procs, context: neutral)
+        check(toSafari?.rest == "close tab" && toSafari?.scope.app == "Safari"
+              && toSafari?.scope.cursorPid == 7 && toSafari?.scope.appBundleId == "com.apple.Safari",
+              "addressing: “in Safari, close tab” is “close tab” in Safari")
+        check(toSafari?.scope.aim == Aim(pid: 7, app: "Safari"),
+              "addressing: a background app is aimed at")
+        check(fromChrome.addressing("in safari close tab", running: procs, context: neutral)?.rest == "close tab",
+              "addressing: the comma is optional")
+        check(fromChrome.addressing("in google chrome open new tab", running: procs, context: neutral)?.scope.app == "Google Chrome",
+              "addressing: the longest app name wins")
+        check(fromChrome.addressing("in google chrome open new tab", running: procs, context: neutral)?.rest == "open new tab",
+              "addressing: the whole name is dropped")
+        check(fromChrome.addressing("in safari", running: procs, context: neutral) == nil,
+              "addressing: an address with nothing after it is not a command")
+        check(fromChrome.addressing("install homebrew", running: procs, context: neutral) == nil,
+              "addressing: “install” is not “in”")
+        check(fromChrome.addressing("in the zone click go", running: procs, context: neutral) == nil,
+              "addressing: an app that is not running cannot be addressed")
+        check(fromChrome.addressing("in safaris close tab", running: procs, context: neutral) == nil,
+              "addressing: a name must end where the name ends")
+        check(fromChrome.addressing("in google chrome, close tab", running: procs, context: neutral)?.scope.aim == nil,
+              "addressing: the app already in front needs no aim")
+
+        // One verdict, wherever it was asked. Either doubt asks.
+        check(SafetyVerdict(routine: 0.9, destructive: 0.1).allowsUnattended, "verdict: routine and harmless runs")
+        check(!SafetyVerdict(routine: 0.5, destructive: 0.1).allowsUnattended, "verdict: not routine asks")
+        check(!SafetyVerdict(routine: 0.9, destructive: 0.5).allowsUnattended, "verdict: possibly destructive asks")
+        check(SafetyVerdict(routine: 0.9, destructive: 0.6).looksDestructive, "verdict: destructive is refused before policy")
+        check(!SafetyVerdict(routine: 0.2, destructive: 0.2).looksDestructive, "verdict: merely unusual is not destructive")
+
+        let saveShortcut = VoiceCommand.Parsed(command: .pressKeys(spec: "cmd+s"), description: "Save")
+        func level(_ name: String, _ text: String, pressed: Bool, onScreen: String?,
+                   parsed: VoiceCommand.Parsed?, pointer: String? = nil,
+                   _ expected: Candidates.Level?) {
+            let got = Candidates.choose(text: text, scope: pointing(at: pointer), pressed: pressed,
+                                        onScreen: onScreen, parsed: parsed)?.level
+            if got != expected { failures.append("order: \(name) gave \(got.map { "\($0)" } ?? "nil")") }
+        }
+        level("what the cursor is on wins over everything",
+              "click free shipping zone", pressed: true, onScreen: "Free Shipping Zone",
+              parsed: saveShortcut, pointer: "Free Shipping Zone", .cursor)
+        level("a press verb makes the window inner", "click save",
+              pressed: true, onScreen: "Save", parsed: saveShortcut, .window)
+        level("no verb: the global phrase beats a bare screen match", "save",
+              pressed: false, onScreen: "Save", parsed: saveShortcut, .global)
+        level("a workspace beats a global phrase for the same words", "go to workspace 3",
+              pressed: false, onScreen: nil, parsed: saveShortcut, .workspace)
+        level("a workspace that does not exist is not proposed", "go to workspace 9",
+              pressed: false, onScreen: nil, parsed: nil, nil)
+        level("nothing claims nothing", "blorp", pressed: false, onScreen: nil, parsed: nil, nil)
+
+        if !Candidates.namesExactly("click the free shipping zone", "Free Shipping Zone", pressed: true) {
+            failures.append("order: a press verb and article are not stripped")
+        }
+        if Candidates.namesExactly("free shipping", "Free Shipping Zone", pressed: false) {
+            failures.append("order: a partial label matched the cursor")
+        }
+
+        // MARK: Saying "click X" means clicking X.
+        //
+        // Measured on a real Amazon page: "click free shipping to philippines"
+        // came back as control=Free Shipping Zone@0.78 alongside
+        // operation=web_task@0.57. The right link, named correctly from words
+        // that do not appear in its label — and then refused, because the
+        // web-task floor rejected 0.57 while the answer sat in the same reply.
+        // A pressing verb plus a control named with more conviction than the
+        // operation now wins.
+        func pressVerb(_ name: String, _ text: String, _ expected: Bool) {
+            if JevIntent.startsWithPressVerb(text) != expected {
+                failures.append("press verb: \(name)")
+            }
+        }
+        for verb in ["click", "press", "tap", "push", "hit", "choose", "select"] {
+            pressVerb("\(verb) is a press", "\(verb) free shipping to philippines", true)
+        }
+        pressVerb("case does not matter", "Click Free Shipping Zone", true)
+        // These must NOT be treated as presses, or a web goal gets turned into
+        // a click on whatever happens to match on screen.
+        pressVerb("going somewhere is not a press", "go to youtube and search hello", false)
+        pressVerb("playing is not a press", "play a lofi radio on youtube", false)
+        pressVerb("searching is not a press", "search amazon for coffee filters", false)
+        // A word that merely begins with a press verb is not one.
+        pressVerb("clicked is not click", "clicking through the results", false)
+        pressVerb("selective is not select", "selective search on amazon", false)
+
         // MARK: Where decisions are allowed to be sent.
         //
         // The endpoint can be pointed at something local that strips personal
@@ -98,70 +529,183 @@ enum VocabularySelfTest {
                 failures.append("destination: \(name)")
             }
         }
-        // Written or spoken, an address opens a page.
+        // Certain, so the phrasebook keeps it: instant, offline, no call.
         for place in ["youtube dot com", "github.com", "https://example.com/x",
-                      "facebook", "youtube", "stack overflow", "to the verge",
-                      "my gmail", "news dot ycombinator dot com", "amazon", "wikipedia",
+                      "news dot ycombinator dot com",
                       "docs dot google dot com slash spreadsheets",
-                      // "and" sits inside real names too, so it cannot
-                      // disqualify an address on its own.
-                      "bath and body works dot com"] {
-            destination("a place: \(place)", place, true)
+                      "bath and body works dot com", "playstation dot com",
+                      "searchencrypt dot com",
+                      // Named in a list this code owns, so no judgement is
+                      // being exercised — the same list a web task starts
+                      // from, so both agree where youtube is.
+                      "youtube", "amazon", "wikipedia", "stack overflow"] {
+            destination("certain: \(place)", place, true)
         }
 
-        // Everything here was, or would have been, turned into a domain.
-        // Both of the first two were said aloud on a real phone:
-        //     "go to YouTube and search hello"  -> youtubeandsearchhello.com
-        //     "go to youtube dot com and search hellboy"
-        //                                       -> youtube.comandsearchhellboy
-        // The second survived the first fix, because that fix asked "is there
-        // a dot?" before "is this more than one instruction?" — and a spoken
-        // address contains " dot ". A task is recognised first now.
-        for task in ["youtube and search hello",
-                     "youtube dot com and search hellboy",
-                     "youtube dot com and search hell boy",
-                     "youtube and play lofi",
-                     "amazon and buy coffee filters",
-                     "amazon dot com and add coffee filters to my cart",
-                     "github and find the jev repo",
-                     "youtube then play something",
-                     "twitter and post a reply",
-                     "reddit and scroll to the top",
-                     "my email and reply to the last one",
-                     "google and search for weather",
-                     "netflix and watch something",
-                     "youtube dot com and subscribe to that channel",
-                     "my account settings page",
-                     ""] {
-            destination("a task: \(task)", task, false)
+        // NOT certain, so the classifier decides. Every one of these used to
+        // become a domain, because the guess stripped the spaces and appended
+        // ".com". Three were reported from a real phone:
+        //     "go to YouTube and search hello"     -> youtubeandsearchhello.com
+        //     "go to youtube dot com and search …" -> youtube.comandsearchhellboy
+        //     "go to workspace three"              -> workspacethree.com
+        // Each was fixed by making the guess cleverer and the next phrasing
+        // broke it again. The guess is gone; jev classifies these instead,
+        // measured at 0.98 and above on exactly these sentences.
+        for uncertain in ["youtube and search hello",
+                          "youtube dot com and search hellboy",
+                          "youtube and play lofi",
+                          "amazon and buy coffee filters",
+                          "amazon dot com and add coffee filters to my cart",
+                          "github and find the jev repo",
+                          "youtube then play something",
+                          "twitter and post a reply",
+                          "netflix and watch something",
+                          "workspace three", "workspace 3", "to workspace two",
+                          "my account settings page",
+                          "settings", "the top", "my inbox",
+                          "facebook", "the verge", "some place nobody named",
+                          ""] {
+            destination("not certain: \(uncertain)", uncertain, false)
         }
 
-        // When the fast path declines, the resolver asks the model — and the
-        // ADDRESS is still built here, from what the person said, never
-        // returned by the model. A model that answered with a URL would be
-        // producing something executable, which is exactly the freedom
-        // withheld from it everywhere else.
-        func spoken(_ name: String, _ sentence: String, _ expected: String?) {
-            let got = Phrasebook.destination(fromSpoken: sentence)
-            if got != expected {
-                failures.append("spoken destination: \(name) gave \(got ?? "nil")")
+        // End to end, which is the only version of this that matters: the
+        // whole sentence, through the real parser, to the command that runs.
+        func resolves(_ sentence: String, _ describe: (Command?) -> Bool, _ what: String) {
+            let parsed = VoiceCommand.parse(sentence)
+            if !describe(parsed?.command) {
+                failures.append("sentence: “\(sentence)” did not become \(what)")
             }
         }
-        spoken("a lead verb is dropped", "go to github dot com", "github.com")
-        spoken("visit works too", "visit stack overflow", "stackoverflow.com")
-        spoken("browse to works too", "browse to facebook", "facebook.com")
-        spoken("a trailing 'website' is not part of the host",
-               "go to the new york times website", "newyorktimes.com")
-        spoken("a trailing 'page' is not part of the host",
-               "open the wikipedia page", "wikipedia.com")
-        spoken("a name with and survives", "open bath and body works dot com",
-               "bathandbodyworks.com")
-        spoken("nothing but a verb is not a destination", "go to", nil)
-        spoken("an empty sentence is not a destination", "", nil)
+        resolves("go to workspace three", {
+            if case .switchWorkspace(let id) = $0 { return id == "3" }
+            return false
+        }, "a workspace switch")
+        resolves("go to workspace 2", {
+            if case .switchWorkspace(let id) = $0 { return id == "2" }
+            return false
+        }, "a workspace switch")
+        resolves("go to github dot com", {
+            if case .openURL(let url) = $0 { return url == "https://github.com" }
+            return false
+        }, "an open of github.com")
+        // Deliberately not asserted for a bare site name: that binding also
+        // requires a browser to be frontmost, and what is frontmost during a
+        // launch assertion is not a browser. Scope decides it, which is the
+        // right behaviour and the wrong thing to pin here.
+        // The three that became invented domains. Nothing local should claim
+        // them now — they belong to the classifier.
+        for guessed in ["go to youtube and search hello",
+                        "go to youtube dot com and search hellboy"] {
+            resolves(guessed, { command in
+                if case .openURL = command { return false }
+                return true
+            }, "anything but an invented address")
+        }
 
-        // Whole words only, or a domain loses to a verb hiding inside it.
-        destination("playstation is not play", "playstation dot com", true)
-        destination("searchencrypt is not search", "searchencrypt dot com", true)
+        // The transform itself, which is where the bug always was. It used to
+        // return String and could not refuse; now it returns nil for anything
+        // it would have had to guess at. One rule: if a dot was said, nothing
+        // may follow the last label; if not, it must be one word.
+        func host(_ name: String, _ spoken: String, _ expected: String?) {
+            let got = Phrasebook.normalisedDestination(spoken)
+            if got != expected { failures.append("host: \(name) gave \(got ?? "nil")") }
+        }
+        host("a spoken address", "github dot com", "github.com")
+        host("a written address", "github.com", "github.com")
+        host("a scheme is stripped, not doubled", "https://example.com", "example.com")
+        host("a spoken path", "docs dot google dot com slash spreadsheets",
+             "docs.google.com/spreadsheets")
+        host("one word is a guess worth making", "facebook", "facebook.com")
+        host("a filler is dropped", "to the verge dot com", "theverge.com")
+        // The TLD is last, so everything before it is the host.
+        host("a multi-word name ending in dot com collapses",
+             "bath and body works dot com", "bathandbodyworks.com")
+        // A known site gets its real address, not a guess.
+        host("a known site resolves to its real host", "stack overflow", "stackoverflow.com")
+        host("youtube resolves to www", "youtube", "www.youtube.com")
+
+        // Every one of these was, or would have been, invented and opened.
+        host("words after the TLD are a task", "youtube dot com and search hellboy", nil)
+        host("…with a verb the list never had", "youtube dot com and look for hellboy", nil)
+        host("two words with no dot are not a domain", "workspace three", nil)
+        host("a sentence is not a domain", "my bank and check the balance", nil)
+        host("a path with spaces was never spelled out", "example dot com slash some page", nil)
+        host("a lone tld is nothing", "dot com", nil)
+        host("punctuation is not a host", "what?!", nil)
+        host("empty is nothing", "", nil)
+
+        // End to end, through the real parser. Both of these reached the
+        // transform with NO guard at all and became domains.
+        resolves("sign in to my bank and check the balance", { command in
+            if case .openURL = command { return false }
+            if case .sequence(_, let steps) = command {
+                return !steps.contains { if case .openURL = $0 { return true }; return false }
+            }
+            return true
+        }, "anything but an invented address")
+        resolves("go to youtube dot com and look for hellboy", { command in
+            if case .openURL = command { return false }
+            return true
+        }, "anything but an invented address")
+
+        // A workspace binding now exists, so the catalogue can offer one and
+        // the classifier can choose one — and a bare "switch workspace" asks
+        // "Which workspace?" instead of being nothing, which the prompt code
+        // promised and could never do.
+        resolves("switch workspace 3", {
+            if case .switchWorkspace(let id) = $0 { return id == "3" }; return false
+        }, "a workspace switch")
+        resolves("switch to workspace seven", {
+            if case .switchWorkspace(let id) = $0 { return id == "7" }; return false
+        }, "a workspace switch")
+        if Phrasebook.awaitingArgument("switch workspace", in: Phrasebook.neutral) == nil {
+            failures.append("workspace: a bare 'switch workspace' no longer asks which")
+        }
+        if VoiceCommand.parse("switch workspace", in: Phrasebook.neutral) != nil {
+            failures.append("workspace: a bare 'switch workspace' ran something")
+        }
+
+        // What a word means HERE is offered to the classifier, and builds back
+        // as that meaning. Six profiles hold thirty-three scoped phrases; the
+        // catalogue used to offer none of them.
+        let youtube = Phrasebook.Context(bundleId: "com.google.Chrome", appName: "Google Chrome",
+                                         isBrowserLike: true, host: "youtube.com")
+        let scopedPhrases = AppProfiles.phrases(bundleId: youtube.bundleId, host: youtube.host)
+        if scopedPhrases.isEmpty {
+            failures.append("profiles: youtube in chrome has no scoped phrases")
+        }
+        let catalogue = Phrasebook.catalog(in: youtube)
+        for phrase in scopedPhrases where !catalogue.contains(phrase) {
+            failures.append("profiles: “\(phrase)” is not offered where it applies")
+        }
+        for phrase in scopedPhrases.prefix(5)
+        where Phrasebook.build(canonical: phrase, in: youtube) == nil {
+            failures.append("profiles: “\(phrase)” was offered and cannot be built")
+        }
+        if Set(catalogue).count != catalogue.count {
+            failures.append("catalogue: repeats itself")
+        }
+        // …and is NOT offered where it does not apply.
+        let finder = Phrasebook.Context(bundleId: "com.apple.finder", appName: "Finder",
+                                        isBrowserLike: false)
+        let elsewhere = Set(Phrasebook.catalog(in: finder))
+        let leaked = scopedPhrases.filter { elsewhere.contains($0) }
+            .filter { AppProfiles.phrases(bundleId: finder.bundleId, host: nil).contains($0) == false }
+        // A phrase can legitimately be both global and scoped; only one that
+        // exists ONLY for youtube must be absent in Finder.
+        let globalOnly = Set(Phrasebook.catalog(in: Phrasebook.neutral))
+        for phrase in leaked where !globalOnly.contains(phrase) {
+            failures.append("profiles: “\(phrase)” is offered in Finder")
+        }
+
+        // The parser that "go to workspace three" was stealing from.
+        if VoiceCommand.workspaceId(in: "go to workspace three") != "3" {
+            failures.append("workspace: spoken digits are not understood")
+        }
+        if VoiceCommand.workspaceId(in: "go to github dot com") != nil {
+            failures.append("workspace: a plain address is being claimed")
+        }
+
 
         // MARK: The phrasebook outranks the on-screen control gate.
         //

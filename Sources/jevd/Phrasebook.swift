@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import JevCore
+import JevWeb
 
 /// The literal vocabulary: phrases that map to a fixed sequence of steps.
 ///
@@ -34,7 +35,14 @@ enum Phrasebook {
     }
 
     static func context() -> Context {
-        let app = NSWorkspace.shared.frontmostApplication
+        context(for: NSWorkspace.shared.frontmostApplication, host: BrowserContext.currentHost())
+    }
+
+    /// The context of one app — the frontmost one, or one a sentence was
+    /// addressed to by name. The host is the caller's to supply: only the
+    /// frontmost browser's tab can be read, and a background browser's
+    /// page is unknown rather than guessed.
+    static func context(for app: NSRunningApplication?, host: String?) -> Context {
         let bundleId = app?.bundleIdentifier ?? ""
         let browserish = [
             "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
@@ -48,7 +56,7 @@ enum Phrasebook {
             bundleId: bundleId,
             appName: app?.localizedName ?? "the frontmost app",
             isBrowserLike: browserish.contains(bundleId) || isElectron,
-            host: BrowserContext.currentHost()
+            host: host
         )
     }
 
@@ -246,19 +254,39 @@ enum Phrasebook {
     /// Every capability, as canonical phrases. This doubles as the closed
     /// choice list handed to Jev: it can only ever pick something that really
     /// exists, and each choice may be a multi-step sequence.
-    static func catalog() -> [String] {
-        bindings.compactMap { binding in
+    ///
+    /// Takes the scope rather than reading it, for two reasons that were
+    /// both measured: reading it here cost one osascript-backed `context()`
+    /// call PER BINDING, and reading it here and again in `build(canonical:)`
+    /// a model round-trip later meant the list was filtered under one scope
+    /// and the chosen entry built under another.
+    static func catalog(in explicitContext: Context? = nil) -> [String] {
+        let context = explicitContext ?? self.context()
+        let global = bindings.compactMap { binding -> String? in
             // Only argument-free capabilities: a classifier returns a label,
             // so it cannot supply a URL or a body of text.
             guard let phrase = binding.phrases.first,
-                  binding.build("", context()) != nil else { return nil }
+                  binding.build("", context) != nil else { return nil }
             return phrase
         }
+        // What a word means HERE. Six profiles hold thirty-three phrases that
+        // change meaning by app or page — "mute" on YouTube is the video, not
+        // the Mac — and the catalogue never offered a single one of them, so
+        // the classifier could not choose "mute the video" however clearly it
+        // was said. They come first: the scoped meaning is the one that is
+        // true right now.
+        let scoped = AppProfiles.phrases(bundleId: context.bundleId, host: context.host)
+        var seen = Set<String>()
+        return (scoped + global).filter { seen.insert($0).inserted }
     }
 
-    /// Build a capability chosen by its canonical phrase.
-    static func build(canonical: String) -> VoiceCommand.Parsed? {
-        let context = self.context()
+    /// Build a capability chosen by its canonical phrase — in the same scope
+    /// the catalogue was offered under, or the two can disagree.
+    static func build(canonical: String, in explicitContext: Context? = nil) -> VoiceCommand.Parsed? {
+        let context = explicitContext ?? self.context()
+        // A scoped meaning offered by the catalogue has to build as that
+        // meaning, in the same scope it was offered under.
+        if let scoped = AppProfiles.override(for: canonical, in: context) { return scoped }
         for binding in bindings where binding.phrases.first == canonical {
             return binding.build("", context)
         }
@@ -565,6 +593,19 @@ enum Phrasebook {
         Binding(phrases: ["hard reload", "force reload"]) { _, _ in
             step("Hard reload", [keys("cmd+shift+r")])
         },
+        // Workspaces. This binding did not exist: a parser for "workspace 3"
+        // lived in VoiceCommand, below the phrasebook, and nothing above it
+        // could offer a workspace switch — so the catalogue never listed one,
+        // the classifier could never choose one, and the "Which workspace?"
+        // prompt for a bare "switch workspace" was unreachable code. An empty
+        // argument declines, which is exactly what makes that prompt fire.
+        Binding(phrases: ["switch workspace", "switch to workspace", "go to workspace",
+                          "move to workspace", "workspace"]) { argument, _ in
+            guard !argument.isEmpty,
+                  let id = VoiceCommand.workspaceId(in: "workspace " + argument) else { return nil }
+            return VoiceCommand.Parsed(command: .switchWorkspace(id: id),
+                                       description: "Go to workspace \(id)")
+        },
         Binding(phrases: ["focus the address bar", "focus address bar", "focus the url bar",
                           "focus search", "focus the search bar", "focus search bar"]) { _, context in
             step("Focus the address bar", [keys(context.isBrowserLike ? "cmd+l" : "cmd+f")])
@@ -583,7 +624,7 @@ enum Phrasebook {
                           "visit", "open site", "open website"]) { argument, context in
             guard !argument.isEmpty, context.isBrowserLike || looksLikeURL(argument),
                   namesADestination(argument) else { return nil }
-            let destination = normalisedDestination(argument)
+            guard let destination = normalisedDestination(argument) else { return nil }
             // Hand the URL to the system rather than typing it. The keystroke
             // version opened a tab and then reliably failed to enter anything,
             // because a freshly focused address bar does not accept synthetic
@@ -687,7 +728,10 @@ enum Phrasebook {
             // from Passwords or from you typing it on the phone.
             var steps: [Command] = []
             if !argument.isEmpty {
-                steps.append(.openURL(url: "https://" + normalisedDestination(argument)))
+                // Refuses rather than guesses. "sign in to my bank and check the
+                // balance" reached here with no guard and became a domain.
+                guard let host = normalisedDestination(argument) else { return nil }
+                steps.append(.openURL(url: "https://" + host))
             }
             steps.append(keys("cmd+backslash"))
             return step(argument.isEmpty ? "Autofill this login" : "Open \(argument) and autofill",
@@ -738,56 +782,68 @@ enum Phrasebook {
     }
 
     private static func looksLikeURL(_ text: String) -> Bool {
-        text.contains(".") || text.hasPrefix("http")
+        // " dot " counts. Speech writes an address that way, and without it
+        // "go to github dot com" was only recognised as an address when a
+        // browser happened to be frontmost — the same sentence meant
+        // different things depending on what was in front of it.
+        text.contains(".") || text.hasPrefix("http") || text.contains(" dot ")
     }
 
-    /// Whether "go to X" is naming a place rather than describing a task.
+    /// Whether "go to X" is naming a place this code can be *sure* about.
     ///
-    /// `normalisedDestination` removes every space and appends ".com" to
-    /// anything without a dot, which is right for "go to facebook" and
-    /// catastrophic for a sentence. Two real failures, both said aloud:
+    /// Not "is this probably a domain". `normalisedDestination` removes every
+    /// space and appends ".com", so a wrong answer here does not degrade — it
+    /// invents an address out of someone's words and opens it. Three real
+    /// ones, all said aloud:
     ///
-    ///     "go to YouTube and search hello"
-    ///         -> youtubeandsearchhello.com
-    ///     "go to youtube dot com and search hellboy"
-    ///         -> youtube.comandsearchhellboy
+    ///     "go to YouTube and search hello"     -> youtubeandsearchhello.com
+    ///     "go to youtube dot com and search …" -> youtube.comandsearchhellboy
+    ///     "go to workspace three"              -> workspacethree.com
     ///
-    /// The second one survived the first fix, because that fix asked "does it
-    /// contain a dot?" before "is it more than one instruction?" — and a
-    /// spoken address contains " dot ". Order matters: an address that is
-    /// followed by an instruction is still two things.
+    /// Each was fixed by making the guess cleverer, and the next phrasing
+    /// broke it again. The guess is the bug. jev has a classifier that
+    /// decides open_url against web_task against everything else, measured at
+    /// 0.98 and above on exactly these sentences — so anything this function
+    /// is not certain about is now its problem, not this one's.
     ///
-    /// So the question asked first is whether a TASK is being described, and
-    /// only then whether what remains looks like a place.
+    /// What stays here is what needs no judgement: an address, or a site
+    /// named in a list this code owns. Those are instant and work offline,
+    /// which is the whole reason the phrasebook runs first. Everything else
+    /// declines and costs one model call, which is the right price for not
+    /// opening a domain nobody asked for.
     static func namesADestination(_ raw: String) -> Bool {
         let text = raw.lowercased().trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return false }
 
-        // Whole words, so "playstation" is not "play" and "searchengine" is
-        // not "search". A domain is one token by the time it is spoken; a
-        // task always has a verb sitting on its own.
         let words = Set(text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+
+        // Two instructions, not one place. Whole words, so "playstation" is
+        // not "play" and "searchencrypt" is not "search".
         let taskVerbs: Set<String> = [
             "search", "searching", "find", "play", "watch", "buy", "order",
             "click", "press", "type", "scroll", "download", "post", "reply",
             "send", "share", "subscribe", "follow", "like", "add", "checkout",
         ]
         if !words.isDisjoint(with: taskVerbs) { return false }
-
-        // "then" always joins two instructions. "and" usually does, but it
-        // also sits inside real names — bath and body works — so it only
-        // counts against a destination alongside a verb, which the check
-        // above has already ruled out.
         if words.contains("then") { return false }
 
-        // Now the easy part. Said or written, this is an address.
+        // An address, written or spoken. No judgement required.
         if text.contains(".") || text.hasPrefix("http") || text.contains(" dot ") { return true }
 
-        // Otherwise a host is a short name: "github", "stack overflow".
-        // Anything longer is a sentence, and guessing a domain from a
-        // sentence is how both of the failures above happened.
-        let meaningful = words.subtracting(["to", "the", "my", "a", "an"])
-        return meaningful.count <= 2
+        // A site this code already knows by name — the same list a web task
+        // starts from, so "go to youtube" and "play something on youtube"
+        // agree about where youtube is.
+        let bare = words.subtracting(["to", "the", "my", "a", "an"]).joined(separator: " ")
+        let spoken = text.replacingOccurrences(of: "^(to|the|my) ", with: "",
+                                               options: .regularExpression)
+        for site in WebStart.knownSites
+        where site.spoken == spoken || site.spoken == bare
+            || site.spoken.replacingOccurrences(of: " ", with: "") == bare {
+            return true
+        }
+
+        // Anything else is a guess, and guesses belong to the classifier.
+        return false
     }
 
     /// Speech writes "facebook.com" as "facebook dot com", and a bare word is
@@ -820,31 +876,77 @@ enum Phrasebook {
         }
         text = text.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return nil }
-        let host = normalisedDestination(text)
-        // A host with nothing before the dot is not a host.
-        guard !host.isEmpty, host != ".com", !host.hasPrefix(".") else { return nil }
-        return host
+        return normalisedDestination(text)
     }
 
-    private static func normalisedDestination(_ raw: String) -> String {
-        var text = raw
-        // "log in to facebook" must not become the host "to facebook".
-        for filler in ["to ", "the ", "my "] where text.hasPrefix(filler) {
+    /// Turn spoken words into a host, or refuse.
+    ///
+    /// This used to be a total function: it deleted every space, appended
+    /// ".com" to anything without a dot, and returned a `String`. There was
+    /// no way out of it that meant "that was not a place", so the whole
+    /// burden of correctness sat on a word list in front of it — and every
+    /// phrasing not on the list became a domain and opened:
+    ///
+    ///     "youtube and search hello"           -> youtubeandsearchhello.com
+    ///     "youtube dot com and search hellboy" -> youtube.comandsearchhellboy
+    ///     "workspace three"                    -> workspacethree.com
+    ///
+    /// Now it returns nil, and one rule does the work the list was doing. If
+    /// the person said a dot, nothing may follow the final label — "bath and
+    /// body works dot com" is one host, "youtube dot com and search hellboy"
+    /// is a host and then a task. If they said no dot, it must be a single
+    /// word: "facebook" is a guess worth making, "workspace three" is not.
+    /// A name in `WebStart.knownSites` resolves to its real address instead
+    /// of a guess, which is how "stack overflow" reaches stackoverflow.com.
+    static func normalisedDestination(_ raw: String) -> String? {
+        var text = raw.lowercased().trimmingCharacters(in: .whitespaces)
+        // "log in to facebook" must not become the host "to facebook". "the"
+        // is deliberately not here: it is part of the name at theverge.com
+        // and theguardian.com, and dropping it produced the wrong sites.
+        for filler in ["to ", "my "] where text.hasPrefix(filler) {
             text = String(text.dropFirst(filler.count))
         }
-        text = text
-            .replacingOccurrences(of: " dot com", with: ".com")
-            .replacingOccurrences(of: " dot org", with: ".org")
-            .replacingOccurrences(of: " dot net", with: ".net")
-            .replacingOccurrences(of: " dot io", with: ".io")
-            .replacingOccurrences(of: " dot ", with: ".")
-            .replacingOccurrences(of: " slash ", with: "/")
-            .replacingOccurrences(of: " ", with: "")
-        if !text.contains(".") && !text.hasPrefix("http") {
-            // A single word with no dot: treat it as a domain guess, which is
-            // what someone saying "browse facebook" means.
-            text += ".com"
+        text = text.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return nil }
+
+        // A site this code already knows: its real address, not a guess.
+        if let site = WebStart.knownSites.first(where: { $0.spoken == text }),
+           let host = URL(string: site.url)?.host {
+            return host
         }
-        return text
+
+        // Something typed or pasted rather than spoken.
+        for scheme in ["https://", "http://"] where text.hasPrefix(scheme) {
+            text = String(text.dropFirst(scheme.count))
+        }
+
+        // Host and path part company at the first slash, spoken or written.
+        let spokenSlash = text.replacingOccurrences(of: " slash ", with: "/")
+        let pieces = spokenSlash.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        var host = String(pieces[0]).replacingOccurrences(of: " dot ", with: ".")
+            .trimmingCharacters(in: .whitespaces)
+        let path = pieces.count > 1 ? String(pieces[1]) : ""
+
+        if let lastDot = host.lastIndex(of: ".") {
+            // Words after the final label are a task, not part of the host.
+            guard !host[host.index(after: lastDot)...].contains(" ") else { return nil }
+            host = host.replacingOccurrences(of: " ", with: "")
+        } else {
+            // No dot: only a single word is a guess worth making.
+            guard !host.contains(" ") else { return nil }
+            host += ".com"
+        }
+
+        // What can actually be a host. Anything else was never an address.
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.-")
+        guard host.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2,
+              labels.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("-") && !$0.hasSuffix("-") })
+        else { return nil }
+
+        // A path with spaces in it is not something anyone spelled out.
+        guard !path.contains(" ") else { return nil }
+        return path.isEmpty ? host : host + "/" + path
     }
 }

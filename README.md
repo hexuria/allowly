@@ -47,6 +47,40 @@ After `make app`, you must grant Accessibility and Screen Recording permissions 
 
 See [docs/SETUP.md](docs/SETUP.md) for detailed setup instructions and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design of each component.
 
+## Hearing you
+
+jev uses Apple's recogniser by default, in the language you pick from **Voice
+language** in the menu bar — it follows your Mac unless you choose otherwise.
+
+That is not good enough for everyone, and the honest measurement is worth
+stating. On a Mac already set to `en-PH`, with the right phrases in the
+recogniser's hint list, "press cmd 1" came back as *"prayers for man one"* and
+"create new tab" as *"create new dog"*. Locale helped. Biasing helped. Neither
+fixed it.
+
+So Gemini can do it instead. Open **Hearing you → Set Gemini key…** in the
+menu bar and paste a key from Google AI Studio. It goes into your Keychain,
+takes effect on the next thing you say, and the menu then tells you which
+recogniser is listening. `GEMINI_API_KEY` works too if you launch jevd from a
+terminal, as does a file at
+`~/Library/Application Support/jev/gemini-api-key`; the environment wins, then
+the Keychain, then the file. The model defaults to `gemini-3.5-transcribe` and
+`JEV_GEMINI_MODEL` overrides it. The same
+vocabulary Apple's recogniser is biased with — your app names, the command
+phrases, the keys — is sent along, so short unusual words stand the same
+chance.
+
+**With no key, nothing changes.** Apple's recogniser handles everything exactly
+as it did. jev also falls back to it whenever Gemini cannot answer — no
+network, an expired key, a rejected upload — because an assistant that stops
+working when the internet does is worse than one that occasionally mishears.
+The log says which one spoke when it switches.
+
+One real difference: Apple returns several competing readings and jev picks
+between them using what is on your screen, which is how "click skip" avoids
+becoming the *next track* media key. Gemini returns one. When it is right that
+costs nothing, and when it is wrong there is no second guess to fall back on.
+
 ## Browser tasks
 
 Say "play something on YouTube" or "search Amazon for a coffee filter and open

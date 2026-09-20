@@ -25,6 +25,8 @@ enum CommandCodableSelfTest {
         // forgotten here. Without these two rows a parked web task would come
         // back as "Unknown command type: webTask" after the person taps
         // Approve — the one moment it must not fail.
+        // The name, never the value — see the assertions below.
+        .fillDetail(name: "TIN"),
         .webTask(goal: "play blinding lights on youtube"),
         .webTask(goal: "open the first result", startURL: "https://www.amazon.com/"),
         // The ordinal has to survive the wire, or "press number two"
@@ -114,6 +116,66 @@ enum CommandCodableSelfTest {
               CommandJournal.carriesFreeText(task))
         check("and the goal is what gets redacted",
               CommandJournal.carriedText(task) == ["buy more coffee filters"])
+
+        // A saved detail's VALUE must never be reachable from the command.
+        //
+        // This is the whole safety story for personal details, and it is
+        // structural rather than careful: `.fillDetail` carries a name, the
+        // executor fetches the value one line before typing it, and so there
+        // is nothing here for a journal entry, an approval card or a log line
+        // to leak — and nothing anyone has to remember to redact. These
+        // assertions exist so that stays true.
+        let detail = Command.fillDetail(name: "TIN")
+        let encoded = (try? encoder.encode(detail)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        check("a detail command names the field", encoded.contains("TIN"))
+        check("a detail command is not treated as carrying free text",
+              !CommandJournal.carriesFreeText(detail))
+        check("and so has no carried text to redact",
+              CommandJournal.carriedText(detail).isEmpty)
+
+        // A command for a field carries the field and nothing else. Checked
+        // without reading the vault: a launch assertion must not do I/O, and
+        // reading twelve Keychain entries here hung the daemon before it
+        // logged a line — a Keychain read can raise a prompt, and a prompt
+        // nobody can answer blocks forever.
+        for field in PersonalDetails.known {
+            let bytes = (try? encoder.encode(Command.fillDetail(name: field.name)))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            // The only field carrying anything is the name.
+            let carried = (try? decoder.decode(Command.self, from: Data(bytes.utf8)))
+            guard case .fillDetail(let back) = carried, back == field.name else {
+                failures.append("webtask: \(field.name) does not round-trip")
+                continue
+            }
+            // Two keys: the type and the name. A value would need a third.
+            let keys = (try? JSONSerialization.jsonObject(with: Data(bytes.utf8)))
+                .flatMap { ($0 as? [String: Any])?.keys.sorted() } ?? []
+            if keys != ["optionId", "type"] {
+                failures.append("webtask: \(field.name) encodes unexpected fields \(keys)")
+            }
+        }
+
+        // Names differ in case, spacing and punctuation between what is said
+        // and what is stored. "pag ibig" and "Pag-IBIG" are one field.
+        check("a spoken name finds its field",
+              PersonalDetails.field(named: "pag ibig")?.name == "Pag-IBIG")
+        check("case does not matter", PersonalDetails.field(named: "tin")?.name == "TIN")
+        check("punctuation does not matter",
+              PersonalDetails.field(named: "drivers licence")?.name == "driver's licence")
+        check("an unknown field is not invented",
+              PersonalDetails.field(named: "mother's maiden name") == nil)
+
+        // Keychain accounts are namespaced, or a detail could collide with
+        // the pairing token.
+        check("storage keys are namespaced",
+              PersonalDetails.storageKey(for: "TIN").hasPrefix("detail."))
+        check("two fields cannot share a key",
+              PersonalDetails.storageKey(for: "TIN") != PersonalDetails.storageKey(for: "SSS"))
+
+        // Masking a two-letter value would rewrite every page containing
+        // those letters, which corrupts the page the model has to read.
+        check("very short values are not offered for masking",
+              PersonalDetails.shortestWorthMasking >= 4)
 
         // Two different commands must not encode to the same bytes.
         //

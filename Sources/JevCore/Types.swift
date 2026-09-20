@@ -215,6 +215,14 @@ public enum Command: Codable, Sendable {
     /// Ask the phone for text rather than taking it from speech. A password
     /// must never go through a microphone or a transcription service.
     case requestInput(field: String, secret: Bool)
+    /// Type a detail that was saved earlier — an email, a tax number.
+    ///
+    /// Carries the NAME and never the value. That is the whole safety story
+    /// and it is structural rather than careful: the value is fetched at the
+    /// moment of typing, so there is nothing here for a journal entry, an
+    /// approval card or a log line to leak, and nothing anyone has to
+    /// remember to redact.
+    case fillDetail(name: String)
     /// Read the form in front of you and show it on the phone to be filled in.
     case showForm
     /// Number everything pressable and show the numbers on the phone, for
@@ -302,6 +310,8 @@ public enum Command: Codable, Sendable {
         case "requestInput":
             self = .requestInput(field: try container.decode(String.self, forKey: .optionId),
                                  secret: try container.decode(String.self, forKey: .fullCommand) == "true")
+        case "fillDetail":
+            self = .fillDetail(name: try container.decode(String.self, forKey: .optionId))
         case "openURL":
             self = .openURL(url: try container.decode(String.self, forKey: .fullCommand))
         case "webTask":
@@ -409,6 +419,9 @@ public enum Command: Codable, Sendable {
             try container.encode("requestInput", forKey: .type)
             try container.encode(field, forKey: .optionId)
             try container.encode(secret ? "true" : "false", forKey: .fullCommand)
+        case .fillDetail(let name):
+            try container.encode("fillDetail", forKey: .type)
+            try container.encode(name, forKey: .optionId)
         case .openURL(let url):
             try container.encode("openURL", forKey: .type)
             try container.encode(url, forKey: .fullCommand)
@@ -459,6 +472,9 @@ public extension Command {
         case .systemAction: return "system.settings"
         case .pointerAction: return "system.pointer"
         case .requestInput, .showForm: return "system.keyboard"
+        // Typed like anything else, and gated like anything else. The value
+        // is personal but the act is "type into the frontmost window".
+        case .fillDetail: return "system.keyboard"
         // Numbering only draws on the phone; it touches nothing on the Mac.
         case .showNumbers: return nil
         case .pressButton, .runCommand, .answerAgentPrompt: return nil

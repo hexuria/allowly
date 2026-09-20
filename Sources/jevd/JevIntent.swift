@@ -24,13 +24,14 @@ enum JevIntent {
         let description: String
         /// Lowest confidence across the answers this decision rests on.
         let confidence: Double
-        /// Jev's calibrated view of whether this is safe to run unattended.
-        let safety: Double
+        /// Jev's view of whether this can run unattended, asked in the same
+        /// breath as "what is it" so the auto policy need not ask again.
+        let verdict: SafetyVerdict
     }
 
     private static let operations = [
         "open_app", "quit_app", "toggle_app", "click_control", "type_text", "scroll",
-        "known_capability", "open_url", "web_task", "unknown",
+        "known_capability", "open_url", "web_task", "fill_detail", "switch_workspace", "unknown",
     ]
 
     /// - Parameter controls: the labels of what is actually on screen, read by
@@ -40,6 +41,9 @@ enum JevIntent {
     static func resolve(transcript: String, alternatives: [String] = [],
                         frontmostApp: String?,
                         controls: [String],
+                        context: Phrasebook.Context? = nil,
+                        runningApps: Set<String> = [],
+                        workspaces: [String] = [],
                         apiKey: String) async -> Result<Resolution, IntentError> {
         let apps = AppCatalog.shared.all.map(\.name)
         // Whoever supplied the controls also says which app they came from,
@@ -50,12 +54,15 @@ enum JevIntent {
 
         var questions: [String: JevAPI.Question] = [
             "operation": .choice(
-                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is.",
+                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is. 'fill_detail' means typing one of the personal details already saved on this Mac — an email address, a phone number, a tax number — which the user refers to by name rather than saying the value. 'switch_workspace' means going to a numbered workspace or desktop.",
                 labels: operations
             ),
-            "safe": .noul(
-                instructions: "Is this request safe to carry out immediately without asking the user to confirm?"
-            ),
+            // The same two questions the auto policy used to ask in a second
+            // round trip once the sentence was resolved. Asked here, on the
+            // call already being made, they cost nothing and the policy
+            // reuses them — one judgement instead of two that could disagree.
+            "routine": .noul(instructions: SafetyVerdict.routineQuestion),
+            "destructive": .noul(instructions: SafetyVerdict.destructiveQuestion),
         // Hands free leaves the microphone open, so half of what arrives is
         // the room: a reply to someone, a video playing, thinking aloud. This
         // costs nothing — it rides on the call already being made — and it is
@@ -71,16 +78,45 @@ enum JevIntent {
             instructions: "Which application does this command act on? Choose 'none' if it does not name one.",
             labels: apps + ["none"]
         )
+        // Quitting, hiding and toggling act on something that is RUNNING.
+        // Offering every installed app for those, as `app` does, invited a
+        // confident pick of something with no process — and the speech hints
+        // already rank running apps first for exactly this reason.
+        if !runningApps.isEmpty {
+            questions["running_app"] = .choice(
+                instructions: "If the user is asking to quit, hide, show or switch to an app that is currently running, which one? Choose 'none' otherwise.",
+                labels: runningApps.sorted() + ["none"]
+            )
+        }
+        // A closed choice over the workspaces that exist, from the window
+        // manager. Nothing is offered when none can be listed.
+        if !workspaces.isEmpty {
+            questions["workspace"] = .choice(
+                instructions: "If the user is asking to go to a workspace or desktop, which one? Choose 'none' otherwise.",
+                labels: workspaces + ["none"]
+            )
+        }
         // Hand Jev the whole capability catalog. It cannot invent a sequence,
         // but choosing among sequences that already exist is exactly what a
         // closed-choice classifier is for — so "close all tabs", "shut every
         // tab" and "get rid of the tabs" all land on the same workflow without
         // anyone enumerating synonyms.
-        let capabilities = Phrasebook.catalog()
+        let capabilities = Phrasebook.catalog(in: context)
         questions["capability"] = .choice(
             instructions: "If the user is asking for one of these known actions, which one? Choose 'none' if none of them fits.",
             labels: capabilities + ["none"]
         )
+
+        // Only what is actually saved. Offering a field nobody filled in gets
+        // a confident answer and nothing to type — and the list is names, so
+        // no value is ever part of a question.
+        let details = PersonalDetails.saved()
+        if !details.isEmpty {
+            questions["detail"] = .choice(
+                instructions: "If the user is asking to fill in one of their saved personal details, which one? Choose 'none' otherwise.",
+                labels: details + ["none"]
+            )
+        }
 
         questions["scroll_direction"] = .choice(
             instructions: "If the user is asking to scroll, in which direction? Choose 'none' if they are not.",
@@ -115,10 +151,21 @@ enum JevIntent {
         let summary = answers.choices.map { "\($0.key)=\($0.value.choice)@\(String(format: "%.2f", $0.value.confidence))" }.sorted().joined(separator: " ")
         JevLog.write("[jev] intent answers: \(summary)")
 
-        guard let operation = answers.choice("operation") else {
-            return .failure(IntentError("Jev returned no operation"))
+        // Every answer is checked against exactly what its question offered
+        // before it is believed. An unsound reply — a choice outside the set,
+        // a distribution over different keys, numbers that do not sum to one
+        // — is read as no answer, which is what it is. The browser loop has
+        // done this since it was written; this resolver did not, and it is
+        // the code that decides whether to open a URL or hand a signed-in
+        // shop to an agent.
+        func sound(_ name: String) -> JevAPI.ChoiceAnswer? {
+            answers.soundChoice(name, offered: questions[name]?.offeredLabels)
         }
-        let safety = answers.noul("safe") ?? 0
+        guard let operation = sound("operation") else {
+            return .failure(IntentError("Jev returned no usable operation"))
+        }
+        let verdict = SafetyVerdict(routine: answers.noul("routine") ?? 0,
+                                    destructive: answers.noul("destructive") ?? 1)
         let addressed = answers.noul("addressed_to_the_mac") ?? 1
         if addressed < 0.35 {
             return .failure(IntentError("that did not sound like it was meant for the Mac"))
@@ -140,8 +187,11 @@ enum JevIntent {
         // The rule that covers both: if the person used a pressing verb and we
         // can name a control they can see, that is what they meant. A global
         // shortcut is the fallback for when they did not point at anything.
-        let namedControl = answers.choice("control").flatMap {
-            $0.choice != "none" && $0.confidence >= 0.5 ? $0 : nil
+        // Decisive, not merely above a number. A flat 0.5 rejected the
+        // correct control among sixty candidates and accepted a coin flip
+        // between two; the runner-up margin means the same thing at any size.
+        let namedControl = sound("control").flatMap {
+            $0.choice != "none" && $0.isDecisive ? $0 : nil
         }
         let spokenAsAPress = Self.startsWithPressVerb(transcript)
         let preferNamedControl = namedControl != nil
@@ -149,16 +199,16 @@ enum JevIntent {
 
         // A confident capability match wins over the coarser operation label:
         // it is more specific and it carries its own steps.
-        if let capability = answers.choice("capability"),
+        if let capability = sound("capability"),
            capability.choice != "none",
-           capability.confidence >= 0.5,
+           capability.isDecisive,
            // ...but not over a web task. "play blinding lights on youtube"
            // matches the "play" capability, which is the F8 media key — a
            // single keystroke that cannot carry out a goal on a website. The
            // capability is more specific about the verb and completely wrong
            // about the intent.
            operation.choice != "web_task",
-           let parsed = Phrasebook.build(canonical: capability.choice),
+           let parsed = Phrasebook.build(canonical: capability.choice, in: context),
            // A pointer press never outranks a named control; and when the
            // words were a press, nothing else does either.
            !(preferNamedControl && (Self.isPointerAction(parsed.command) || spokenAsAPress)) {
@@ -166,13 +216,58 @@ enum JevIntent {
                 command: parsed.command,
                 description: parsed.description,
                 confidence: capability.confidence,
-                safety: safety
+                verdict: verdict
+            ))
+        }
+
+        // Said as a press, with something on screen that matches: click it.
+        //
+        // `preferNamedControl` already existed and was only used to stop a
+        // capability shortcut stealing a press. It never overrode the coarser
+        // operation label, and that gap is what this is fixing. Measured, on
+        // a real Amazon page: "click free shipping to philippines" resolved
+        // `control=Free Shipping Zone@0.78` — the right link, named correctly
+        // from words that do not appear in its label — alongside
+        // `operation=web_task@0.57`. The web-task floor then refused the
+        // whole thing while the correct answer sat in the same reply.
+        //
+        //
+        // Generalised since: a control the model named decisively beats an
+        // operation it could not decide on, whether or not a press verb was
+        // said. "click free shipping to philippines" was refused at
+        // operation=web_task@0.57 with control=Free Shipping Zone@0.78 in the
+        // same reply — the right answer, thrown away with the weak one. A
+        // decisive operation still wins, so "go to youtube and search hello"
+        // at 1.00 is not stolen by whatever button happens to be on screen.
+        if let control = namedControl,
+           spokenAsAPress || !operation.isDecisive {
+            return .success(Resolution(
+                command: .clickControl(label: control.choice),
+                description: "Click “\(control.choice)” in \(frontmost)",
+                confidence: control.confidence,
+                verdict: verdict
             ))
         }
 
         switch operation.choice {
+        case "switch_workspace":
+            guard let workspace = sound("workspace"), workspace.choice != "none" else {
+                return .failure(IntentError("Jev could not tell which workspace you meant"))
+            }
+            return .success(Resolution(
+                command: .switchWorkspace(id: workspace.choice),
+                description: "Go to workspace \(workspace.choice)",
+                confidence: min(operation.confidence, workspace.confidence),
+                verdict: verdict
+            ))
+
         case "open_app", "quit_app", "toggle_app":
-            guard let appAnswer = answers.choice("app"), appAnswer.choice != "none",
+            // Running first for the verbs that need a process, installed for
+            // launching; each falls back to the other list.
+            let preferRunning = operation.choice != "open_app"
+            let ordered = preferRunning ? ["running_app", "app"] : ["app", "running_app"]
+            let appAnswer = ordered.lazy.compactMap { sound($0) }.first { $0.choice != "none" }
+            guard let appAnswer,
                   let entry = AppCatalog.shared.resolve(spokenName: appAnswer.choice) else {
                 return .failure(IntentError("Jev could not tell which app you meant"))
             }
@@ -190,7 +285,7 @@ enum JevIntent {
                 command: command,
                 description: "\(verb) \(entry.name)",
                 confidence: min(operation.confidence, appAnswer.confidence),
-                safety: safety
+                verdict: verdict
             ))
 
         case "click_control":
@@ -201,11 +296,11 @@ enum JevIntent {
                 command: .clickControl(label: control.choice),
                 description: "Click “\(control.choice)” in \(frontmost)",
                 confidence: min(operation.confidence, control.confidence),
-                safety: safety
+                verdict: verdict
             ))
 
         case "scroll":
-            let direction = answers.choice("scroll_direction")
+            let direction = sound("scroll_direction")
             guard let direction, direction.choice != "none" else {
                 return .failure(IntentError("Jev could not tell which way to scroll"))
             }
@@ -213,7 +308,20 @@ enum JevIntent {
                 command: .scroll(direction: direction.choice, amount: 5),
                 description: "Scroll \(direction.choice)",
                 confidence: min(operation.confidence, direction.confidence),
-                safety: safety
+                verdict: verdict
+            ))
+
+        case "fill_detail":
+            guard let detail = sound("detail"), detail.choice != "none" else {
+                return .failure(IntentError("Jev could not tell which detail you meant"))
+            }
+            // The NAME travels; the value is fetched by the executor at the
+            // moment it types it.
+            return .success(Resolution(
+                command: .fillDetail(name: detail.choice),
+                description: "Type your \(PersonalDetails.canonicalName(detail.choice))",
+                confidence: min(operation.confidence, detail.confidence),
+                verdict: verdict
             ))
 
         case "open_url":
@@ -226,7 +334,7 @@ enum JevIntent {
                 command: .openURL(url: "https://" + destination),
                 description: "Open \(destination)",
                 confidence: operation.confidence,
-                safety: safety
+                verdict: verdict
             ))
 
         case "web_task":
@@ -236,9 +344,14 @@ enum JevIntent {
             // this resolver runs. Relying on that ordering would be relying on
             // something several files away, so the weak answer is refused here
             // too. Strong ones measure 1.00.
-            guard operation.confidence >= 0.6 else {
-                return .failure(IntentError("Jev did not recognise that as an action"))
-            }
+            // No floor here any more. One sat at 0.6 inside an outer gate of
+            // 0.55 (Runtime.swift, the intent route), so a web task the outer
+            // gate would merely have ASKED about was refused outright — with
+            // the correct control sitting in the same reply. An undecided
+            // operation is now handled above by preferring a decisive control;
+            // what reaches here is either decisive or the best there is, and a
+            // web task is forced to a card regardless unless the policy says
+            // always, so the person is the gate, not a number.
             // The goal is the sentence. The starting page is resolved later,
             // by jev, from a site named in those words or the page already
             // open — never from anything a model produced.
@@ -246,7 +359,7 @@ enum JevIntent {
                 command: .webTask(goal: transcript),
                 description: "Carry out “\(transcript)” in your browser",
                 confidence: operation.confidence,
-                safety: safety
+                verdict: verdict
             ))
 
         case "type_text":
@@ -254,7 +367,7 @@ enum JevIntent {
                 command: .typeText(text: transcript),
                 description: "Type text into \(frontmost)",
                 confidence: operation.confidence,
-                safety: safety
+                verdict: verdict
             ))
 
         default:
@@ -420,4 +533,26 @@ extension JevIntent {
 }
 
 extension JevIntent {
+}
+
+/// Whether an action may run without a card, in Jev's calibrated view.
+///
+/// Two numbers rather than one "safe": asking whether the action is routine
+/// AND whether it could be hard to undo gives usable signal where a single
+/// "is this safe?" deferred on everything, including "scroll down".
+struct SafetyVerdict: Sendable, Equatable {
+    let routine: Double
+    let destructive: Double
+
+    static let routineQuestion =
+        "A Mac assistant has been asked to do this by its owner. Is it a routine, low-risk, easily reversible action that the assistant should simply carry out?"
+    static let destructiveQuestion =
+        "Could this destroy data, send a message, spend money, change a security setting, or otherwise be hard to undo?"
+
+    /// Run it when Jev thinks it is routine and not destructive. Either
+    /// doubt goes to the person: the asymmetry is the whole safety argument.
+    var allowsUnattended: Bool { routine >= 0.6 && destructive <= 0.4 }
+
+    /// Jev calls it hard to undo: whatever the policy, a person decides.
+    var looksDestructive: Bool { destructive > 0.5 }
 }
