@@ -61,7 +61,7 @@ let package = Package(
         ),
         .target(
             name: "JevWeb",
-            dependencies: ["JevCore"],
+            dependencies: ["JevCore", "JevDecide"],
             resources: [
                 // Vendored byte-identical from jev-ultrafast; see
                 // THIRD-PARTY-NOTICES.md. Copied rather than processed so the

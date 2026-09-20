@@ -21,6 +21,16 @@ public enum JevAPI {
         case choice(instructions: String, labels: [String])
         /// Calibrated yes/no probability.
         case noul(instructions: String)
+        /// A choice whose options carry description rather than only a name.
+        ///
+        /// `choice` sends each label against null, which is right when the
+        /// label says everything — an app name, a direction. It is not enough
+        /// for picking one element out of a page, where the option is "[7]
+        /// Search" and what distinguishes it from "[12] Search" is its role,
+        /// its current value and whether it is already checked. Sendable
+        /// values only: strings, numbers, bools, and arrays or dictionaries
+        /// of those.
+        case describedChoice(instructions: String, options: [String: [String: String]])
 
         var json: [String: Any] {
             switch self {
@@ -30,6 +40,8 @@ public enum JevAPI {
                 return ["type": "choice", "instructions": instructions, "criteria": criteria]
             case .noul(let instructions):
                 return ["type": "noul", "instructions": instructions]
+            case .describedChoice(let instructions, let options):
+                return ["type": "choice", "instructions": instructions, "criteria": options]
             }
         }
     }
