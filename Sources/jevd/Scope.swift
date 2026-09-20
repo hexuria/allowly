@@ -45,6 +45,8 @@ struct Scope: Sendable {
     /// can say. Empty otherwise — a closed choice over nothing offers nothing.
     let workspaces: [String]
     let workspace: String?
+    /// Which manager answered. Spaces when nothing else did.
+    let workspaceManager: WorkspaceManager.Kind
     let takenAt: Date
 
     /// Read the world once.
@@ -55,20 +57,21 @@ struct Scope: Sendable {
         // Same snapshot as the labels, so the pointer's control is one the
         // classifier is also being offered.
         let pointed = await CommandExecutor.cua.labelUnderPointer(at: Pointer.location())
-        // Asked only when a manager is there to answer; the CLI is a process.
-        let workspaces = AeroSpace.isInstalled ? AeroSpace.workspaces() : []
+        // Whichever manager answers, not whichever binary exists.
+        let manager = WorkspaceManager.detect()
         return Scope(context: context,
                      app: seen.app ?? context.appName,
                      visibleLabels: seen.labels,
                      underPointer: pointed,
                      runningApps: running,
-                     workspaces: workspaces,
-                     workspace: workspaces.isEmpty ? nil : AeroSpace.focusedWorkspace(),
+                     workspaces: manager.workspaces,
+                     workspace: manager.focused,
+                     workspaceManager: manager.kind,
                      takenAt: Date())
     }
 
     /// For tests: nothing in front, nothing on screen.
     static let empty = Scope(context: Phrasebook.neutral, app: "", visibleLabels: [],
                              underPointer: nil, runningApps: [], workspaces: [],
-                             workspace: nil, takenAt: Date())
+                             workspace: nil, workspaceManager: .spaces, takenAt: Date())
 }

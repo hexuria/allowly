@@ -249,6 +249,24 @@ enum VocabularySelfTest {
             failures.append("sound: a reply to a question with no options was believed")
         }
 
+        // MARK: Workspaces belong to whichever manager answers.
+        //
+        // AeroSpace was chosen because its binary existed, so installed-but-
+        // quit gave `No workspace "3" (have: )`, and a yabai Mac got nothing.
+        // The pure parts are pinned here; detection itself is logged per
+        // command, because it depends on the Mac.
+        let yabaiJSON = Data(#"[{"index":1,"has-focus":false},{"index":2,"has-focus":true},{"index":3}]"#.utf8)
+        let spaces = WorkspaceManager.yabaiSpaces(fromJSON: yabaiJSON) ?? []
+        if spaces.map(\.index) != ["1", "2", "3"] { failures.append("yabai: indices misread") }
+        if spaces.first(where: \.focused)?.index != "2" { failures.append("yabai: focus misread") }
+        if WorkspaceManager.yabaiSpaces(fromJSON: Data("not json".utf8)) != nil {
+            failures.append("yabai: malformed output was believed")
+        }
+        // Spaces: ⌃1…⌃9 exist; nothing else can be pressed.
+        if WorkspaceManager.spacesShortcut(for: "3") != "ctrl+3" { failures.append("spaces: 3 is ⌃3") }
+        if WorkspaceManager.spacesShortcut(for: "10") != nil { failures.append("spaces: 10 has no shortcut") }
+        if WorkspaceManager.spacesShortcut(for: "three") != nil { failures.append("spaces: words are not spaces") }
+
         // MARK: Saying "click X" means clicking X.
         //
         // Measured on a real Amazon page: "click free shipping to philippines"

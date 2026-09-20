@@ -297,7 +297,16 @@ final class CommandExecutor {
             return await Self.cua.scroll(direction: direction, amount: amount)
 
         case .switchWorkspace(let id):
-            return AeroSpace.switchTo(id)
+            let manager = WorkspaceManager.detect()
+            if let result = WorkspaceManager.switchTo(id, using: manager) { return result }
+            // Plain macOS Spaces: a keystroke, sent like every other one.
+            guard let spec = WorkspaceManager.spacesShortcut(for: id) else {
+                return .failed(reason: "macOS Spaces can only jump to desktops 1–9 with the ⌃N shortcuts")
+            }
+            let pressed = await execute(.pressKeys(spec: spec), humanApproved: humanApproved)
+            return pressed.status == .ok
+                ? .ok(reason: "Pressed ⌃\(id) — works only if “Switch to Desktop \(id)” is enabled in Keyboard Shortcuts")
+                : pressed
 
         case .pressKeys(let spec):
             return Keystrokes.press(spec)
