@@ -557,10 +557,12 @@ final class CommandExecutor {
 
     /// Carry out a goal in the browser the person is already signed into.
     ///
-    /// Today this opens a tab and reads the page. Deciding and clicking is the
-    /// next slice, and until it lands this deliberately cannot act: `JevWeb`
-    /// contains no `Input.*` call at all, so "it looked but did not touch" is
-    /// true by construction rather than by intention.
+    /// This reads the page, decides one step, carries it out, and reads again,
+    /// until the goal is met, refused, or the budget runs out. It **does**
+    /// click and type — through the DevTools target rather than the operating
+    /// system, so it never takes the pointer or the keyboard, but the effect
+    /// on a signed-in site is real. The tab is left open afterwards whatever
+    /// happened, because it is the evidence.
     private func executeWebTask(goal: String, startURL: String?) async -> ExecutionResult {
         let lookup = await ChromeDiscovery.lookup()
         guard case .found(let endpoint) = lookup else {
@@ -595,14 +597,52 @@ final class CommandExecutor {
                 return .failed(reason: WebStart.cannotStart)
             }
 
-            let seen = try await session.observe()
-            // The tab is left open on purpose: it is the evidence of what
-            // happened, and the person should be able to look at it.
+            guard let apiKey = JevAPI.loadAPIKey() else {
+                await session.detach()
+                return .failed(reason: "No TypeSafe API key, so there is nothing to decide with")
+            }
+
+            let agent = WebAgent(session: session, apiKey: apiKey) { progress in
+                // The label comes from the page, so it can contain newlines.
+                // Written raw it forges entries in the daemon's own log.
+                let label = progress.target
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\r", with: " ")
+                JevLog.write("[jev] web step \(progress.step)"
+                           + "\(progress.isRetry ? " (retry)" : ""): "
+                           + "\(progress.operation) \(label.prefix(40))")
+            }
+            let outcome = await agent.run(goal: goal)
+            // The tab is left open whatever happened: it is the evidence, and
+            // the person should be able to look at what jev did.
             await session.detach()
 
-            let what = seen.title.isEmpty ? seen.url : seen.title
-            return .ok(reason: "Opened \(what) — \(seen.actionCount) things I can act on. "
-                             + "Deciding and clicking is not built yet.")
+            switch outcome {
+            case .done(let steps, let url, let title):
+                return .ok(reason: "Done in \(steps) step\(steps == 1 ? "" : "s") — "
+                                 + "\(title.isEmpty ? url : title)")
+            case .blocked(let why, let steps, _, let title):
+                // Not an error and not a success. Reported as a failure so it
+                // never reads as "done", with the tab left open to look at.
+                return .failed(reason: "Stopped after \(steps) step\(steps == 1 ? "" : "s") "
+                                     + "on \(title): \(why)")
+            case .stuck(let steps, _, let title):
+                return .failed(reason: "Could not find a way forward on \(title)"
+                                     + (steps == 0 ? "" : " after \(steps) steps"))
+            case .exhausted(let steps, _, let title):
+                return .failed(reason: "Gave up after \(steps) steps on \(title)")
+            case .failed(let why, let steps):
+                return .failed(reason: steps == 0 ? "Could not start: \(why)"
+                                                  : "Stopped after \(steps) steps: \(why)")
+            }
+        } catch WebSession.Failure.cdp(.sessionRefused) {
+            await session.detach()
+            // The profile toggle can read "on" while Chrome still refuses the
+            // session: the per-browser opt-in and the per-session grant are
+            // different things. Says the one thing that actually helps.
+            return .failed(reason: "Chrome would not open a debugging session. "
+                                 + "Look for an \"Allow remote debugging\" prompt in Chrome, "
+                                 + "or restart Chrome and try again.")
         } catch {
             await session.detach()
             // Never echoes the page or the endpoint path: one is whatever they

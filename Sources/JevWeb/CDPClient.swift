@@ -35,6 +35,10 @@ public actor CDPClient {
         case timedOut(String)
         /// The socket closed with calls still waiting.
         case disconnected
+        /// Chrome accepted the TCP connection but would not open a DevTools
+        /// session. Distinct from every other failure because the fix is a
+        /// tap in Chrome, not anything jev or the person can change here.
+        case sessionRefused
     }
 
     /// Generous: a snapshot of a heavy page is the largest thing that crosses
@@ -50,6 +54,10 @@ public actor CDPClient {
     private var nextID = 1
     private var waiting: [Int: CheckedContinuation<[String: Any], Error>] = [:]
     private var closed = false
+    /// Set when the reader stops. Without it, a call on a dead socket waits
+    /// out its whole timeout and then reports "timed out", which says nothing
+    /// about what went wrong and takes thirty seconds to say it.
+    private var readerFinished = false
 
     public init(endpoint: ChromeDiscovery.Endpoint) {
         self.endpoint = endpoint
@@ -57,8 +65,39 @@ public actor CDPClient {
 
     // MARK: - Lifecycle
 
-    public func connect() throws {
+    /// Open the socket and prove it works.
+    ///
+    /// `resume()` reports nothing: a refused upgrade looks exactly like a
+    /// healthy connection until the first command goes unanswered. So the
+    /// handshake is verified with one cheap browser-level call before this
+    /// returns, and a failure is named rather than left to surface as a
+    /// timeout half a minute into someone's task.
+    /// - Parameter grace: how long to let the handshake take. Chrome may be
+    ///   showing an "Allow remote debugging" prompt, and that grant is per
+    ///   connection rather than per browser — so this has to leave room for a
+    ///   person to notice a dialog and reach for it, not just for a socket to
+    ///   open. Six seconds was a fail-fast number and it failed faster than
+    ///   anyone can click.
+    public func connect(grace: TimeInterval = 45) async throws {
         guard task == nil else { return }
+        try openSocket()
+        do {
+            _ = try await call("Browser.getVersion", timeout: grace)
+        } catch {
+            close()
+            // Only a silent handshake means a refused session. A transport
+            // error means the socket never opened — a stale DevToolsActivePort
+            // pointing at a dead browser UUID looks exactly like that — and
+            // telling someone to accept a prompt that will never appear wastes
+            // the whole grace period on advice that cannot work.
+            if let failure = error as? Failure, case .transport(let detail) = failure {
+                throw Failure.transport(detail)
+            }
+            throw Failure.sessionRefused
+        }
+    }
+
+    private func openSocket() throws {
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
@@ -71,11 +110,16 @@ public actor CDPClient {
         self.session = session
         self.task = task
         self.closed = false
-        self.reader = Task { [weak self] in await self?.readLoop() }
+        self.readerFinished = false
+        self.reader = Task { [weak self] in
+            await self?.readLoop()
+            await self?.noteReaderFinished()
+        }
     }
 
     public func close() {
         closed = true
+        readerFinished = true
         reader?.cancel()
         reader = nil
         task?.cancel(with: .goingAway, reason: nil)
@@ -83,6 +127,12 @@ public actor CDPClient {
         session?.finishTasksAndInvalidate()
         session = nil
         failAllWaiting(with: .disconnected)
+    }
+
+    private func noteReaderFinished() {
+        readerFinished = true
+        // Anything still waiting will never be answered now.
+        if !waiting.isEmpty { failAllWaiting(with: .disconnected) }
     }
 
     private func failAllWaiting(with failure: Failure) {
@@ -144,7 +194,7 @@ public actor CDPClient {
                      params: [String: Any] = [:],
                      sessionID: String? = nil,
                      timeout: TimeInterval = 30) async throws -> [String: Any] {
-        guard let task, !closed else { throw Failure.notConnected }
+        guard let task, !closed, !readerFinished else { throw Failure.notConnected }
 
         let id = nextID
         nextID += 1
