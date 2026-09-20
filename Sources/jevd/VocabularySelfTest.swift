@@ -469,6 +469,56 @@ enum VocabularySelfTest {
             return true
         }, "anything but an invented address")
 
+        // A workspace binding now exists, so the catalogue can offer one and
+        // the classifier can choose one — and a bare "switch workspace" asks
+        // "Which workspace?" instead of being nothing, which the prompt code
+        // promised and could never do.
+        resolves("switch workspace 3", {
+            if case .switchWorkspace(let id) = $0 { return id == "3" }; return false
+        }, "a workspace switch")
+        resolves("switch to workspace seven", {
+            if case .switchWorkspace(let id) = $0 { return id == "7" }; return false
+        }, "a workspace switch")
+        if Phrasebook.awaitingArgument("switch workspace", in: Phrasebook.neutral) == nil {
+            failures.append("workspace: a bare 'switch workspace' no longer asks which")
+        }
+        if VoiceCommand.parse("switch workspace", in: Phrasebook.neutral) != nil {
+            failures.append("workspace: a bare 'switch workspace' ran something")
+        }
+
+        // What a word means HERE is offered to the classifier, and builds back
+        // as that meaning. Six profiles hold thirty-three scoped phrases; the
+        // catalogue used to offer none of them.
+        let youtube = Phrasebook.Context(bundleId: "com.google.Chrome", appName: "Google Chrome",
+                                         isBrowserLike: true, host: "youtube.com")
+        let scopedPhrases = AppProfiles.phrases(bundleId: youtube.bundleId, host: youtube.host)
+        if scopedPhrases.isEmpty {
+            failures.append("profiles: youtube in chrome has no scoped phrases")
+        }
+        let catalogue = Phrasebook.catalog(in: youtube)
+        for phrase in scopedPhrases where !catalogue.contains(phrase) {
+            failures.append("profiles: “\(phrase)” is not offered where it applies")
+        }
+        for phrase in scopedPhrases.prefix(5)
+        where Phrasebook.build(canonical: phrase, in: youtube) == nil {
+            failures.append("profiles: “\(phrase)” was offered and cannot be built")
+        }
+        if Set(catalogue).count != catalogue.count {
+            failures.append("catalogue: repeats itself")
+        }
+        // …and is NOT offered where it does not apply.
+        let finder = Phrasebook.Context(bundleId: "com.apple.finder", appName: "Finder",
+                                        isBrowserLike: false)
+        let elsewhere = Set(Phrasebook.catalog(in: finder))
+        let leaked = scopedPhrases.filter { elsewhere.contains($0) }
+            .filter { AppProfiles.phrases(bundleId: finder.bundleId, host: nil).contains($0) == false }
+        // A phrase can legitimately be both global and scoped; only one that
+        // exists ONLY for youtube must be absent in Finder.
+        let globalOnly = Set(Phrasebook.catalog(in: Phrasebook.neutral))
+        for phrase in leaked where !globalOnly.contains(phrase) {
+            failures.append("profiles: “\(phrase)” is offered in Finder")
+        }
+
         // The parser that "go to workspace three" was stealing from.
         if VoiceCommand.workspaceId(in: "go to workspace three") != "3" {
             failures.append("workspace: spoken digits are not understood")

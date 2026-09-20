@@ -31,13 +31,20 @@ struct Scope: Sendable {
     /// What is on screen right now, from the accessibility driver.
     let visibleLabels: [String]
     /// The control the pointer is resting on, if any — the innermost scope.
-    /// Scope bubbles outward from here: pointer, then the window (what is
-    /// visible, and the page in a browser), then the app, then global. The
-    /// innermost claim on a sentence wins, exactly as macOS resolves a
-    /// keystroke from the first responder outward.
+    /// Scope bubbles outward from here: cursor, then the window (what is
+    /// visible, and the page in a browser), then the app, then the
+    /// workspace, then global. The innermost claim on a sentence wins,
+    /// exactly as macOS resolves a keystroke from the first responder
+    /// outward. App sits inside workspace in that order because what a word
+    /// means in one app ("mute" on YouTube) is more specific than what it
+    /// means to the workspace (switching, moving windows).
     let underPointer: String?
     /// Every app with a process, by localized name.
     let runningApps: Set<String>
+    /// The workspaces that exist and the one in front, when a window manager
+    /// can say. Empty otherwise — a closed choice over nothing offers nothing.
+    let workspaces: [String]
+    let workspace: String?
     let takenAt: Date
 
     /// Read the world once.
@@ -48,15 +55,20 @@ struct Scope: Sendable {
         // Same snapshot as the labels, so the pointer's control is one the
         // classifier is also being offered.
         let pointed = await CommandExecutor.cua.labelUnderPointer(at: Pointer.location())
+        // Asked only when a manager is there to answer; the CLI is a process.
+        let workspaces = AeroSpace.isInstalled ? AeroSpace.workspaces() : []
         return Scope(context: context,
                      app: seen.app ?? context.appName,
                      visibleLabels: seen.labels,
                      underPointer: pointed,
                      runningApps: running,
+                     workspaces: workspaces,
+                     workspace: workspaces.isEmpty ? nil : AeroSpace.focusedWorkspace(),
                      takenAt: Date())
     }
 
     /// For tests: nothing in front, nothing on screen.
     static let empty = Scope(context: Phrasebook.neutral, app: "", visibleLabels: [],
-                             underPointer: nil, runningApps: [], takenAt: Date())
+                             underPointer: nil, runningApps: [], workspaces: [],
+                             workspace: nil, takenAt: Date())
 }

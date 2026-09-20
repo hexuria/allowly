@@ -984,6 +984,8 @@ actor JevRuntime {
                                            frontmostApp: scope.app.isEmpty ? nil : scope.app,
                                            controls: scope.visibleLabels,
                                            context: scope.context,
+                                           runningApps: scope.runningApps,
+                                           workspaces: scope.workspaces,
                                            apiKey: apiKey) {
             case .failure(let error):
                 JevLog.write("[jev] intent: \(error.description)")

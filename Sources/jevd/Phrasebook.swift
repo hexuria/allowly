@@ -255,19 +255,31 @@ enum Phrasebook {
     /// and the chosen entry built under another.
     static func catalog(in explicitContext: Context? = nil) -> [String] {
         let context = explicitContext ?? self.context()
-        return bindings.compactMap { binding in
+        let global = bindings.compactMap { binding -> String? in
             // Only argument-free capabilities: a classifier returns a label,
             // so it cannot supply a URL or a body of text.
             guard let phrase = binding.phrases.first,
                   binding.build("", context) != nil else { return nil }
             return phrase
         }
+        // What a word means HERE. Six profiles hold thirty-three phrases that
+        // change meaning by app or page — "mute" on YouTube is the video, not
+        // the Mac — and the catalogue never offered a single one of them, so
+        // the classifier could not choose "mute the video" however clearly it
+        // was said. They come first: the scoped meaning is the one that is
+        // true right now.
+        let scoped = AppProfiles.phrases(bundleId: context.bundleId, host: context.host)
+        var seen = Set<String>()
+        return (scoped + global).filter { seen.insert($0).inserted }
     }
 
     /// Build a capability chosen by its canonical phrase — in the same scope
     /// the catalogue was offered under, or the two can disagree.
     static func build(canonical: String, in explicitContext: Context? = nil) -> VoiceCommand.Parsed? {
         let context = explicitContext ?? self.context()
+        // A scoped meaning offered by the catalogue has to build as that
+        // meaning, in the same scope it was offered under.
+        if let scoped = AppProfiles.override(for: canonical, in: context) { return scoped }
         for binding in bindings where binding.phrases.first == canonical {
             return binding.build("", context)
         }
@@ -573,6 +585,19 @@ enum Phrasebook {
         },
         Binding(phrases: ["hard reload", "force reload"]) { _, _ in
             step("Hard reload", [keys("cmd+shift+r")])
+        },
+        // Workspaces. This binding did not exist: a parser for "workspace 3"
+        // lived in VoiceCommand, below the phrasebook, and nothing above it
+        // could offer a workspace switch — so the catalogue never listed one,
+        // the classifier could never choose one, and the "Which workspace?"
+        // prompt for a bare "switch workspace" was unreachable code. An empty
+        // argument declines, which is exactly what makes that prompt fire.
+        Binding(phrases: ["switch workspace", "switch to workspace", "go to workspace",
+                          "move to workspace", "workspace"]) { argument, _ in
+            guard !argument.isEmpty,
+                  let id = VoiceCommand.workspaceId(in: "workspace " + argument) else { return nil }
+            return VoiceCommand.Parsed(command: .switchWorkspace(id: id),
+                                       description: "Go to workspace \(id)")
         },
         Binding(phrases: ["focus the address bar", "focus address bar", "focus the url bar",
                           "focus search", "focus the search bar", "focus search bar"]) { _, context in

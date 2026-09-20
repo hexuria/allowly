@@ -30,7 +30,7 @@ enum JevIntent {
 
     private static let operations = [
         "open_app", "quit_app", "toggle_app", "click_control", "type_text", "scroll",
-        "known_capability", "open_url", "web_task", "fill_detail", "unknown",
+        "known_capability", "open_url", "web_task", "fill_detail", "switch_workspace", "unknown",
     ]
 
     /// - Parameter controls: the labels of what is actually on screen, read by
@@ -41,6 +41,8 @@ enum JevIntent {
                         frontmostApp: String?,
                         controls: [String],
                         context: Phrasebook.Context? = nil,
+                        runningApps: Set<String> = [],
+                        workspaces: [String] = [],
                         apiKey: String) async -> Result<Resolution, IntentError> {
         let apps = AppCatalog.shared.all.map(\.name)
         // Whoever supplied the controls also says which app they came from,
@@ -51,7 +53,7 @@ enum JevIntent {
 
         var questions: [String: JevAPI.Question] = [
             "operation": .choice(
-                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is. 'fill_detail' means typing one of the personal details already saved on this Mac — an email address, a phone number, a tax number — which the user refers to by name rather than saying the value.",
+                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is. 'fill_detail' means typing one of the personal details already saved on this Mac — an email address, a phone number, a tax number — which the user refers to by name rather than saying the value. 'switch_workspace' means going to a numbered workspace or desktop.",
                 labels: operations
             ),
             "safe": .noul(
@@ -72,6 +74,24 @@ enum JevIntent {
             instructions: "Which application does this command act on? Choose 'none' if it does not name one.",
             labels: apps + ["none"]
         )
+        // Quitting, hiding and toggling act on something that is RUNNING.
+        // Offering every installed app for those, as `app` does, invited a
+        // confident pick of something with no process — and the speech hints
+        // already rank running apps first for exactly this reason.
+        if !runningApps.isEmpty {
+            questions["running_app"] = .choice(
+                instructions: "If the user is asking to quit, hide, show or switch to an app that is currently running, which one? Choose 'none' otherwise.",
+                labels: runningApps.sorted() + ["none"]
+            )
+        }
+        // A closed choice over the workspaces that exist, from the window
+        // manager. Nothing is offered when none can be listed.
+        if !workspaces.isEmpty {
+            questions["workspace"] = .choice(
+                instructions: "If the user is asking to go to a workspace or desktop, which one? Choose 'none' otherwise.",
+                labels: workspaces + ["none"]
+            )
+        }
         // Hand Jev the whole capability catalog. It cannot invent a sequence,
         // but choosing among sequences that already exist is exactly what a
         // closed-choice classifier is for — so "close all tabs", "shut every
@@ -225,8 +245,24 @@ enum JevIntent {
         }
 
         switch operation.choice {
+        case "switch_workspace":
+            guard let workspace = sound("workspace"), workspace.choice != "none" else {
+                return .failure(IntentError("Jev could not tell which workspace you meant"))
+            }
+            return .success(Resolution(
+                command: .switchWorkspace(id: workspace.choice),
+                description: "Go to workspace \(workspace.choice)",
+                confidence: min(operation.confidence, workspace.confidence),
+                safety: safety
+            ))
+
         case "open_app", "quit_app", "toggle_app":
-            guard let appAnswer = sound("app"), appAnswer.choice != "none",
+            // Running first for the verbs that need a process, installed for
+            // launching; each falls back to the other list.
+            let preferRunning = operation.choice != "open_app"
+            let ordered = preferRunning ? ["running_app", "app"] : ["app", "running_app"]
+            let appAnswer = ordered.lazy.compactMap { sound($0) }.first { $0.choice != "none" }
+            guard let appAnswer,
                   let entry = AppCatalog.shared.resolve(spokenName: appAnswer.choice) else {
                 return .failure(IntentError("Jev could not tell which app you meant"))
             }
