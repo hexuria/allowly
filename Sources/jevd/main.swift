@@ -1198,7 +1198,36 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         populate(menu)
     }
 
+    /// An Edit menu, so ⌘V works.
+    ///
+    /// jev is an accessory app with no main menu, and macOS dispatches ⌘X/⌘C/
+    /// ⌘V through the main menu's key equivalents. With no menu there is
+    /// nothing for them to trigger, so every text field in the app silently
+    /// refused to paste — which is how someone is supposed to get an API key
+    /// in. Nothing appears in the menu bar for this; it exists only to give
+    /// the shortcuts somewhere to land.
+    private func installEditMenu() {
+        guard NSApp.mainMenu == nil else { return }
+        let main = NSMenu()
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        for (title, action, key) in [
+            ("Cut", #selector(NSText.cut(_:)), "x"),
+            ("Copy", #selector(NSText.copy(_:)), "c"),
+            ("Paste", #selector(NSText.paste(_:)), "v"),
+            ("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ] {
+            // No target: the responder chain finds whichever field is focused,
+            // which is the whole point.
+            edit.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+        }
+        editItem.submenu = edit
+        main.addItem(editItem)
+        NSApp.mainMenu = main
+    }
+
     private func setupMenuBar() {
+        installEditMenu()
         let statusBar = NSStatusBar.system
         let statusItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -1323,6 +1352,19 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         systemItem.representedObject = ""
         systemItem.state = chosen == nil ? .on : .off
         voiceMenu.addItem(systemItem)
+
+        // Only Gemini can act on this. Pinning a language is right for
+        // English spoken with an accent and wrong for someone switching into
+        // another language mid-sentence, and only the person knows which they
+        // are about to do.
+        let autoItem = NSMenuItem(title: "Detect automatically  (Gemini only)",
+                                  action: #selector(pickVoiceLocale(_:)), keyEquivalent: "")
+        autoItem.target = self
+        autoItem.representedObject = VoiceLocale.autoDetect
+        autoItem.state = VoiceLocale.isAutoDetect ? .on : .off
+        autoItem.isEnabled = GeminiTranscriber.isConfigured
+        voiceMenu.addItem(autoItem)
+
         voiceMenu.addItem(NSMenuItem.separator())
 
         for identifier in VoiceLocale.supported() {
@@ -1330,7 +1372,8 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                   action: #selector(pickVoiceLocale(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = identifier
-            item.state = (chosen != nil && identifier == effective) ? .on : .off
+            item.state = (chosen != nil && !VoiceLocale.isAutoDetect && identifier == effective)
+                ? .on : .off
             voiceMenu.addItem(item)
         }
         voiceItem.submenu = voiceMenu
@@ -1452,6 +1495,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func editGeminiKey() {
+        // An accessory app is not frontmost when its menu bar item is
+        // clicked, so a modal it opens is not key and cannot take a paste.
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Gemini transcription"
         alert.informativeText = """
@@ -1488,6 +1534,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let name = sender.representedObject as? String,
               let field = PersonalDetails.field(named: name) else { return }
 
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Your \(field.name)"
         alert.informativeText = field.isSensitive

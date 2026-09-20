@@ -114,11 +114,24 @@ struct GeminiTranscriber: Transcriber {
     /// Pure, so the two quiet failure modes above are launch assertions rather
     /// than something to rediscover.
     static func requestBody(base64Audio: String, mimeType: String,
-                            vocabulary: [String]) -> [String: Any] {
+                            vocabulary: [String],
+                            languageCodes: [String]) -> [String: Any] {
         var audioConfig: [String: Any] = [
             // Mandatory. Without it the call succeeds and returns nothing.
             "wordTimestamp": true,
             "diarization": false,
+            // The same language the menu bar already picks, so one setting
+            // governs both recognisers. Empty is not a missing value: it is
+            // how this API is told to detect across eighty-five languages,
+            // which is what someone switching between English and Tagalog
+            // mid-sentence actually wants.
+            //
+            // Safe here, and not everywhere. On the newer interactions
+            // surface, pairing a language code with `mode: "smart"` silently
+            // reverts to verbatim — HTTP 200, no error, no signal — which
+            // Google's own client documents and pins with a test. jev uses
+            // neither that surface nor that mode.
+            "languageCodes": languageCodes,
         ]
         // The same phrases Apple's recogniser is biased with. A vocabulary is
         // the one thing that reliably rescues a short unusual word — "Ghostty"
@@ -172,7 +185,8 @@ struct GeminiTranscriber: Transcriber {
 
         let body = Self.requestBody(base64Audio: audio.base64EncodedString(),
                                     mimeType: mime,
-                                    vocabulary: Transcription.recognitionHints())
+                                    vocabulary: Transcription.recognitionHints(),
+                                    languageCodes: VoiceLocale.languageCodes)
         guard let encoded = try? JSONSerialization.data(withJSONObject: body) else {
             return .failure(.recognitionFailed("Could not encode the request"))
         }

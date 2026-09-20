@@ -30,7 +30,8 @@ enum VocabularySelfTest {
         // transcript is empty — so they are assertions rather than comments.
         // Learned from Google's own demo client, not from the documentation.
         let body = GeminiTranscriber.requestBody(
-            base64Audio: "AAAA", mimeType: "audio/aac", vocabulary: ["Ghostty", "command 1"])
+            base64Audio: "AAAA", mimeType: "audio/aac",
+            vocabulary: ["Ghostty", "command 1"], languageCodes: ["en-PH"])
         let generation = body["generationConfig"] as? [String: Any]
         let audioConfig = generation?["audioTranscriptionConfig"] as? [String: Any]
 
@@ -53,6 +54,32 @@ enum VocabularySelfTest {
         }
         if (try? JSONSerialization.data(withJSONObject: body)) == nil {
             failures.append("gemini: the request body does not serialise")
+        }
+
+        // One language setting governs both recognisers. It is safe to send
+        // HERE and not everywhere: on the newer interactions surface a
+        // language code silently reverts `mode: "smart"` to verbatim, with
+        // HTTP 200 and no signal. jev uses neither that surface nor that mode.
+        if (audioConfig?["languageCodes"] as? [String]) != ["en-PH"] {
+            failures.append("gemini: the chosen language is not being sent")
+        }
+        // Empty is a value, not an omission: it is how this API is asked to
+        // detect the language itself, which is what someone switching between
+        // English and Tagalog mid-sentence needs.
+        let auto = GeminiTranscriber.requestBody(
+            base64Audio: "AAAA", mimeType: "audio/aac", vocabulary: [], languageCodes: [])
+        let autoGeneration = auto["generationConfig"] as? [String: Any]
+        let autoConfig = autoGeneration?["audioTranscriptionConfig"] as? [String: Any]
+        if (autoConfig?["languageCodes"] as? [String]) != [] {
+            failures.append("gemini: auto-detect must send an empty list, not nothing")
+        }
+
+        // "auto" is not a locale, so Apple must never be handed it.
+        let appleWouldUse = VoiceLocale.resolve(chosen: VoiceLocale.autoDetect,
+                                                system: "en_PH",
+                                                supported: ["en-PH", "en-US"])
+        if appleWouldUse == VoiceLocale.autoDetect {
+            failures.append("voice locale: auto leaked into the system recogniser")
         }
 
         // Where the key lives. Namespaced so it cannot collide with a saved

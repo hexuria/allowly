@@ -18,6 +18,17 @@ import Speech
 enum VoiceLocale {
 
     static let defaultsKey = "JevSpeechLocale"
+
+    /// Chosen when the language should not be pinned at all.
+    ///
+    /// Only Gemini can act on this — its transcribe model detects across
+    /// eighty-five languages when it is sent no language code, and someone
+    /// who switches between English and Tagalog mid-sentence is better served
+    /// by that than by being held to one of them. Apple's recogniser has no
+    /// equivalent, so it keeps following the Mac.
+    static let autoDetect = "auto"
+
+    static var isAutoDetect: Bool { chosen == autoDetect }
     /// The last resort, and only that: every Mac has it, and a recogniser
     /// that will not start is worse than one with the wrong accent.
     static let fallback = "en-US"
@@ -75,10 +86,15 @@ enum VoiceLocale {
 
     /// The language to listen in, right now.
     static var effective: String {
-        resolve(chosen: chosen,
+        // "auto" is not a locale. Apple needs a real one, so it falls back to
+        // the Mac's — the sentinel only changes what Gemini is told.
+        resolve(chosen: isAutoDetect ? nil : chosen,
                 system: Locale.current.identifier,
                 supported: Set(supported()))
     }
+
+    /// What to send Gemini. Empty means "work it out".
+    static var languageCodes: [String] { isAutoDetect ? [] : [effective] }
 
     /// How a language is written in the menu.
     static func displayName(_ identifier: String) -> String {
