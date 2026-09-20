@@ -42,6 +42,18 @@ public actor WebAgent {
         case failed(reason: String, steps: Int)
     }
 
+    /// The exact message the phone is sent.
+    ///
+    /// Built here rather than at the broadcast site so the contract between
+    /// the daemon and `web/app.js` is one object that can be asserted on. The
+    /// phone reads `finished` to take the banner down, and `retry` to say
+    /// "again" rather than silently showing the same step twice.
+    public static func progressMessage(step: Int, operation: String, target: String,
+                                       isRetry: Bool, finished: Bool) -> [String: Any] {
+        ["type": "webProgress", "step": step, "operation": operation,
+         "target": target, "retry": isRetry, "finished": finished]
+    }
+
     /// What the phone is told while this runs.
     public struct Progress: Sendable {
         public let step: Int

@@ -123,6 +123,42 @@ const APP = {
     // nothing said, so a sent decision looked exactly like a dropped tap.
     // This also replaces alert(), which on a phone blocks the whole page and
     // looks like the browser, not like the app.
+    // What jev is doing in the browser, step by step.
+    //
+    // A web task runs in a tab nobody is watching and changes nothing on the
+    // Mac's screen, so without this the phone sits silent for a minute with
+    // no reason to believe anything is happening. Retries are shown rather
+    // than hidden: if jev had to try a step twice, that is what it did.
+    showWebProgress(message) {
+        const bar = document.getElementById('webProgress');
+        const text = document.getElementById('webProgressText');
+        if (!bar || !text) return;
+
+        clearTimeout(this.webProgressTimer);
+        if (message.finished) {
+            bar.hidden = true;
+            text.textContent = '';
+            return;
+        }
+        // A Mac that goes away mid-task never sends the finishing message, and
+        // a spinner that spins forever is worse than no spinner. Longer than
+        // the task budget, so it only fires when something really stopped.
+        this.webProgressTimer = setTimeout(() => {
+            bar.hidden = true;
+            text.textContent = '';
+        }, 120000);
+
+        // Everything here came off a web page, so it is text and never markup.
+        const operation = String(message.operation || '').toLowerCase().replace(/_/g, ' ');
+        const target = String(message.target || '');
+        const step = Number(message.step) || 0;
+        const retry = message.retry ? ' again' : '';
+        text.textContent = target
+            ? `Step ${step}: ${operation}${retry} — ${target}`
+            : `Step ${step}: ${operation}${retry}`;
+        bar.hidden = false;
+    },
+
     toast(message, bad) {
         const el = document.getElementById('toast');
         if (!el) return;
@@ -824,6 +860,8 @@ const APP = {
                 else this.showNumbers();
             } else if (message.type === 'spec') {
                 this.showSpec(message.spec);
+            } else if (message.type === 'webProgress') {
+                this.showWebProgress(message);
             } else if (message.type === 'form') {
                 // A Mac that has not been rebuilt yet still sends a flat
                 // field list. Wrap it so there is only one renderer.

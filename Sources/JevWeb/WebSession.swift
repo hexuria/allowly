@@ -123,6 +123,28 @@ public actor WebSession {
         return snapshot
     }
 
+    /// The only data-URL prefix the phone will render.
+    ///
+    /// `web/app.js` refuses a screenshot reference that does not match
+    /// `data:image/(png|jpeg|jpg|webp);base64,...`, and refuses it silently —
+    /// the card simply appears without the picture. Pinned here and asserted
+    /// at launch so changing the capture format cannot quietly remove the one
+    /// thing a refusal card exists to show.
+    public static let screenshotPrefix = "data:image/jpeg;base64,"
+
+    /// A picture of the tab, as a data URL ready for a card.
+    ///
+    /// Only taken when a task stops in a way the person needs to see. A
+    /// screenshot of a signed-in page is the most revealing thing this backend
+    /// can produce, so it is not part of the loop and never goes to a model —
+    /// it goes to the phone of the person whose browser it already is.
+    public func screenshot() async -> String? {
+        guard let result = try? await call("Page.captureScreenshot",
+                                           ["format": "jpeg", "quality": 55]),
+              let encoded = result["data"] as? String, !encoded.isEmpty else { return nil }
+        return Self.screenshotPrefix + encoded
+    }
+
     // MARK: - Acting
 
     /// Whether the thing we are about to act on still means what it meant.

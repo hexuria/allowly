@@ -25,6 +25,8 @@ public enum WebSelfTest {
         checkActionSpace(check)
         checkStandingRules(check)
         checkResolveScript(check)
+        checkScreenshotFormat(check)
+        checkProgressMessage(check)
 
         return failures
     }
@@ -455,6 +457,54 @@ public enum WebSelfTest {
         check("a read-only field is not typed into", script.contains("readOnly"))
         check("the action literal is interpolated in",
               script.contains("{\"node\":1}"))
+    }
+
+    private static func checkProgressMessage(_ check: (String, Bool) -> Void) {
+        let step = WebAgent.progressMessage(step: 3, operation: "CLICK",
+                                            target: "Go", isRetry: false, finished: false)
+        // Every key web/app.js reads. A rename here is silent on the phone:
+        // the banner shows "Step 0: " and nobody finds out why.
+        check("the progress message is typed for the phone's switch",
+              step["type"] as? String == "webProgress")
+        for key in ["step", "operation", "target", "retry", "finished"] {
+            check("the progress message carries \(key)", step[key] != nil)
+        }
+        check("the step number survives", step["step"] as? Int == 3)
+        check("a retry says so",
+              WebAgent.progressMessage(step: 3, operation: "CLICK", target: "Go",
+                                       isRetry: true, finished: false)["retry"] as? Bool == true)
+
+        // The phone takes the banner down on this and nothing else, so a run
+        // that ends without it spins forever.
+        check("the finishing message is marked finished",
+              WebAgent.progressMessage(step: 0, operation: "", target: "",
+                                       isRetry: false, finished: true)["finished"] as? Bool == true)
+
+        // It crosses a WebSocket as JSON; a value that will not serialise
+        // silently sends nothing at all.
+        check("the progress message serialises",
+              (try? JSONSerialization.data(withJSONObject: step)) != nil)
+    }
+
+    private static func checkScreenshotFormat(_ check: (String, Bool) -> Void) {
+        // The exact pattern web/app.js tests a screenshotReference against.
+        // A mismatch is silent there: the card renders with no picture, which
+        // is the one thing a refusal card exists to show.
+        let accepted = try! NSRegularExpression(
+            pattern: "^data:image/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$")
+        func renders(_ reference: String) -> Bool {
+            let range = NSRange(reference.startIndex..., in: reference)
+            return accepted.firstMatch(in: reference, range: range) != nil
+        }
+
+        check("a captured screenshot is in a form the phone renders",
+              renders(WebSession.screenshotPrefix + "R0lGODlhAQABAA=="))
+        check("the prefix names a supported image type",
+              WebSession.screenshotPrefix.hasPrefix("data:image/"))
+        check("and says base64", WebSession.screenshotPrefix.hasSuffix(";base64,"))
+        // Proof the check above can fail, so it is testing something.
+        check("an unsupported type would be refused",
+              !renders("data:image/gif;base64,R0lGODlhAQABAA=="))
     }
 
     /// The vendored table builder. See THIRD-PARTY-NOTICES.md.
