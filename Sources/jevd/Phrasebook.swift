@@ -584,7 +584,7 @@ enum Phrasebook {
                           "visit", "open site", "open website"]) { argument, context in
             guard !argument.isEmpty, context.isBrowserLike || looksLikeURL(argument),
                   namesADestination(argument) else { return nil }
-            let destination = normalisedDestination(argument)
+            guard let destination = normalisedDestination(argument) else { return nil }
             // Hand the URL to the system rather than typing it. The keystroke
             // version opened a tab and then reliably failed to enter anything,
             // because a freshly focused address bar does not accept synthetic
@@ -688,7 +688,10 @@ enum Phrasebook {
             // from Passwords or from you typing it on the phone.
             var steps: [Command] = []
             if !argument.isEmpty {
-                steps.append(.openURL(url: "https://" + normalisedDestination(argument)))
+                // Refuses rather than guesses. "sign in to my bank and check the
+                // balance" reached here with no guard and became a domain.
+                guard let host = normalisedDestination(argument) else { return nil }
+                steps.append(.openURL(url: "https://" + host))
             }
             steps.append(keys("cmd+backslash"))
             return step(argument.isEmpty ? "Autofill this login" : "Open \(argument) and autofill",
@@ -838,31 +841,77 @@ enum Phrasebook {
         }
         text = text.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return nil }
-        let host = normalisedDestination(text)
-        // A host with nothing before the dot is not a host.
-        guard !host.isEmpty, host != ".com", !host.hasPrefix(".") else { return nil }
-        return host
+        return normalisedDestination(text)
     }
 
-    private static func normalisedDestination(_ raw: String) -> String {
-        var text = raw
-        // "log in to facebook" must not become the host "to facebook".
-        for filler in ["to ", "the ", "my "] where text.hasPrefix(filler) {
+    /// Turn spoken words into a host, or refuse.
+    ///
+    /// This used to be a total function: it deleted every space, appended
+    /// ".com" to anything without a dot, and returned a `String`. There was
+    /// no way out of it that meant "that was not a place", so the whole
+    /// burden of correctness sat on a word list in front of it — and every
+    /// phrasing not on the list became a domain and opened:
+    ///
+    ///     "youtube and search hello"           -> youtubeandsearchhello.com
+    ///     "youtube dot com and search hellboy" -> youtube.comandsearchhellboy
+    ///     "workspace three"                    -> workspacethree.com
+    ///
+    /// Now it returns nil, and one rule does the work the list was doing. If
+    /// the person said a dot, nothing may follow the final label — "bath and
+    /// body works dot com" is one host, "youtube dot com and search hellboy"
+    /// is a host and then a task. If they said no dot, it must be a single
+    /// word: "facebook" is a guess worth making, "workspace three" is not.
+    /// A name in `WebStart.knownSites` resolves to its real address instead
+    /// of a guess, which is how "stack overflow" reaches stackoverflow.com.
+    static func normalisedDestination(_ raw: String) -> String? {
+        var text = raw.lowercased().trimmingCharacters(in: .whitespaces)
+        // "log in to facebook" must not become the host "to facebook". "the"
+        // is deliberately not here: it is part of the name at theverge.com
+        // and theguardian.com, and dropping it produced the wrong sites.
+        for filler in ["to ", "my "] where text.hasPrefix(filler) {
             text = String(text.dropFirst(filler.count))
         }
-        text = text
-            .replacingOccurrences(of: " dot com", with: ".com")
-            .replacingOccurrences(of: " dot org", with: ".org")
-            .replacingOccurrences(of: " dot net", with: ".net")
-            .replacingOccurrences(of: " dot io", with: ".io")
-            .replacingOccurrences(of: " dot ", with: ".")
-            .replacingOccurrences(of: " slash ", with: "/")
-            .replacingOccurrences(of: " ", with: "")
-        if !text.contains(".") && !text.hasPrefix("http") {
-            // A single word with no dot: treat it as a domain guess, which is
-            // what someone saying "browse facebook" means.
-            text += ".com"
+        text = text.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return nil }
+
+        // A site this code already knows: its real address, not a guess.
+        if let site = WebStart.knownSites.first(where: { $0.spoken == text }),
+           let host = URL(string: site.url)?.host {
+            return host
         }
-        return text
+
+        // Something typed or pasted rather than spoken.
+        for scheme in ["https://", "http://"] where text.hasPrefix(scheme) {
+            text = String(text.dropFirst(scheme.count))
+        }
+
+        // Host and path part company at the first slash, spoken or written.
+        let spokenSlash = text.replacingOccurrences(of: " slash ", with: "/")
+        let pieces = spokenSlash.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        var host = String(pieces[0]).replacingOccurrences(of: " dot ", with: ".")
+            .trimmingCharacters(in: .whitespaces)
+        let path = pieces.count > 1 ? String(pieces[1]) : ""
+
+        if let lastDot = host.lastIndex(of: ".") {
+            // Words after the final label are a task, not part of the host.
+            guard !host[host.index(after: lastDot)...].contains(" ") else { return nil }
+            host = host.replacingOccurrences(of: " ", with: "")
+        } else {
+            // No dot: only a single word is a guess worth making.
+            guard !host.contains(" ") else { return nil }
+            host += ".com"
+        }
+
+        // What can actually be a host. Anything else was never an address.
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.-")
+        guard host.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2,
+              labels.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("-") && !$0.hasSuffix("-") })
+        else { return nil }
+
+        // A path with spaces in it is not something anyone spelled out.
+        guard !path.contains(" ") else { return nil }
+        return path.isEmpty ? host : host + "/" + path
     }
 }

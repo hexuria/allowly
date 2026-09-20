@@ -359,6 +359,52 @@ enum VocabularySelfTest {
             }, "anything but an invented address")
         }
 
+        // The transform itself, which is where the bug always was. It used to
+        // return String and could not refuse; now it returns nil for anything
+        // it would have had to guess at. One rule: if a dot was said, nothing
+        // may follow the last label; if not, it must be one word.
+        func host(_ name: String, _ spoken: String, _ expected: String?) {
+            let got = Phrasebook.normalisedDestination(spoken)
+            if got != expected { failures.append("host: \(name) gave \(got ?? "nil")") }
+        }
+        host("a spoken address", "github dot com", "github.com")
+        host("a written address", "github.com", "github.com")
+        host("a scheme is stripped, not doubled", "https://example.com", "example.com")
+        host("a spoken path", "docs dot google dot com slash spreadsheets",
+             "docs.google.com/spreadsheets")
+        host("one word is a guess worth making", "facebook", "facebook.com")
+        host("a filler is dropped", "to the verge dot com", "theverge.com")
+        // The TLD is last, so everything before it is the host.
+        host("a multi-word name ending in dot com collapses",
+             "bath and body works dot com", "bathandbodyworks.com")
+        // A known site gets its real address, not a guess.
+        host("a known site resolves to its real host", "stack overflow", "stackoverflow.com")
+        host("youtube resolves to www", "youtube", "www.youtube.com")
+
+        // Every one of these was, or would have been, invented and opened.
+        host("words after the TLD are a task", "youtube dot com and search hellboy", nil)
+        host("…with a verb the list never had", "youtube dot com and look for hellboy", nil)
+        host("two words with no dot are not a domain", "workspace three", nil)
+        host("a sentence is not a domain", "my bank and check the balance", nil)
+        host("a path with spaces was never spelled out", "example dot com slash some page", nil)
+        host("a lone tld is nothing", "dot com", nil)
+        host("punctuation is not a host", "what?!", nil)
+        host("empty is nothing", "", nil)
+
+        // End to end, through the real parser. Both of these reached the
+        // transform with NO guard at all and became domains.
+        resolves("sign in to my bank and check the balance", { command in
+            if case .openURL = command { return false }
+            if case .sequence(_, let steps) = command {
+                return !steps.contains { if case .openURL = $0 { return true }; return false }
+            }
+            return true
+        }, "anything but an invented address")
+        resolves("go to youtube dot com and look for hellboy", { command in
+            if case .openURL = command { return false }
+            return true
+        }, "anything but an invented address")
+
         // The parser that "go to workspace three" was stealing from.
         if VoiceCommand.workspaceId(in: "go to workspace three") != "3" {
             failures.append("workspace: spoken digits are not understood")
