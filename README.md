@@ -111,12 +111,32 @@ on pages you would not trust with the account you are signed into.
 **Page content leaves your Mac.** Deciding each step sends the page's address,
 its title, up to 6,000 characters of its visible text, and the label and current
 value of every control to the model that makes the choice — up to 120 times in
-a single task. On a signed-in page that includes whatever is on screen: an
-order, an address, a message you were reading. Working out what to type into a
-field goes to a separate model, which by default is the gateway on your own
-machine (`127.0.0.1:29080`) and not a vendor. If the first of those is more than
-you want to send, do not use browser tasks; there is no setting that keeps the
-page from the model that has to read it.
+a single task. This is not abstract. Measured on a real Amazon page while signed
+in, the second thing on the list was `Deliver to <your name>, <your city> <your
+postcode>` and the seventh was `Hello, <your name>`. Working out what to type
+into a field goes to a separate model, which by default is the gateway on your
+own machine (`127.0.0.1:29080`) and not a vendor.
+
+You can put something in front of that. `JEV_DECIDE_BASE_URL` points the
+decision call at a local address instead — **loopback only; anything else is
+ignored rather than obeyed**, because a mistyped variable must not be able to
+send a signed-in page somewhere new. [cred-swap](https://github.com/hexuria/cred-swap)
+is built for this and works as a drop-in proxy:
+
+```sh
+cred-swap --config jev.toml --session jev --sync-vault \
+  proxy --listen 127.0.0.1:8799 --upstream https://api.typesafe.ai
+export JEV_DECIDE_BASE_URL=http://127.0.0.1:8799
+```
+
+Two things to know before relying on it. It replaces values of a known *shape*
+— cards, emails, phone numbers, keys — and **it will not find your name on its
+own**: run against that real Amazon page it reported "nothing found", and only
+caught anything once told, in its config, that `Uriah` and `Olongapo` were
+yours. And use `--sync-vault`: without it the mapping is written at shutdown,
+so killing the proxy strands every stand-in the model has already seen. The
+element numbering survives scrubbing intact, which is what matters here — the
+model answers with a number, not with text.
 
 ## Notifications
 

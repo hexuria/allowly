@@ -1,5 +1,6 @@
 import Foundation
 import JevCore
+import JevDecide
 
 /// Asserts what the vocabulary actually resolves to.
 ///
@@ -22,6 +23,30 @@ enum VocabularySelfTest {
 
     static func run() -> [String] {
         var failures: [String] = []
+
+        // MARK: Where decisions are allowed to be sent.
+        //
+        // The endpoint can be pointed at something local that strips personal
+        // data out first. That override must not be able to WIDEN where the
+        // data goes: a browser task sends the page's text and every control's
+        // label, and on a signed-in page those carry a name and an address.
+        func loopback(_ name: String, _ text: String, _ expected: Bool) {
+            guard let url = URL(string: text) else {
+                if expected { failures.append("endpoint: \(name) did not parse") }
+                return
+            }
+            if JevAPI.isLoopback(url) != expected { failures.append("endpoint: \(name)") }
+        }
+        loopback("the loopback address is local", "http://127.0.0.1:8799/v1/systemone", true)
+        loopback("localhost is local", "http://localhost:8799/v1/systemone", true)
+        loopback("IPv6 loopback is local", "http://[::1]:8799/v1/systemone", true)
+        loopback("another machine is not", "http://192.168.1.50:8799/v1/systemone", false)
+        loopback("a hostname is not", "https://evil.example/v1/systemone", false)
+        // The classic near-miss: a host that merely begins with the loopback
+        // address, or embeds it in a username.
+        loopback("a lookalike host is not local", "http://127.0.0.1.evil.example/x", false)
+        loopback("userinfo does not make it local", "http://127.0.0.1@evil.example/x", false)
+        loopback("a non-http scheme is not accepted", "file:///etc/passwd", false)
 
         // MARK: Which language the recogniser listens in.
         //

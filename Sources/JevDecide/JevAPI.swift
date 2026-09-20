@@ -13,7 +13,42 @@ import Foundation
 /// The previous version guessed api.typesafe.dev/v1/decide with an X-API-Key
 /// header — wrong host, wrong path, wrong auth — and had never been run.
 public enum JevAPI {
-    public static let endpoint = URL(string: "https://api.typesafe.ai/v1/systemone")!
+    static let directEndpoint = URL(string: "https://api.typesafe.ai/v1/systemone")!
+
+    /// Where decisions are sent.
+    ///
+    /// Overridable so the traffic can be put behind something local that
+    /// strips personal data out of it first. It is worth saying why that is
+    /// wanted: a browser task sends the page's text and every control's label
+    /// on each step, and on a signed-in page those labels are not neutral —
+    /// measured on a real Amazon page, element 2 read "Deliver to <name>,
+    /// <city> <postcode>" and element 7 "Hello, <name>". That went to a
+    /// vendor, up to a hundred and twenty times a task.
+    ///
+    /// Loopback only. This decides where a page someone is signed into gets
+    /// sent, so a mistyped variable must not be able to send it somewhere
+    /// else — anything that is not a local address is ignored and the direct
+    /// endpoint is used.
+    public static var endpoint: URL {
+        guard let raw = ProcessInfo.processInfo.environment["JEV_DECIDE_BASE_URL"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let url = URL(string: raw.hasSuffix("/") ? raw + "v1/systemone"
+                                                       : raw + "/v1/systemone"),
+              isLoopback(url)
+        else { return directEndpoint }
+        return url
+    }
+
+    /// Whether a URL points at this machine and nowhere else.
+    ///
+    /// Pure, and asserted at launch: the whole value of the override is that
+    /// it cannot widen where data goes.
+    public static func isLoopback(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        guard url.scheme == "http" || url.scheme == "https" else { return false }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+    }
     public static let defaultModel = "jev-latest"
 
     public enum Question: Sendable {
