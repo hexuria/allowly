@@ -22,7 +22,7 @@ public enum WebStart {
     /// Short on purpose. This is not a directory of the web — it is the set of
     /// places a spoken goal is likely to name, and every entry is a URL a
     /// person can read in a card before anything happens.
-    static let knownSites: [(spoken: String, url: String)] = [
+    public static let knownSites: [(spoken: String, url: String)] = [
         ("youtube", "https://www.youtube.com/"),
         ("amazon", "https://www.amazon.com/"),
         ("github", "https://github.com/"),

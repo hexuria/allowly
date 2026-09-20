@@ -938,16 +938,32 @@ enum TranscriptionError: LocalizedError {
 // MARK: - SpeechRecognizer Implementation
 
 final class SpeechRecognizer: NSObject, Transcriber, SFSpeechRecognizerDelegate {
-    private let recognizer: SFSpeechRecognizer?
+    /// Rebuilt when the chosen language changes, so picking one in the menu
+    /// bar takes effect on the next thing said rather than the next launch.
+    private var recognizer: SFSpeechRecognizer?
+    private var builtFor: String?
+    private let lock = NSLock()
 
     override init() {
-        recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         super.init()
     }
 
+    private func current() -> SFSpeechRecognizer? {
+        let wanted = VoiceLocale.effective
+        lock.lock()
+        defer { lock.unlock() }
+        if builtFor != wanted || recognizer == nil {
+            recognizer = SFSpeechRecognizer(locale: Locale(identifier: wanted))
+            builtFor = wanted
+            JevLog.write("[jev] listening in \(wanted)")
+        }
+        return recognizer
+    }
+
     func transcribe(audioURL: URL) async -> Result<Heard, TranscriptionError> {
-        guard let recognizer = recognizer else {
-            return .failure(.recognitionFailed("Speech recognizer unavailable"))
+        guard let recognizer = current() else {
+            return .failure(.recognitionFailed(
+                "No speech recogniser for \(VoiceLocale.effective) — pick another language in the menu bar"))
         }
 
         let request = SFSpeechURLRecognitionRequest(url: audioURL)
@@ -1205,6 +1221,34 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Voice language. The recogniser was pinned to en-US, which is the
+        // wrong model for most people who speak English.
+        let voiceItem = NSMenuItem(title: "Voice language", action: nil, keyEquivalent: "")
+        let voiceMenu = NSMenu()
+        let effective = VoiceLocale.effective
+        let chosen = VoiceLocale.chosen
+
+        let systemItem = NSMenuItem(title: VoiceLocale.systemChoiceDescription,
+                                    action: #selector(pickVoiceLocale(_:)), keyEquivalent: "")
+        systemItem.target = self
+        systemItem.representedObject = ""
+        systemItem.state = chosen == nil ? .on : .off
+        voiceMenu.addItem(systemItem)
+        voiceMenu.addItem(NSMenuItem.separator())
+
+        for identifier in VoiceLocale.supported() {
+            let item = NSMenuItem(title: VoiceLocale.displayName(identifier),
+                                  action: #selector(pickVoiceLocale(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = identifier
+            item.state = (chosen != nil && identifier == effective) ? .on : .off
+            voiceMenu.addItem(item)
+        }
+        voiceItem.submenu = voiceMenu
+        menu.addItem(voiceItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Quit
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         menu.addItem(quitItem)
@@ -1316,6 +1360,13 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAutoApprove() {
         // Toggle auto-approve setting
+    }
+
+    @objc private func pickVoiceLocale(_ sender: NSMenuItem) {
+        let identifier = (sender.representedObject as? String) ?? ""
+        VoiceLocale.chosen = identifier.isEmpty ? nil : identifier
+        JevLog.write("[jev] voice language set to \(VoiceLocale.effective)"
+                   + (identifier.isEmpty ? " (following this Mac)" : ""))
     }
 
     @objc private func quit() {

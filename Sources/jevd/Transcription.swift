@@ -1,4 +1,5 @@
 import Foundation
+import JevWeb
 import AppKit
 #if canImport(Speech)
 @preconcurrency import Speech
@@ -20,9 +21,17 @@ enum Transcription {
         let phrases = Phrasebook.catalog()
         let verbs = ["toggle", "workspace", "scroll", "autofill", "approve", "deny",
                      "select all", "close tab", "close all tabs", "new tab", "go back"]
+        // A browser task names a site and then says what to do there, and the
+        // recogniser was never told either was likely. "Go to YouTube and
+        // search …" is the commonest thing anyone says to this, so the sites
+        // jev can actually start from, and the words that introduce a goal,
+        // are worth their place in the budget.
+        let web = WebStart.knownSites.map(\.spoken)
+            + ["search for", "search", "play", "open the first result", "add to cart"]
         // Phrases are the core vocabulary and stay whole; app names fill the
         // rest of the budget, most-likely first.
-        return Array(phrases + verbs) + Array(apps.prefix(max(0, 200 - phrases.count - verbs.count)))
+        let core = phrases + verbs + web
+        return core + Array(apps.prefix(max(0, 200 - core.count)))
     }
 
     /// Ask once for Speech Recognition. The result is remembered by macOS, so

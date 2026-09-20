@@ -23,6 +23,43 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: Which language the recogniser listens in.
+        //
+        // This was pinned to en-US. On a Mac set to en_PH that runs
+        // Filipino-accented English through a model trained on American
+        // English, and nothing downstream recovers a word never heard. The
+        // fallback ORDER is what matters: a recogniser that will not start is
+        // worse than one with the wrong accent.
+        func resolves(_ name: String, chosen: String?, system: String,
+                      supported: [String], expected: String) {
+            let got = VoiceLocale.resolve(chosen: chosen, system: system,
+                                          supported: Set(supported))
+            if got != expected { failures.append("voice locale: \(name) gave \(got)") }
+        }
+        let apple = ["en-AU", "en-GB", "en-IN", "en-PH", "en-US", "fr-FR", "tl-PH"]
+
+        resolves("a choice is honoured", chosen: "en-PH", system: "en_US",
+                 supported: apple, expected: "en-PH")
+        resolves("no choice follows this Mac", chosen: nil, system: "en_PH",
+                 supported: apple, expected: "en-PH")
+        // Locale identifiers use an underscore and speech uses a hyphen; they
+        // are the same language and did not match.
+        resolves("an underscore identifier still matches", chosen: nil, system: "en_PH",
+                 supported: apple, expected: "en-PH")
+        resolves("a choice that is no longer supported falls back",
+                 chosen: "en-ZZ", system: "en_PH", supported: apple, expected: "en-PH")
+        // A region with no model of its own should stay in its language
+        // rather than landing somewhere random.
+        resolves("an unsupported region keeps the language", chosen: nil, system: "en_NG",
+                 supported: apple, expected: "en-US")
+        resolves("a language with no English fallback takes what it has",
+                 chosen: nil, system: "fr_CA", supported: apple, expected: "fr-FR")
+        resolves("a language with nothing at all still starts",
+                 chosen: nil, system: "ja_JP", supported: apple, expected: "en-US")
+        // The last resort has to resolve to something the system actually has.
+        resolves("even without en-US it picks something real", chosen: nil, system: "ja_JP",
+                 supported: ["fr-FR", "tl-PH"], expected: "fr-FR")
+
         // MARK: "go to X" must be naming a place, not describing a task.
         //
         // `normalisedDestination` strips every space and appends ".com" to
