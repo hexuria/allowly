@@ -1051,7 +1051,14 @@ actor JevRuntime {
             }
             defer { if let transcoded { try? FileManager.default.removeItem(at: transcoded) } }
 
-            let result = await SpeechRecognizer().transcribe(audioURL: audioURL)
+            // Gemini when a key is configured, Apple otherwise and whenever
+            // Gemini cannot answer. Opt-in: with no key this is exactly the
+            // recogniser jev has always used.
+            let transcriber = FallbackTranscriber(
+                preferred: GeminiTranscriber(),
+                fallback: SpeechRecognizer(),
+                preferredIsConfigured: { GeminiTranscriber.isConfigured })
+            let result = await transcriber.transcribe(audioURL: audioURL)
             switch result {
             case .success(let heard):
                 // Shape, not words. Nothing has interpreted this yet, so

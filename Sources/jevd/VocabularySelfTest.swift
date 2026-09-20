@@ -24,6 +24,73 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: Transcription by Gemini, when there is a key for it.
+        //
+        // Both of the traps here fail SILENTLY — the request succeeds and the
+        // transcript is empty — so they are assertions rather than comments.
+        // Learned from Google's own demo client, not from the documentation.
+        let body = GeminiTranscriber.requestBody(
+            base64Audio: "AAAA", mimeType: "audio/aac", vocabulary: ["Ghostty", "command 1"])
+        let generation = body["generationConfig"] as? [String: Any]
+        let audioConfig = generation?["audioTranscriptionConfig"] as? [String: Any]
+
+        // Without this the call returns 200 and an empty transcript.
+        if audioConfig?["wordTimestamp"] as? Bool != true {
+            failures.append("gemini: wordTimestamp must be true or the transcript is empty")
+        }
+        // `mode` parses on this endpoint and then returns nothing. It belongs
+        // only on the newer interactions surface, which jev does not use.
+        if audioConfig?["mode"] != nil {
+            failures.append("gemini: mode does not work on this endpoint")
+        }
+        if generation?["temperature"] as? Int != 0 {
+            failures.append("gemini: transcription must not be sampled")
+        }
+        // The hint list is the one thing that reliably rescues a short unusual
+        // word, and it carries over to Gemini as a custom vocabulary.
+        if (audioConfig?["customVocabulary"] as? [String])?.contains("Ghostty") != true {
+            failures.append("gemini: the vocabulary is not being sent")
+        }
+        if (try? JSONSerialization.data(withJSONObject: body)) == nil {
+            failures.append("gemini: the request body does not serialise")
+        }
+
+        // The phone calls everything ".webm" and sends MP4, so the container
+        // is sniffed. An unknown type is refused rather than guessed: a wrong
+        // guess is a failed request, and falling back is better than that.
+        func mime(_ ext: String, _ expected: String?) {
+            if GeminiTranscriber.mimeType(forExtension: ext) != expected {
+                failures.append("gemini: \(ext) maps wrongly")
+            }
+        }
+        mime("m4a", "audio/aac")
+        mime("M4A", "audio/aac")
+        mime("wav", "audio/wav")
+        mime("flac", "audio/flac")
+        // Not in Gemini's list, and jev already transcodes it for Apple too.
+        mime("webm", nil)
+        mime("txt", nil)
+        mime("", nil)
+
+        // The reply, including the shapes that are not a transcript.
+        func transcript(_ name: String, _ json: String, _ expected: String?) {
+            if GeminiTranscriber.transcript(fromBody: Data(json.utf8)) != expected {
+                failures.append("gemini: \(name)")
+            }
+        }
+        transcript("a normal reply yields its text",
+                   #"{"candidates":[{"content":{"parts":[{"text":"close tab"}]}}]}"#, "close tab")
+        transcript("parts are joined",
+                   #"{"candidates":[{"content":{"parts":[{"text":"close "},{"text":"tab"}]}}]}"#,
+                   "close tab")
+        // The silent failure this is all guarding against: a 200 with nothing
+        // in it must read as "nothing heard", never as an empty command.
+        transcript("an empty part is nothing heard",
+                   #"{"candidates":[{"content":{"parts":[{"text":"   "}]}}]}"#, nil)
+        transcript("no candidates is nothing heard", #"{"candidates":[]}"#, nil)
+        transcript("an error body is nothing heard", #"{"error":{"code":403}}"#, nil)
+        transcript("malformed JSON is nothing heard", "not json", nil)
+
         // MARK: What the recogniser is told to expect.
         //
         // Measured, on a Mac already listening in en-PH: "press cmd 1" came
