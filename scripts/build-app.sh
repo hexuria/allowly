@@ -123,6 +123,20 @@ if [ -d "${PROJECT_DIR}/web" ]; then
     cp -R "${PROJECT_DIR}/web" "${RESOURCES_DIR}/web"
 fi
 
+# SwiftPM resource bundles. JevWeb ships snapshot.js this way, and nothing
+# else copies it: the generated Bundle.module accessor falls back to an
+# absolute path inside the build directory, so a missing bundle resolves fine
+# on the machine that compiled it and is absent everywhere else. Copying it
+# here, plus the launch assertion in WebSelfTest, is what makes that visible.
+RESOURCE_BUNDLE_DIR="$(dirname "${RELEASE_BINARY}")"
+for bundle in "${RESOURCE_BUNDLE_DIR}"/*.bundle; do
+    # An unmatched glob expands to itself, so check rather than rely on nullglob.
+    [ -e "${bundle}" ] || continue
+    rm -rf "${RESOURCES_DIR}/$(basename "${bundle}")"
+    cp -R "${bundle}" "${RESOURCES_DIR}/"
+    echo "  bundled $(basename "${bundle}")"
+done
+
 cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -20,6 +20,13 @@ enum CommandCodableSelfTest {
         .showApp(bundleIdentifier: "com.apple.Finder"),
         .hideApp(bundleIdentifier: "com.apple.Mail"),
         .clickControl(label: "Submit"),
+        // Command.init(from:) switches on a String with `default: throw`, so
+        // the compiler does NOT flag a case that was added to the encoder and
+        // forgotten here. Without these two rows a parked web task would come
+        // back as "Unknown command type: webTask" after the person taps
+        // Approve — the one moment it must not fail.
+        .webTask(goal: "play blinding lights on youtube"),
+        .webTask(goal: "open the first result", startURL: "https://www.amazon.com/"),
         // The ordinal has to survive the wire, or "press number two"
         // arrives as "press the only one" and the executor refuses.
         .clickControl(label: "Follow", nth: 2, outOf: 3),
@@ -86,6 +93,27 @@ enum CommandCodableSelfTest {
                 failures.append("codable: \(name) encodes to \(json) but will not decode (\(error))")
             }
         }
+
+        func check(_ name: String, _ condition: Bool) {
+            if !condition { failures.append("webtask: \(name)") }
+        }
+
+        // Its own policy bucket. Unknown bundle ids inherit the global mode,
+        // which defaults to .auto, so sharing system.browser with openURL
+        // would mean a sixty-action loop inheriting permission granted for
+        // opening a page.
+        let task = Command.webTask(goal: "buy more coffee filters")
+        check("a web task has its own policy bucket",
+              task.bundleIdentifier == "system.webtask")
+        check("and does not share one with openURL",
+              task.bundleIdentifier != Command.openURL(url: "https://x/").bundleIdentifier)
+
+        // A goal is free text and reaches a model and the journal: "search for
+        // 4111 1111 1111 1111" is a web task like any other.
+        check("a web task is treated as carrying free text",
+              CommandJournal.carriesFreeText(task))
+        check("and the goal is what gets redacted",
+              CommandJournal.carriedText(task) == ["buy more coffee filters"])
 
         // Two different commands must not encode to the same bytes.
         //

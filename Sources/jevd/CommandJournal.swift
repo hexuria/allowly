@@ -51,7 +51,9 @@ enum CommandJournal {
     static func carriesFreeText(_ command: Command?) -> Bool {
         guard let command else { return false }
         switch command {
-        case .typeText, .fillField, .openURL:
+        case .typeText, .fillField, .openURL, .webTask:
+            // A goal is free text and reaches a model: "search for
+            // 4111 1111 1111 1111" is a web task like any other.
             return true
         case .sequence(_, let steps):
             return steps.contains(where: carriesFreeText)
@@ -67,6 +69,9 @@ enum CommandJournal {
         case .typeText(let text): return [text]
         case .fillField(_, let text): return [text]
         case .openURL(let url): return [url]
+        // The goal only. A start URL is resolved from jev's own site list or
+        // from the page already open, so it is never something the person said.
+        case .webTask(let goal, _): return [goal]
         case .sequence(_, let steps): return steps.flatMap(carriedText)
         default: return []
         }

@@ -195,6 +195,17 @@ public enum Command: Codable, Sendable {
     case fillField(label: String, text: String)
     /// Open a URL in the default browser. Vastly more reliable than typing one.
     case openURL(url: String)
+    /// Carry out a goal inside the browser the person is already signed into.
+    ///
+    /// Distinct from `openURL`, which opens a page and stops. This one reads
+    /// the page, decides, acts, and reads again — so it is far more powerful
+    /// and is gated separately. See `bundleIdentifier`.
+    ///
+    /// `startURL` is resolved by jev, never by a model: from a site named in
+    /// the goal, or the page already open. A model that could choose the
+    /// address would have exactly the freedom withheld from it everywhere
+    /// else, and a poisoned page would spend it on a redirect.
+    case webTask(goal: String, startURL: String? = nil)
     /// Volume, brightness, appearance — things keystrokes do not reach well.
     case systemAction(name: String, value: Int)
     /// Act wherever the pointer already is. "this" and "here" are the fastest
@@ -293,6 +304,10 @@ public enum Command: Codable, Sendable {
                                  secret: try container.decode(String.self, forKey: .fullCommand) == "true")
         case "openURL":
             self = .openURL(url: try container.decode(String.self, forKey: .fullCommand))
+        case "webTask":
+            let goal = try container.decode(String.self, forKey: .fullCommand)
+            let start = try? container.decode(String.self, forKey: .optionId)
+            self = .webTask(goal: goal, startURL: (start?.isEmpty == false) ? start : nil)
         case "fillField":
             self = .fillField(label: try container.decode(String.self, forKey: .optionId),
                               text: try container.decode(String.self, forKey: .fullCommand))
@@ -397,6 +412,10 @@ public enum Command: Codable, Sendable {
         case .openURL(let url):
             try container.encode("openURL", forKey: .type)
             try container.encode(url, forKey: .fullCommand)
+        case .webTask(let goal, let startURL):
+            try container.encode("webTask", forKey: .type)
+            try container.encode(goal, forKey: .fullCommand)
+            if let startURL { try container.encode(startURL, forKey: .optionId) }
         case .fillField(let label, let text):
             try container.encode("fillField", forKey: .type)
             try container.encode(label, forKey: .optionId)
@@ -433,6 +452,10 @@ public extension Command {
         case .sequence(_, let steps): return steps.first?.bundleIdentifier ?? "system.keyboard"
         case .typeText, .pressKeys, .fillField: return "system.keyboard"
         case .openURL: return "system.browser"
+        // Its own bucket, deliberately NOT system.browser. Opening a URL is one
+        // reversible act; a web task is a loop that reads, decides and clicks,
+        // so it has to be allowable or refusable on its own terms.
+        case .webTask: return "system.webtask"
         case .systemAction: return "system.settings"
         case .pointerAction: return "system.pointer"
         case .requestInput, .showForm: return "system.keyboard"
