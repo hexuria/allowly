@@ -173,13 +173,24 @@ public enum Command: Codable, Sendable {
     case toggleApp(bundleIdentifier: String)
     case showApp(bundleIdentifier: String)
     case hideApp(bundleIdentifier: String)
-    case clickControl(label: String)
+    /// Click a control by name, optionally the nth of several that share
+    /// that name.
+    ///
+    /// `nth` is 1-based and counts only the equally-good candidates, in
+    /// the order the screen reports them (reading order). It exists so an
+    /// answer to "which of these three?" can travel the ordinary route —
+    /// through the policy check, the approval card, the risk rating and
+    /// the journal — instead of being laundered into a raw
+    /// `clickPoint`, which carries no label and therefore no rating.
+    case clickControl(label: String, nth: Int? = nil, outOf: Int? = nil,
+                      inWindow: Int? = nil)
     case typeText(text: String)
     case clickPoint(x: Double, y: Double)
     case scroll(direction: String, amount: Int)
     case switchWorkspace(id: String)
     case pressKeys(spec: String)
-    case rightClickControl(label: String)
+    case rightClickControl(label: String, nth: Int? = nil, outOf: Int? = nil,
+                           inWindow: Int? = nil)
     /// Put text into a named field, found by its accessibility label.
     case fillField(label: String, text: String)
     /// Open a URL in the default browser. Vastly more reliable than typing one.
@@ -236,7 +247,17 @@ public enum Command: Codable, Sendable {
         case "hideApp":
             self = .hideApp(bundleIdentifier: try container.decode(String.self, forKey: .bundleIdentifier))
         case "clickControl":
-            self = .clickControl(label: try container.decode(String.self, forKey: .optionId))
+            // `nth` rides in the same field, after the label, because the
+            // wire format has a fixed set of keys. Absent means "the only
+            // one", which is what every older payload means.
+            let raw = try container.decode(String.self, forKey: .optionId)
+            let parts = raw.components(separatedBy: "\u{001F}")
+            if parts.count >= 3, let ordinal = Int(parts[1]), let total = Int(parts[2]) {
+                self = .clickControl(label: parts[0], nth: ordinal, outOf: total,
+                                     inWindow: parts.count > 3 ? Int(parts[3]) : nil)
+            } else {
+                self = .clickControl(label: raw, nth: nil, outOf: nil)
+            }
         case "typeText":
             self = .typeText(text: try container.decode(String.self, forKey: .fullCommand))
         case "clickPoint":
@@ -250,7 +271,14 @@ public enum Command: Codable, Sendable {
         case "pressKeys":
             self = .pressKeys(spec: try container.decode(String.self, forKey: .optionId))
         case "rightClickControl":
-            self = .rightClickControl(label: try container.decode(String.self, forKey: .optionId))
+            let rawRight = try container.decode(String.self, forKey: .optionId)
+            let rightParts = rawRight.components(separatedBy: "\u{001F}")
+            if rightParts.count >= 3, let n = Int(rightParts[1]), let t = Int(rightParts[2]) {
+                self = .rightClickControl(label: rightParts[0], nth: n, outOf: t,
+                                          inWindow: rightParts.count > 3 ? Int(rightParts[3]) : nil)
+            } else {
+                self = .rightClickControl(label: rawRight, nth: nil, outOf: nil)
+            }
         case "systemAction":
             self = .systemAction(name: try container.decode(String.self, forKey: .optionId),
                                  value: Int(try container.decode(String.self, forKey: .fullCommand)) ?? 0)
@@ -312,9 +340,20 @@ public enum Command: Codable, Sendable {
         case .hideApp(let bundleId):
             try container.encode("hideApp", forKey: .type)
             try container.encode(bundleId, forKey: .bundleIdentifier)
-        case .clickControl(let label):
+        case .clickControl(let label, let nth, let outOf, let inWindow):
             try container.encode("clickControl", forKey: .type)
-            try container.encode(label, forKey: .optionId)
+            // A unit separator, which cannot occur in an accessibility
+            // label, so a label containing any ordinary punctuation
+            // round-trips unharmed. All three parts or none, so a label
+            // that somehow DOES contain one cannot be silently split:
+            // it simply decodes back as itself.
+            if let nth, let outOf {
+                let window = inWindow.map { "\u{001F}\($0)" } ?? ""
+                try container.encode("\(label)\u{001F}\(nth)\u{001F}\(outOf)\(window)",
+                                     forKey: .optionId)
+            } else {
+                try container.encode(label, forKey: .optionId)
+            }
         case .typeText(let text):
             try container.encode("typeText", forKey: .type)
             try container.encode(text, forKey: .fullCommand)
@@ -330,9 +369,15 @@ public enum Command: Codable, Sendable {
         case .pressKeys(let spec):
             try container.encode("pressKeys", forKey: .type)
             try container.encode(spec, forKey: .optionId)
-        case .rightClickControl(let label):
+        case .rightClickControl(let label, let nth, let outOf, let inWindow):
             try container.encode("rightClickControl", forKey: .type)
-            try container.encode(label, forKey: .optionId)
+            if let nth, let outOf {
+                let window = inWindow.map { "\u{001F}\($0)" } ?? ""
+                try container.encode("\(label)\u{001F}\(nth)\u{001F}\(outOf)\(window)",
+                                     forKey: .optionId)
+            } else {
+                try container.encode(label, forKey: .optionId)
+            }
         case .systemAction(let name, let value):
             try container.encode("systemAction", forKey: .type)
             try container.encode(name, forKey: .optionId)

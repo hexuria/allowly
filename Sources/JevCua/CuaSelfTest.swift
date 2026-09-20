@@ -12,9 +12,11 @@ import CoreGraphics
 public enum CuaSelfTest {
 
     private static func element(_ label: String, _ role: String = "AXButton",
-                                enabled: Bool = true, index: Int = 0) -> CuaBackend.Element {
+                                enabled: Bool = true, index: Int = 0,
+                                frame: CGRect? = nil) -> CuaBackend.Element {
         CuaBackend.Element(index: index, role: role, label: label,
-                           value: nil, token: "s1:\(index)", enabled: enabled)
+                           value: nil, token: "s1:\(index)", enabled: enabled,
+                           frame: frame)
     }
 
     public static func run() -> [String] {
@@ -136,6 +138,230 @@ public enum CuaSelfTest {
                       element("Alex", index: 2)]
         check("identical exact labels refuse",
               CuaBackend.bestMatch(for: "Alex", in: picker, roles: clickable) == nil)
+
+        // …and "several" is a DIFFERENT refusal from "none". One message
+        // served both, so three buttons called "Follow" produced
+        // "Nothing called “Follow” … I can see: … “Follow”" — a sentence
+        // that denies what it then lists, whose implied advice (say a
+        // different word) is the one thing that cannot help, because the
+        // word was right and the count was the problem.
+        switch CuaBackend.match(for: "Alex", in: picker, roles: clickable) {
+        case .ambiguous(let tied):
+            check("identical labels report as ambiguous, with the count", tied.count == 3)
+        default:
+            check("identical labels report as ambiguous", false)
+        }
+
+        // The count is of CONTROLS, not of accessibility packaging.
+        //
+        // macOS gives a button and its own label the same name, and
+        // `clickableRoles` includes the wrappers on purpose so a list
+        // item can be clicked at all. Counting both told the person
+        // there were six Follow buttons when there were three, and
+        // "number two" then resolved to the static text inside button
+        // one — the wrong control, clicked, reported as success.
+        let feedRows = [
+            element("Follow", index: 0, frame: CGRect(x: 600, y: 100, width: 80, height: 30)),
+            element("Follow", "AXStaticText", index: 1,
+                    frame: CGRect(x: 604, y: 104, width: 40, height: 20)),
+            element("Follow", index: 2, frame: CGRect(x: 600, y: 300, width: 80, height: 30)),
+            element("Follow", "AXStaticText", index: 3,
+                    frame: CGRect(x: 604, y: 304, width: 40, height: 20)),
+        ]
+        // A row and the switch inside it share a name and are NOT
+        // interchangeable. This must stay a dead end: an earlier round
+        // made `collapseWrappers` refuse it precisely so "click Safari"
+        // in Privacy settings cannot flip a permission, and offering
+        // "say number two" hands over that toggle in one more word,
+        // with no way for the person to know which is which.
+        let privacyRow = [element("Safari", "AXRow", index: 0,
+                                  frame: CGRect(x: 0, y: 100, width: 400, height: 30)),
+                          element("Safari", "AXCheckBox", index: 1,
+                                  frame: CGRect(x: 360, y: 104, width: 30, height: 20))]
+        switch CuaBackend.match(for: "Safari", in: privacyRow, roles: clickable) {
+        case .tangled:
+            check("a row and its switch are a dead end, not a numbered choice", true)
+        default:
+            check("a row and its switch are a dead end, not a numbered choice", false)
+        }
+        // …and the sentence must not be one that arms an ordinal.
+        let tangledSentence = CuaBackend.tangled("Safari", candidates: privacyRow,
+                                                 app: "System Settings")
+        check("the tangled sentence offers no ordinal",
+              !tangledSentence.contains("number two"))
+        check("…and nothing reads a count out of it",
+              CuaBackend.ambiguityCount(in: tangledSentence) == nil)
+
+        // Every shape that must stay a dead end, including the one that
+        // slipped through "two or more of one role": a row with TWO
+        // switches of the same name. That offered a numbered choice
+        // between two permission toggles and dropped the row — the only
+        // harmless target — out of the candidate list entirely.
+        let twoSwitches = [element("Safari", "AXRow", index: 0),
+                           element("Safari", "AXCheckBox", index: 1),
+                           element("Safari", "AXCheckBox", index: 2)]
+        switch CuaBackend.match(for: "Safari", in: twoSwitches, roles: clickable) {
+        case .tangled: check("a row with two switches of one name is a dead end", true)
+        default:       check("a row with two switches of one name is a dead end", false)
+        }
+        // …and switches with no row at all.
+        for role in ["AXCheckBox", "AXRadioButton", "AXDisclosureTriangle"] {
+            let pair = [element("Safari", role, index: 0), element("Safari", role, index: 1)]
+            switch CuaBackend.match(for: "Safari", in: pair, roles: clickable) {
+            case .tangled: check("two \(role)s of one name are a dead end", true)
+            default:       check("two \(role)s of one name are a dead end", false)
+            }
+        }
+        // A toggle inside a CONTAINER is a rival target: you can select
+        // the row, or you can flip the switch, and jev must not choose.
+        // A SwiftUI list reports that container as AXCell, so testing
+        // for AXRow alone let the switch be clicked silently.
+        for wrapper in ["AXRow", "AXCell"] {
+            let wrapped = [element("Safari", wrapper, index: 0),
+                           element("Safari", "AXCheckBox", index: 1)]
+            if case .one = CuaBackend.match(for: "Safari", in: wrapped, roles: clickable) {
+                check("a switch inside an \(wrapper) is not clicked silently", false)
+            } else {
+                check("a switch inside an \(wrapper) is not clicked silently", true)
+            }
+        }
+
+        // …but a CAPTION is not a rival, it is the switch's own name,
+        // and collapsing it is this function's whole job. Widening the
+        // guard to every wrapper role broke the commonest form control
+        // there is — `<label>Dark Mode</label><input type=checkbox>`
+        // reports AXStaticText + AXCheckBox — so "click dark mode"
+        // stopped working on ordinary settings pages.
+        for caption in ["AXStaticText", "AXImage"] {
+            let labelled = [element("Dark Mode", caption, index: 0),
+                            element("Dark Mode", "AXCheckBox", index: 1)]
+            if case .one(let only) = CuaBackend.match(for: "Dark Mode", in: labelled,
+                                                      roles: clickable) {
+                check("a labelled switch (\(caption)) still resolves",
+                      only.role == "AXCheckBox")
+            } else {
+                check("a labelled switch (\(caption)) still resolves", false)
+            }
+        }
+
+        // …while the genuinely interchangeable case IS answerable. Two
+        // identical rows in a list are the same kind of thing separated
+        // only by position, which is what an ordinal expresses.
+        let twoRows = [element("Inbox", "AXRow", index: 0,
+                               frame: CGRect(x: 0, y: 100, width: 300, height: 24)),
+                       element("Inbox", "AXRow", index: 1,
+                               frame: CGRect(x: 0, y: 140, width: 300, height: 24))]
+        switch CuaBackend.match(for: "Inbox", in: twoRows, roles: clickable) {
+        case .ambiguous(let rows): check("two identical rows can be numbered", rows.count == 2)
+        default:                   check("two identical rows can be numbered", false)
+        }
+
+        // The count must mean what the person can see. A disabled,
+        // frameless or hairline candidate is not something they can
+        // pick, and counting it made "number two" reach a control they
+        // never saw — a frameless one sorted to position ONE, because
+        // its order key is zero.
+        let unreachable = [
+            element("Follow", index: 0, frame: CGRect(x: 600, y: 100, width: 80, height: 30)),
+            element("Follow", enabled: false, index: 1,
+                    frame: CGRect(x: 600, y: 200, width: 80, height: 30)),
+            element("Follow", index: 2, frame: nil),
+            element("Follow", index: 3, frame: CGRect(x: 600, y: 300, width: 4, height: 4)),
+        ]
+        // Exactly one you could press is not an ambiguity — it is the
+        // answer. Refusing here printed "is a Button, and I cannot tell
+        // which you mean" about a page showing ONE Follow, which is the
+        // same self-denying sentence this whole change set out to
+        // delete.
+        switch CuaBackend.match(for: "Follow", in: unreachable, roles: clickable) {
+        case .one(let only):
+            check("one reachable candidate resolves rather than refusing",
+                  only.index == 0)
+        default:
+            check("one reachable candidate resolves rather than refusing", false)
+        }
+        // …but when the driver reports no frames at all, geometry
+        // cannot be the filter, or the feature disappears.
+        switch CuaBackend.match(for: "Alex",
+                                in: [element("Alex", index: 0), element("Alex", index: 1)],
+                                roles: clickable) {
+        case .ambiguous(let tied): check("frameless candidates still count", tied.count == 2)
+        default:                   check("frameless candidates still count", false)
+        }
+
+        // Mixed real controls are the same dead end — and the safe one
+        // must not be silently dropped from the choice.
+        let mixed = [element("Safari", "AXRow", index: 0),
+                     element("Safari", "AXCheckBox", index: 1),
+                     element("Safari", "AXPopUpButton", index: 2)]
+        switch CuaBackend.match(for: "Safari", in: mixed, roles: clickable) {
+        case .tangled: check("two different kinds of control are a dead end", true)
+        default:       check("two different kinds of control are a dead end", false)
+        }
+
+        switch CuaBackend.match(for: "Follow", in: feedRows, roles: clickable) {
+        case .ambiguous(let tied):
+            check("wrappers do not inflate the count", tied.count == 2)
+            check("…and the candidates are the real controls",
+                  tied.allSatisfy { $0.role == "AXButton" })
+        default:
+            check("two buttons plus their labels report as ambiguous", false)
+        }
+        switch CuaBackend.match(for: "Nonesuch", in: picker, roles: clickable) {
+        case .none: check("a name that is not there reports as absent", true)
+        default:    check("a name that is not there reports as absent", false)
+        }
+        switch CuaBackend.match(for: "Ada", in: [element("Alex"), element("Ada")],
+                                roles: clickable) {
+        case .one(let only): check("a single match still resolves", only.label == "Ada")
+        default:             check("a single match still resolves", false)
+        }
+        // Reading order decides what "number two" means, and it has to
+        // be the SAME order the badges are drawn in, or the number the
+        // person reads picks a different button than the one under it.
+        let feed = [
+            element("Follow", index: 0, frame: CGRect(x: 600, y: 300, width: 80, height: 30)),
+            element("Follow", index: 1, frame: CGRect(x: 600, y: 100, width: 80, height: 30)),
+            element("Follow", index: 2, frame: CGRect(x: 600, y: 200, width: 80, height: 30)),
+        ]
+        let ordered = feed.sorted(by: CuaBackend.readingOrder)
+        check("reading order is top to bottom, whatever order the driver reported",
+              ordered.map(\.index) == [1, 2, 0])
+        let sameRow = [
+            element("Follow", index: 0, frame: CGRect(x: 600, y: 100, width: 80, height: 30)),
+            element("Follow", index: 1, frame: CGRect(x: 200, y: 104, width: 80, height: 30)),
+        ]
+        check("…and left to right within a row, despite a few pixels of drift",
+              sameRow.sorted(by: CuaBackend.readingOrder).map(\.index) == [1, 0])
+
+        // The refusal a person reads carries NOTHING but words.
+        //
+        // The window was briefly appended to it after an invisible
+        // separator — but only the separator is invisible, so "w4211"
+        // rendered on the phone's toast, in the approval card and in
+        // commands.jsonl. A sentence shown to a person is not a
+        // transport; the window lives beside the matcher now.
+        let sentence = CuaBackend.ambiguous("Follow", count: 3, app: "Chrome")
+        check("the refusal is only words",
+              sentence.allSatisfy { !$0.unicodeScalars.contains { s in
+                  s.properties.generalCategory == .format } })
+        check("…and it still ends with the advice",
+              sentence.hasSuffix("say which one, like \u{201C}number two\u{201D}"))
+
+        let tiedSentence = CuaBackend.ambiguous("Follow", count: 3, app: "Chrome")
+        check("the ambiguous sentence gives the count",
+              tiedSentence.contains("3 things called"))
+        check("…and points at the one thing that resolves it",
+              tiedSentence.contains("number two"))
+        // The reader and the writer of that sentence must agree, because
+        // the runtime learns "there were three" by reading it back.
+        check("the count can be read back out of the sentence",
+              CuaBackend.ambiguityCount(in: tiedSentence) == 3)
+        check("…and an ordinary refusal is not mistaken for one",
+              CuaBackend.ambiguityCount(
+                in: CuaBackend.notFound("Refund", in: [], app: "Chrome")) == nil)
+        check("…and never claims the thing is absent",
+              !tiedSentence.lowercased().contains("nothing called"))
 
         // …but a row, its cell and its text are ONE thing wearing three
         // accessibility wrappers, and macOS names all three the same as

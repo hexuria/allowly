@@ -161,6 +161,142 @@ public struct SelfTest {
         return failures
     }
 
+    /// Who owns a spoken number when the badges are up.
+    ///
+    /// This must mirror `pressNumber` in `web/app.js` exactly. When the
+    /// two grammars disagreed, both directions failed: a word the Mac
+    /// claimed and the phone ignored vanished and was reported as
+    /// "Done", and a word the phone claimed and the Mac did not was
+    /// acted on twice — the digit typed into the app and the badge
+    /// pressed.
+    public static func checkBadgeNumber(_ badge: (String) -> Int?) -> [String] {
+        var failures: [String] = []
+        func check(_ name: String, _ condition: Bool) {
+            if !condition { failures.append("badge: \(name)") }
+        }
+
+        // What the phone strips, verbatim from its own regex.
+        for (said, want) in [("3", 3), ("number 3", 3), ("press 3", 3), ("click 3", 3),
+                             ("tap 5", 5), ("pick 2", 2), ("choose 1", 1),
+                             ("select 4", 4), ("option 2", 2), ("two", 2),
+                             ("number two", 2), ("ten", 10), ("press 2.", 2)] {
+            check("the phone would take “\(said)” as \(want)", badge(said) == want)
+        }
+        // …and what it would not.
+        for said in ["second", "2nd", "the second one", "number two please",
+                     "11th", "first", "", "follow", "open safari"] {
+            check("the phone would ignore “\(said)”", badge(said) == nil)
+        }
+        return failures
+    }
+
+    /// The gate that decides whether a spoken name is a control.
+    ///
+    /// It runs BEFORE the phrasebook, so anything it claims is a command
+    /// taken from something that would have worked. These assertions
+    /// exist because the obvious improvement — score here the way the
+    /// executor scores — was measured and it steals vocabulary: the
+    /// executor's prefix tier turns "select all" into Allow on a cookie
+    /// banner, "click it" into Italic, "click this" into This Mac.
+    ///
+    /// If a later change makes these fail, that change is pressing
+    /// buttons instead of running keyboard shortcuts.
+    public static func checkControlGate(
+        _ phraseOf: (String) -> String?,
+        _ onlyOne: (String, [String]) -> String?) -> [String] {
+        var failures: [String] = []
+        func check(_ name: String, _ condition: Bool) {
+            if !condition { failures.append("gate: \(name)") }
+        }
+
+        check("a verb is stripped", phraseOf("click the Save button") == "save")
+        check("…and a bare name survives", phraseOf("Save") == "save")
+        check("one letter is not a control name", phraseOf("click a") == nil)
+
+        // The pool a real page puts in front of these phrases.
+        let pool = ["Allow", "All Mail", "Italic", "This Mac",
+                    "Here's what's new", "Away", "Row 1", "Cells", "Everything Else"]
+        // What EXACT matching refuses on its own: every one of these is
+        // a prefix of something in the pool, and the executor's matcher
+        // would resolve it.
+        for said in ["select all", "click it", "click this", "click here",
+                     "select everything"] {
+            let phrase = phraseOf(said) ?? ""
+            check("“\(said)” does not press a button",
+                  onlyOne(phrase, pool) == nil)
+        }
+
+        // …and what it does NOT refuse, which is why the gate also has
+        // to yield to the phrasebook. "away" IS "Away" — exactly — so
+        // strictness is no protection here and precedence is the only
+        // thing standing between "click away" and a pressed button.
+        // `VocabularySelfTest` asserts the phrasebook claims it.
+        check("exact matching alone would steal a phrasebook phrase",
+              onlyOne(phraseOf("click away") ?? "", pool) == "Away")
+
+        // …while a name that really is on screen still resolves.
+        // A single full stop must not defeat the precedence rule. The
+        // gate's claim test now trims `.!?` like `parse` and
+        // `controlPhrase` already did; without it "click away." pressed
+        // a control named "Away" instead of sending Escape.
+        for said in ["click away.", "select all.", "click this!", "click here?"] {
+            check("“\(said)” is still claimed despite the punctuation",
+                  phraseOf(said) != nil)
+        }
+
+        check("an exact name still resolves",
+              onlyOne("italic", pool) == "Italic")
+        // Folding is shared with the executor, so the two agree about
+        // the same string.
+        // A REAL curly apostrophe on one side, straight on the other —
+        // the previous version had a straight one on both, so it
+        // asserted nothing about the fold it was named for.
+        check("a curly apostrophe matches a straight one",
+              onlyOne("here's what's new",
+                      ["Here\u{2019}s what\u{2019}s new"]) == "Here\u{2019}s what\u{2019}s new")
+        check("two of the same name is not a decision to make",
+              onlyOne("save", ["Save", "Save"]) == nil)
+
+        return failures
+    }
+
+    /// "number two" — and nothing that merely contains a number.
+    ///
+    /// This is the answer to "there are three things called Follow".
+    /// It runs BEFORE the phrasebook and before the model, so anything
+    /// it claims wrongly is a command stolen from something that would
+    /// have worked.
+    public static func checkOrdinal(_ ordinal: (String) -> Int?) -> [String] {
+        var failures: [String] = []
+        func check(_ name: String, _ condition: Bool) {
+            if !condition { failures.append("ordinal: \(name)") }
+        }
+
+        for (said, want) in [("2nd", 2), ("the 2nd one", 2), ("number two please", 2),
+                             ("the second one please", 2), ("11th", 11),
+                             ("two", 2), ("number two", 2), ("the second one", 2),
+                             ("2", 2), ("number 2", 2), ("second", 2),
+                             ("one", 1), ("first", 1), ("the first one", 1),
+                             ("three", 3), ("number ten", 10)] {
+            check("“\(said)” is \(want)", ordinal(said) == want)
+        }
+
+        // A keystroke is not an ordinal. "press 2" types the digit and
+        // "press option 1" is ⌥1; for thirty seconds after an ambiguity
+        // both were clicking a candidate instead.
+        for said in ["press 2", "press option 1", "click 3", "tap 5", "option 2"] {
+            check("“\(said)” is a keystroke, not an ordinal", ordinal(said) == nil)
+        }
+
+        // Anything that stands on its own is a command, not an answer.
+        for said in ["open safari", "volume two", "set volume to two",
+                     "type two coffees", "search for second hand cars",
+                     "close tab two and three", "", "follow"] {
+            check("“\(said)” is not an ordinal", ordinal(said) == nil)
+        }
+        return failures
+    }
+
     /// Does a driver's reason string give the typed value back?
     ///
     /// The gate that decides whether a typed value is redacted before

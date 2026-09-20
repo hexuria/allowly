@@ -3229,7 +3229,24 @@ const APP = {
 
         document.getElementById('voiceResult').classList.add('hidden');
 
-        fetch(`${this.baseUrl}/api/voice`, {
+        // Who owns a spoken number this time, decided BEFORE the Mac
+        // hears it.
+        //
+        // Both ends were claiming it. The Mac answers its own "which
+        // of these three?" with an ordinal, and the phone reads a
+        // number as "press that badge" — and `/api/voice` runs the
+        // command server-side and only then returns, so the phone's
+        // handler fired after the Mac had already clicked. Two clicks,
+        // two different targets, from one word. Suppressing on the
+        // response's `executed` flag was worse than nothing: it is true
+        // for "needs your approval" (nothing clicked) and false when
+        // the Mac tried and failed (badge press then fires over a
+        // screen that just changed).
+        //
+        // Badges up means the phone owns it, so the Mac is told to
+        // leave ordinals alone.
+        const badgesUp = Array.isArray(this.numbers) && this.numbers.length > 0;
+        fetch(`${this.baseUrl}/api/voice${badgesUp ? '?badges=1' : ''}`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${this.token}`,
@@ -3247,7 +3264,17 @@ const APP = {
                 // value, not a command. Checked before everything else.
                 // A number while the badges are up means that badge, and
                 // nothing else — "3" must not become a search for "3".
-                if (this.pressNumber(result && result.transcript)) return;
+                //
+                // …unless the Mac already acted on it. `/api/voice` runs
+                // the command server-side and THEN returns, so by the
+                // time this line reads the transcript the click may
+                // already have happened. When the Mac answers its own
+                // "there are 3 things called Follow — which one?" with
+                // the second Follow, tapping badge 2 as well is a
+                // second click on an unrelated control: the badges are
+                // numbered over everything on screen, not over the
+                // three candidates.
+                if (badgesUp && this.pressNumber(result && result.transcript)) return;
                 if (this.fillFieldByVoice(result && result.transcript)) return;
                 if (this.answerByVoice(result && result.transcript)) return;
                 this.displayVoiceResult(result);

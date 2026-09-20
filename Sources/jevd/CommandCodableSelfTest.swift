@@ -20,6 +20,20 @@ enum CommandCodableSelfTest {
         .showApp(bundleIdentifier: "com.apple.Finder"),
         .hideApp(bundleIdentifier: "com.apple.Mail"),
         .clickControl(label: "Submit"),
+        // The ordinal has to survive the wire, or "press number two"
+        // arrives as "press the only one" and the executor refuses.
+        .clickControl(label: "Follow", nth: 2, outOf: 3),
+        // The window the candidates were counted in has to survive too,
+        // or the answer lands wherever is frontmost when it arrives.
+        .clickControl(label: "Follow", nth: 2, outOf: 3, inWindow: 4211),
+        .rightClickControl(label: "Follow", nth: 2, outOf: 3, inWindow: 4211),
+        // The separator carries the ordinal, so a label that CONTAINS
+        // one must come back as itself rather than being split.
+        .clickControl(label: "a\u{001F}b"),
+        .clickControl(label: "a\u{001F}2"),
+        // …including a label with the punctuation an accessibility name
+        // routinely carries.
+        .clickControl(label: "Save As\u{2026}", nth: 3, outOf: 4),
         .showNumbers(on: true),
         // BOTH, because the decoder defaults a missing `on` to true. With
         // only the `true` sample, deleting the encode line leaves the round

@@ -134,6 +134,24 @@ public enum HTTPPath {
 ///
 /// Two places agreeing by hand is what failed. One canonical form, at
 /// the edge, is what replaces it.
+    /// One named value out of the query string.
+    ///
+    /// Lives here rather than inside the connection actor because the
+    /// router needs it too, and the alternative was a second
+    /// implementation — which in this case would have been
+    /// `path.contains("badges=1")`, true for `?token=abadges=1` and for
+    /// `?badges=10`.
+    public static func queryValue(named name: String, in path: String) -> String? {
+        guard let queryStart = path.firstIndex(of: "?") else { return nil }
+        let query = path[path.index(after: queryStart)...]
+        for pair in query.split(separator: "&") {
+            let bits = pair.split(separator: "=", maxSplits: 1)
+            guard bits.count == 2, bits[0] == name else { continue }
+            return String(bits[1]).removingPercentEncoding ?? String(bits[1])
+        }
+        return nil
+    }
+
     public static func canonicalPath(_ raw: String) -> String {
         let route = raw.split(separator: "?", maxSplits: 1,
                               omittingEmptySubsequences: false).first.map(String.init) ?? raw
@@ -368,7 +386,8 @@ public actor HTTPServer {
         }
     }
 
-    public nonisolated func onCommand(_ handler: @escaping (String) async -> ExecutionResult) {
+    public nonisolated func onCommand(
+        _ handler: @escaping (String, Bool) async -> ExecutionResult) {
         Task {
             await router.onCommand(handler)
         }
@@ -710,23 +729,12 @@ private actor HTTPConnection {
         // Also accept ?token=… so the phone can bootstrap from a pairing link
         // and so the WebSocket upgrade (which cannot carry custom headers from
         // a browser) can authenticate.
-        if let queryToken = Self.queryValue(named: "token", in: request.path),
+        if let queryToken = HTTPPath.queryValue(named: "token", in: request.path),
            constantTimeCompare(queryToken, expected) {
             return true
         }
 
         return false
-    }
-
-    static func queryValue(named name: String, in path: String) -> String? {
-        guard let queryStart = path.firstIndex(of: "?") else { return nil }
-        let query = path[path.index(after: queryStart)...]
-        for pair in query.split(separator: "&") {
-            let bits = pair.split(separator: "=", maxSplits: 1)
-            guard bits.count == 2, bits[0] == name else { continue }
-            return String(bits[1]).removingPercentEncoding ?? String(bits[1])
-        }
-        return nil
     }
 
     private func constantTimeCompare(_ a: String, _ b: String) -> Bool {

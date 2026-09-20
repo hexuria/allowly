@@ -87,6 +87,64 @@ enum Phrasebook {
         return nearMatch(text, in: ordered, context: context)
     }
 
+    /// Does the table claim this sentence WORD FOR WORD?
+    ///
+    /// `parse` falls back to `nearMatch`, which is right for speech —
+    /// "close thab" should still close the tab — and wrong as a
+    /// precedence test. The on-screen control gate asks "is this
+    /// sentence already spoken for?", and answering yes on a fuzzy
+    /// guess costs the user a button press: with a Home link on screen,
+    /// "click home" is within `nearMatch`'s budget of a binding and was
+    /// being answered with a pointer click at wherever the cursor had
+    /// been left. Measured over 43 ordinary button labels, 20 of them
+    /// were taken that way.
+    ///
+    /// So the gate asks this instead, which is the exact loop above and
+    /// nothing else.
+    /// A context that names no app, for callers that must not ask.
+    ///
+    /// `context()` shells out to `osascript` and sends an Apple Event
+    /// to whatever browser is frontmost — which is why it is kept off
+    /// the hot path. A startup self-test reaching it was measured
+    /// firing a live Apple Event during `self-tests`, where it can also
+    /// raise a TCC prompt and block launch behind a wedged browser.
+    static let neutral = Context(bundleId: "", appName: "", isBrowserLike: false)
+
+    static func claimsExactly(_ text: String, in explicitContext: Context? = nil) -> Bool {
+        // Trimmed the same way `parse` and `controlPhrase` trim, or one
+        // full stop defeats the whole precedence rule: measured,
+        // `claimsExactly("click away.")` was false while
+        // `parse("click away.")` was Escape and the gate went on to
+        // press a control named "Away".
+        let text = text.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
+        guard !text.isEmpty else { return false }
+        let context = explicitContext ?? self.context()
+        if AppProfiles.override(for: text, in: context) != nil { return true }
+        for binding in bindings {
+            for phrase in binding.phrases {
+                // The binding must actually BUILD something.
+                //
+                // Claiming on the prefix alone made the gate looser
+                // than the thing it defers to: `parse` runs this same
+                // loop and then requires `build` to succeed, so a
+                // sentence like "print invoice" was claimed here,
+                // declined there, and pressed nothing — measured
+                // across an ordinary class of labels ("Save Draft",
+                // "Copy Link", "Cancel Order", "This Week"), every one
+                // of which used to work.
+                if text == phrase, binding.build("", context) != nil { return true }
+                if text.hasPrefix(phrase + " ") {
+                    let argument = String(text.dropFirst(phrase.count + 1))
+                        .trimmingCharacters(in: .whitespaces)
+                    if build(binding, argument, context) != nil { return true }
+                }
+            }
+        }
+        return false
+    }
+
     /// Match a phrase allowing a few wrong characters, budgeted by length so
     /// short phrases cannot collide with each other.
     private static func nearMatch(_ text: String, in ordered: [Binding],
