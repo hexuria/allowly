@@ -24,6 +24,53 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: What the recogniser is told to expect.
+        //
+        // Measured, on a Mac already listening in en-PH: "press cmd 1" came
+        // back as "prayers for man one", and "create new tab" as "create new
+        // dog". The first had no chance — keystroke words were never in the
+        // hint list at all. The second was: "new tab" is in there, and at a
+        // budget of 200 the biasing had been diluted to the point of not
+        // defending even the phrases it contained.
+        let hints = Transcription.recognitionHints()
+        func hinted(_ name: String, _ phrase: String) {
+            if !hints.contains(where: { $0.caseInsensitiveCompare(phrase) == .orderedSame }) {
+                failures.append("hint: \(name) — \(phrase) is not offered")
+            }
+        }
+        hinted("the press verb", "press")
+        hinted("the command key", "command")
+        hinted("its short form", "cmd")
+        hinted("a modifier", "shift")
+        hinted("a named key", "escape")
+        hinted("a whole shortcut", "command 1")
+        hinted("and the last one", "command 9")
+        // A bare digit is deliberately absent. "1" competes with every number
+        // anyone might say and biases nothing in particular, while spending a
+        // slot that "command 1" uses better.
+        if hints.contains("1") {
+            failures.append("hint: a bare digit is spending a slot")
+        }
+        hinted("the tab key, which is also a browser tab", "tab")
+        hinted("the phrase that came back as 'new dog'", "new tab")
+
+        // Biasing weakens as the list grows: every extra phrase competes with
+        // the ones that matter. The cap is the point, not an implementation
+        // detail, so it is asserted.
+        if hints.count > Transcription.hintBudget {
+            failures.append("hint: \(hints.count) phrases exceeds the budget")
+        }
+        if Transcription.hintBudget > 120 {
+            failures.append("hint: the budget is large enough to dilute itself")
+        }
+        // Duplicates spend the budget twice on one word.
+        if Set(hints.map { $0.lowercased() }).count != hints.count {
+            failures.append("hint: the list repeats itself")
+        }
+        if hints.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+            failures.append("hint: an empty phrase takes a slot and biases nothing")
+        }
+
         // MARK: Saying "click X" means clicking X.
         //
         // Measured on a real Amazon page: "click free shipping to philippines"

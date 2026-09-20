@@ -28,11 +28,41 @@ enum Transcription {
         // are worth their place in the budget.
         let web = WebStart.knownSites.map(\.spoken)
             + ["search for", "search", "play", "open the first result", "add to cart"]
-        // Phrases are the core vocabulary and stay whole; app names fill the
-        // rest of the budget, most-likely first.
-        let core = phrases + verbs + web
-        return core + Array(apps.prefix(max(0, 200 - core.count)))
+        // Keystrokes are spoken, not listed anywhere, so the recogniser was
+        // never told any of these words were likely. Measured: "press cmd 1"
+        // came back as "prayers for man one". Every modifier, every digit and
+        // the keys people name out loud now earn their place — a keystroke is
+        // the most literal thing anyone says to this and the least forgiving
+        // of a near-miss.
+        let keys = ["press", "command", "cmd", "control", "option", "shift",
+                    "escape", "enter", "return", "space", "delete", "tab"]
+            // The whole shortcut, not the bare digit: "command 1" is a phrase
+            // the recogniser can weigh, where "1" competes with every number
+            // anyone might say and biases nothing in particular.
+            + (1...9).map { "command \($0)" }
+
+        // Deliberately far below what the API will take.
+        //
+        // This was 200. Apple's guidance is that biasing weakens as the list
+        // grows — every extra phrase competes with the ones that matter — and
+        // at 200 it had stopped defending even the words that were in it:
+        // "new tab" is in `verbs` and still came back as "new dog". The cap
+        // is now small enough that the phrases in it carry weight, and the
+        // order decides what survives: what jev can actually do first, then
+        // the apps that are running, then the rest.
+        // Order is the budget. Small, high-value sets first, because
+        // whatever falls off the end is not biased at all — and the first
+        // version of this cap put `phrases` first, which ate every slot and
+        // left the keystroke words out entirely. The assertions check that
+        // the words this was built for actually survive.
+        let hints = keys + verbs + web + phrases + apps
+        var seen = Set<String>()
+        let unique = hints.filter { seen.insert($0.lowercased()).inserted }
+        return Array(unique.prefix(hintBudget))
     }
+
+    /// How many phrases the recogniser is told to expect.
+    static let hintBudget = 90
 
     /// Ask once for Speech Recognition. The result is remembered by macOS, so
     /// repeated launches are silent after the first approval.

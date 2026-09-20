@@ -1074,6 +1074,19 @@ actor JevRuntime {
                 // request: if nothing parses, Jev should see every reading,
                 // not just the one that failed.
                 await self.rememberReadings(for: chosen, all: [heard.best] + heard.alternatives)
+                // When nothing understood any reading, record what was on
+                // offer. Without this a mis-hearing is undiagnosable: the log
+                // said "heard 4 words, 4 other readings" and never whether
+                // the right words were among them — which is the only
+                // question worth asking. Written through the same filter as
+                // everything else, so a reading that carries a value is
+                // withheld rather than printed.
+                if VoiceCommand.parse(chosen) == nil {
+                    let offered = ([heard.best] + heard.alternatives)
+                        .map { JevLog.safe($0) }
+                        .joined(separator: " | ")
+                    JevLog.write("[jev] voice: nothing parsed; readings were: \(offered)")
+                }
                 return chosen
             case .failure(let error):
                 JevLog.write("[jev] voice: transcription failed: \(error)")
