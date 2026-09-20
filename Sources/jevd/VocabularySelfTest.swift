@@ -24,6 +24,33 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: Saying "click X" means clicking X.
+        //
+        // Measured on a real Amazon page: "click free shipping to philippines"
+        // came back as control=Free Shipping Zone@0.78 alongside
+        // operation=web_task@0.57. The right link, named correctly from words
+        // that do not appear in its label — and then refused, because the
+        // web-task floor rejected 0.57 while the answer sat in the same reply.
+        // A pressing verb plus a control named with more conviction than the
+        // operation now wins.
+        func pressVerb(_ name: String, _ text: String, _ expected: Bool) {
+            if JevIntent.startsWithPressVerb(text) != expected {
+                failures.append("press verb: \(name)")
+            }
+        }
+        for verb in ["click", "press", "tap", "push", "hit", "choose", "select"] {
+            pressVerb("\(verb) is a press", "\(verb) free shipping to philippines", true)
+        }
+        pressVerb("case does not matter", "Click Free Shipping Zone", true)
+        // These must NOT be treated as presses, or a web goal gets turned into
+        // a click on whatever happens to match on screen.
+        pressVerb("going somewhere is not a press", "go to youtube and search hello", false)
+        pressVerb("playing is not a press", "play a lofi radio on youtube", false)
+        pressVerb("searching is not a press", "search amazon for coffee filters", false)
+        // A word that merely begins with a press verb is not one.
+        pressVerb("clicked is not click", "clicking through the results", false)
+        pressVerb("selective is not select", "selective search on amazon", false)
+
         // MARK: Where decisions are allowed to be sent.
         //
         // The endpoint can be pointed at something local that strips personal

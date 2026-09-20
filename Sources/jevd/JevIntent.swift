@@ -181,6 +181,31 @@ enum JevIntent {
             ))
         }
 
+        // Said as a press, with something on screen that matches: click it.
+        //
+        // `preferNamedControl` already existed and was only used to stop a
+        // capability shortcut stealing a press. It never overrode the coarser
+        // operation label, and that gap is what this is fixing. Measured, on
+        // a real Amazon page: "click free shipping to philippines" resolved
+        // `control=Free Shipping Zone@0.78` — the right link, named correctly
+        // from words that do not appear in its label — alongside
+        // `operation=web_task@0.57`. The web-task floor then refused the
+        // whole thing while the correct answer sat in the same reply.
+        //
+        // The rule is narrow on purpose. It needs a pressing verb, so "go to
+        // youtube and search hello" is untouched; and the control must have
+        // been named with more conviction than the operation, so a confident
+        // web_task still wins over a vague guess at a button.
+        if spokenAsAPress, let control = namedControl,
+           control.confidence >= operation.confidence {
+            return .success(Resolution(
+                command: .clickControl(label: control.choice),
+                description: "Click “\(control.choice)” in \(frontmost)",
+                confidence: control.confidence,
+                safety: safety
+            ))
+        }
+
         switch operation.choice {
         case "open_app", "quit_app", "toggle_app":
             guard let appAnswer = answers.choice("app"), appAnswer.choice != "none",
