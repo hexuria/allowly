@@ -70,7 +70,8 @@ struct Scope: Sendable {
         let seen = await CommandExecutor.cua.context(at: point)
         let context = Phrasebook.context()
         let active = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.localizedName))
+        // Kept current by launch and exit events, not rebuilt per command.
+        let running = await ScopeStore.shared.runningApps()
         // Same snapshot as the labels, so the pointer's control is one the
         // classifier is also being offered.
         let pointed = await CommandExecutor.cua.labelUnderPointer(at: point)

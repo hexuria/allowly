@@ -221,6 +221,9 @@ actor JevRuntime {
         }
         self.watcher = watcher
         watcher.start()
+        // The watcher's focus and launch events now feed the scope instead
+        // of being dropped when the window is not a dialog.
+        Task { await ScopeStore.shared.start() }
         JevLog.write("[jev] Watching for dialogs.")
 
     }

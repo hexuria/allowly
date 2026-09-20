@@ -71,6 +71,16 @@ public actor DialogWatcher: Sendable {
     private static let kAXDialogRole = "AXDialog"
     private static let kAXSheetRole = "AXSheet"
 
+    /// Fired for EVERY focus or window-created event, dialog or not, with the
+    /// owning pid. This watcher registers `kAXFocusedWindowChanged` for every
+    /// running app and then discarded the event unless the new window was a
+    /// dialog — which is exactly the signal a live model of "what is in
+    /// front" needs. Nothing about the registration changes; the event is
+    /// simply no longer thrown away.
+    nonisolated(unsafe) public static var onFocusChanged: (@Sendable (pid_t, String) -> Void)?
+    /// Fired when an app launches, activates or exits.
+    nonisolated(unsafe) public static var onAppsChanged: (@Sendable () -> Void)?
+
     public init(onDialogDetected: @escaping DialogDetectedCallback) {
         self.callback = onDialogDetected
         self.serialiser = DialogSerialiser()
@@ -123,6 +133,7 @@ public actor DialogWatcher: Sendable {
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             else { return }
             let pid = app.processIdentifier
+            Self.onAppsChanged?()
             Task { await self?.registerObserver(for: pid, app: app) }
         }
         Self.note("attached to \(observedApps.count) running apps")
@@ -146,6 +157,7 @@ public actor DialogWatcher: Sendable {
                 guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                         as? NSRunningApplication else { return }
                 let pid = app.processIdentifier
+                Self.onAppsChanged?()
                 Task { await self?.forgetObserver(for: pid) }
             }
 
@@ -482,6 +494,12 @@ public actor DialogWatcher: Sendable {
 
     /// Handle a notification from an observer (async version).
     fileprivate func handleNotificationAsync(element: AXUIElement, notification: String) {
+        if notification == kAXWindowCreatedNotification || notification == kAXFocusedWindowChangedNotification {
+            var ownerPid: pid_t = 0
+            if AXUIElementGetPid(element, &ownerPid) == .success {
+                Self.onFocusChanged?(ownerPid, notification)
+            }
+        }
         // Check if this is a dialog/sheet we care about
         if notification == kAXWindowCreatedNotification || notification == kAXFocusedWindowChangedNotification {
             if isDialogElement(element) {

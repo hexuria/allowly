@@ -700,6 +700,8 @@ public struct CuaBackend: Sendable {
 
         func pointed() -> Bool { Date().timeIntervalSince(takenAt) < lifetime && fromPointer }
 
+        func clear() { takenAt = .distantPast }
+
         func store(_ fresh: (app: String?, labels: [String]),
                    placed: [(label: String, frame: CGRect)], pointed: Bool = false) {
             value = fresh
@@ -710,6 +712,15 @@ public struct CuaBackend: Sendable {
     }
 
     private static let cache = Snapshot()
+
+    /// Forget the snapshot now rather than in two seconds.
+    ///
+    /// The cache exists so three looks per command cost one. It also meant a
+    /// command spoken just after switching apps was matched against the
+    /// previous app's buttons, and nothing in the log could tell that miss
+    /// from a precedence miss. Focus events say when the world changed;
+    /// this is what they call.
+    public func invalidateSnapshot() async { await Self.cache.clear() }
 
     /// Everything pressable in front, numbered, with where it is on screen.
     ///

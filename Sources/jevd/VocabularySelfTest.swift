@@ -287,6 +287,19 @@ enum VocabularySelfTest {
         if WorkspaceManager.spacesShortcut(for: "10") != nil { failures.append("spaces: 10 has no shortcut") }
         if WorkspaceManager.spacesShortcut(for: "three") != nil { failures.append("spaces: words are not spaces") }
 
+        // MARK: Focus events feed the scope.
+        //
+        // The pure ledger behind ScopeStore: a focus change is counted only
+        // when the pid actually changes, so the same window reporting focus
+        // twice does not look like two switches.
+        var ledger = ScopeStore.Ledger()
+        let t = Date()
+        ledger.noteFocus(pid: 10, at: t); ledger.noteFocus(pid: 10, at: t); ledger.noteFocus(pid: 20, at: t)
+        if ledger.focusChanges != 2 { failures.append("ledger: focus changes miscounted (\(ledger.focusChanges))") }
+        if ledger.focusedPid != 20 { failures.append("ledger: focused pid not the latest") }
+        ledger.noteApps(at: t)
+        if ledger.appChanges != 1 || ledger.lastEventAt != t { failures.append("ledger: app change not recorded") }
+
         // MARK: One comparison, cursor outward.
         //
         // Precedence used to be a line number. These pin the order that
