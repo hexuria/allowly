@@ -220,6 +220,10 @@ final class CommandExecutor {
     /// Set by the runtime: put a card on the phone saying how a web task
     /// ended, with a picture of where it stopped.
     nonisolated(unsafe) static var onWebReport: ((String, String, String?) -> Bool)?
+    /// Set by the runtime: stop mid-task and ask before clicking something
+    /// consequential. Returns what the person said, or that nobody did.
+    nonisolated(unsafe) static var onWebConsent:
+        (@Sendable (String, String?) async -> WebAgent.Consent)?
 
     /// Looking and pointing now go through Cua Driver, which holds its own
     /// Accessibility grant and refuses rather than guesses. See JevCua.
@@ -617,7 +621,21 @@ final class CommandExecutor {
                 return .failed(reason: "No TypeSafe API key, so there is nothing to decide with")
             }
 
-            let agent = WebAgent(session: session, apiKey: apiKey) { progress in
+            let agent = WebAgent(
+                session: session,
+                apiKey: apiKey,
+                // Reuse the rating jev already applies to buttons — tuned over
+                // a hundred and fifty real labels, negations and deferrals
+                // included — and add only what a shop words differently.
+                needsConsent: { label in
+                    DialogWatcher.risk(forButtonLabel: label) == .high
+                        || WebSafety.looksConsequential(label)
+                },
+                askConsent: { label, picture in
+                    guard let ask = Self.onWebConsent else { return .no }
+                    return await ask(label, picture)
+                }
+            ) { progress in
                 // The label comes from the page, so it can contain newlines.
                 // Written raw it forges entries in the daemon's own log.
                 let label = progress.target
@@ -667,6 +685,14 @@ final class CommandExecutor {
                                       picture)
                 return .failed(reason: "Could not find a way forward on \(title)"
                                      + (steps == 0 ? "" : " after \(steps) steps"))
+
+            case .refusedByPerson(let what, let steps, _, let title):
+                return .failed(reason: "Stopped — you said no to “\(what.prefix(40))” on "
+                                     + "\(title) after \(steps) step\(steps == 1 ? "" : "s")")
+
+            case .unanswered(let what, let steps, _, let title):
+                return .failed(reason: "Stopped — nobody answered about “\(what.prefix(40))” on "
+                                     + "\(title) after \(steps) step\(steps == 1 ? "" : "s")")
 
             case .exhausted(let steps, _, let title):
                 let picture = await session.screenshot()

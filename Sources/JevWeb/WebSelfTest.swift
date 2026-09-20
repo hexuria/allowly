@@ -38,6 +38,7 @@ public enum WebSelfTest {
         checkResolveScript(check)
         checkScreenshotFormat(check)
         checkProgressMessage(check)
+        checkConsequentialLabels(check)
 
         return failures
     }
@@ -504,6 +505,48 @@ public enum WebSelfTest {
         // for one.
         let fresh = WebBrowser()
         check("a new browser holds no connection", await fresh.isConnected == false)
+    }
+
+    private static func checkConsequentialLabels(_ check: (String, Bool) -> Void) {
+        let asks = WebSafety.looksConsequential(_:)
+
+        // The gap this list exists to fill. jev's button rating already
+        // catches purchase, buy, pay, subscribe, confirm, submit, approve;
+        // it does not catch how a shop words the same act.
+        check("placing an order is asked about", asks("Place your order"))
+        check("completing a purchase is asked about", asks("Complete purchase"))
+        check("checking out is asked about", asks("Proceed to checkout"))
+        check("paying now is asked about", asks("Pay now"))
+        check("bidding is asked about", asks("Place bid"))
+        check("booking is asked about", asks("Book now"))
+        check("starting a trial is asked about", asks("Start free trial"))
+        check("renewing is asked about", asks("Renew"))
+        check("adding to a cart is asked about", asks("Add to Cart"))
+
+        // A real button carries a count or a price. Same button.
+        check("trailing detail does not hide it", asks("Proceed to checkout (3 items)"))
+        check("case does not hide it", asks("PLACE YOUR ORDER"))
+
+        // A negation inverts it, exactly as it does for a Mac dialog.
+        check("declining to renew is not the same as renewing", !asks("Do not renew"))
+        check("cancelling an order is not placing one", !asks("Cancel order"))
+
+        // Ordinary navigation must not become a question, or every task ends
+        // in a queue of taps and the feature is worse than not having it.
+        check("a search button is not asked about", !asks("Search"))
+        check("a link is not asked about", !asks("Learn more"))
+        check("a video is not asked about", !asks("lofi hip hop radio"))
+        check("scrolling is not asked about", !asks("Scroll down"))
+        check("an empty label is not asked about", !asks(""))
+
+        // The question names the button and says nothing else.
+        let question = WebSafety.approvalQuestion(for: "Place your order")
+        check("the question quotes the button", question.contains("Place your order"))
+        // A page-written label can be any length; a card cannot.
+        check("a very long label is cut",
+              WebSafety.approvalQuestion(for: String(repeating: "x", count: 500)).count < 120)
+        check("a label cannot break the card onto new lines",
+              !WebSafety.approvalQuestion(for: "Buy\nnow\nplease").contains("\n"))
     }
 
     private static func checkScreenshotFormat(_ check: (String, Bool) -> Void) {

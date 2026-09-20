@@ -37,7 +37,22 @@ actor JevRuntime {
     /// answering a dialog: the fallback in `onDecide` turns any unclaimed id
     /// into a `pressButton`, which would go looking for a button on screen
     /// that was never there.
+    /// How long a mid-task question waits. Two minutes: long enough to pick
+    /// up a phone, and well inside the store's five-minute expiry so the wait
+    /// can never outlive the card.
+    static let webConsentPolls = 240
+
     private var webReports: Set<String> = []
+    /// Mid-task questions from a browser task that are on the phone right
+    /// now, and the answers that have come back.
+    ///
+    /// Polled, exactly as `awaitedPermissions` is, and for the reason written
+    /// there: `withCheckedContinuation` is not cancellation-aware and hung
+    /// every request. The wait is long because a person has to notice a
+    /// notification and pick up a phone — but bounded well under the store's
+    /// five-minute expiry, so it can never outlive the card it is waiting on.
+    private var awaitedWebConsent: Set<String> = []
+    private var webConsentAnswers: [String: String] = [:]
     /// Permission requests from the Claude Code hook that are on the phone
     /// right now, waiting for a thumb, and the answers that have come back.
     ///
@@ -187,6 +202,13 @@ actor JevRuntime {
             Task { await self.broadcastWebProgress(step: step, operation: operation,
                                                    target: target, isRetry: isRetry,
                                                    finished: finished) }
+        }
+        CommandExecutor.onWebConsent = { [weak self] label, picture in
+            guard let self else { return .no }
+            // Nothing to ask with. Refusing is the only honest answer: a task
+            // must never treat "could not ask" as "was allowed".
+            guard self.hasConnectedPhone else { return .noAnswer }
+            return await self.askWebConsent(about: label, picture: picture)
         }
         CommandExecutor.onWebReport = { [weak self] title, body, picture in
             guard let self, self.hasConnectedPhone else { return false }
@@ -538,6 +560,13 @@ actor JevRuntime {
                 _ = await store.resolve(id: requestId)
                 await self.broadcastResolved(id: requestId)
                 return .ok(reason: "Told Claude Code")
+            }
+
+            // A browser task waiting mid-step. Claimed before anything else
+            // that could mistake it for a dialog.
+            if await self.resolveWebConsent(id: requestId, optionId: optionId) {
+                // The task itself takes the card down once it sees the answer.
+                return .ok(reason: optionId == "yes" ? "Going ahead" : "Stopped")
             }
 
             // A report has nothing to answer. Claimed before the fallback
@@ -1953,6 +1982,71 @@ actor JevRuntime {
 
     /// Whether this id was a report, claiming it if so.
     func claimWebReport(id: String) -> Bool { webReports.remove(id) != nil }
+
+    /// Whether this id was a mid-task question. Records the answer if so.
+    func resolveWebConsent(id: String, optionId: String) -> Bool {
+        guard awaitedWebConsent.contains(id) else { return false }
+        webConsentAnswers[id] = optionId
+        return true
+    }
+
+    /// Ask, mid-task, before clicking something consequential.
+    ///
+    /// This is the one place a browser task stops and waits for a person.
+    /// It works because actors are reentrant: the task is suspended inside
+    /// `Task.sleep` below, which lets `/api/decide` land on this same actor
+    /// and write the answer. Take the sleep away and nothing could ever
+    /// answer this.
+    func askWebConsent(about label: String, picture: String?) async -> WebAgent.Consent {
+        let id = UUID().uuidString
+        let request = ApprovalRequest(
+            id: id,
+            kind: .spokenCommand,
+            title: WebSafety.approvalQuestion(for: label),
+            bodyText: "A browser task wants to click this. It will not do it unless you say so.",
+            options: [
+                ApprovalOption(id: "yes", label: "Click it", riskLevel: .high),
+                ApprovalOption(id: "no", label: "Stop", riskLevel: .low),
+            ],
+            originatingApp: ApplicationInfo(name: "Google Chrome",
+                                            bundleIdentifier: "com.google.Chrome"),
+            timestamp: Date(),
+            screenshotReference: picture)
+
+        // A suppressed duplicate would leave this waiting on a card that was
+        // never shown — the store drops a same-title card within two minutes,
+        // and clicking the same button twice in one task is exactly that.
+        guard await store.addDeduplicated(request) else {
+            JevLog.write("[jev] web consent not asked: an identical card is already up")
+            return .noAnswer
+        }
+        awaitedWebConsent.insert(id)
+        await broadcast(event: "approval", request: request)
+        JevLog.write("[jev] asking before clicking in the browser")
+
+        var answer = ""
+        for _ in 0..<Self.webConsentPolls {
+            if let given = webConsentAnswers.removeValue(forKey: id) { answer = given; break }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        // One more look after the final sleep rather than before it, or an
+        // answer written in that last half-second is dropped while the phone
+        // has already been told it was received.
+        if answer.isEmpty, let late = webConsentAnswers.removeValue(forKey: id) { answer = late }
+        awaitedWebConsent.remove(id)
+        webConsentAnswers.removeValue(forKey: id)
+
+        // Take the card down either way: unanswered, it is a question about a
+        // task that has already stopped.
+        _ = await store.resolve(id: id)
+        await broadcastResolved(id: id)
+
+        switch answer {
+        case "yes": JevLog.write("[jev] you allowed it"); return .yes
+        case "no": JevLog.write("[jev] you stopped it"); return .no
+        default: JevLog.write("[jev] nobody answered; the task stopped"); return .noAnswer
+        }
+    }
 
     /// Answer a parked command. Returns nil when the id is not one of ours.
     func resolveCommandApproval(id: String, optionId: String) async -> ExecutionResult? {
