@@ -581,7 +581,8 @@ enum Phrasebook {
         },
         Binding(phrases: ["go to", "browse", "browse to", "open the website", "navigate to",
                           "visit", "open site", "open website"]) { argument, context in
-            guard !argument.isEmpty, context.isBrowserLike || looksLikeURL(argument) else { return nil }
+            guard !argument.isEmpty, context.isBrowserLike || looksLikeURL(argument),
+                  namesADestination(argument) else { return nil }
             let destination = normalisedDestination(argument)
             // Hand the URL to the system rather than typing it. The keystroke
             // version opened a tab and then reliably failed to enter anything,
@@ -738,6 +739,36 @@ enum Phrasebook {
 
     private static func looksLikeURL(_ text: String) -> Bool {
         text.contains(".") || text.hasPrefix("http")
+    }
+
+    /// Whether "go to X" is naming a place rather than describing a task.
+    ///
+    /// `normalisedDestination` removes every space and appends ".com" to
+    /// anything without a dot, which is right for "go to facebook" and
+    /// catastrophic for a sentence: "go to YouTube and search hello" became
+    /// `youtubeandsearchhello.com`, a domain that does not exist, invented
+    /// from words the person said. It was claimed here because a browser was
+    /// frontmost, which is true of every browser task — so the binding took
+    /// the sentence before anything could recognise it as one.
+    ///
+    /// A destination is a host, or a name short enough to be one. A phrase
+    /// with a conjunction is two things, and the second one is never part of
+    /// an address.
+    static func namesADestination(_ raw: String) -> Bool {
+        let text = raw.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return false }
+
+        // Spelled or written out, this is an address and nothing else.
+        if text.contains(".") || text.hasPrefix("http") || text.contains(" dot ") { return true }
+
+        // "and", "then", "to search" — more than one thing is being asked for.
+        for joiner in [" and ", " then ", " & "] where text.contains(joiner) { return false }
+
+        // Otherwise a host is one or two words: "github", "stack overflow".
+        // Three is a sentence, and guessing a domain from a sentence is how
+        // this went wrong.
+        let words = text.split(separator: " ").filter { $0 != "to" && $0 != "the" && $0 != "my" }
+        return words.count <= 2
     }
 
     /// Speech writes "facebook.com" as "facebook dot com", and a bare word is

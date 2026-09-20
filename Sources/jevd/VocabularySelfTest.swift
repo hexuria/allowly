@@ -23,6 +23,39 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: "go to X" must be naming a place, not describing a task.
+        //
+        // `normalisedDestination` strips every space and appends ".com" to
+        // anything without a dot. That is right for "go to facebook" and
+        // catastrophic for a sentence: said aloud on a real phone, "go to
+        // YouTube and search hello" became `youtubeandsearchhello.com` — a
+        // domain invented out of the words. The binding claimed it because a
+        // browser was frontmost, which is true of every browser task.
+        func destination(_ name: String, _ text: String, _ expected: Bool) {
+            if Phrasebook.namesADestination(text) != expected {
+                failures.append("destination: \(name)")
+            }
+        }
+        destination("a spoken host is a destination", "youtube dot com", true)
+        destination("a written host is a destination", "github.com", true)
+        destination("a full URL is a destination", "https://example.com/x", true)
+        destination("one word is a destination", "facebook", true)
+        destination("two words are a destination", "stack overflow", true)
+        destination("a filler word does not count against it", "to the verge", true)
+
+        // The ones that were being turned into domains.
+        destination("a conjunction means two things were asked for",
+                    "youtube and search hello", false)
+        destination("…however short", "youtube and search", false)
+        destination("a sentence is not a host", "my account settings page", false)
+        destination("nor is a task", "youtube then play something", false)
+        destination("an empty argument is nothing", "", false)
+
+        // A host said aloud still wins over the word count: "docs dot google
+        // dot com slash spreadsheets" is long and is still an address.
+        destination("a long spoken address is still an address",
+                    "docs dot google dot com slash spreadsheets", true)
+
         // MARK: The phrasebook outranks the on-screen control gate.
         //
         // `Runtime.controlMatching` runs before `VoiceCommand.parse`, so
