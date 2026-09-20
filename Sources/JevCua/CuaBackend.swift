@@ -150,6 +150,66 @@ public struct CuaBackend: Sendable {
             height: Self.number(bounds?["height"] ?? bounds?["h"]) ?? 0)
     }
 
+    /// The window under a point: the innermost scope there is.
+    ///
+    /// The "active" app the driver reports is what macOS says has focus, and
+    /// under a tiling manager or with an overlay terminal that is routinely
+    /// not what the person is looking at — measured: the log said Waz while
+    /// the control list was Chrome's. Where the cursor rests is a statement
+    /// of intent no activation flag can contradict. Pure, so it can be
+    /// asserted: on screen, on this Space, containing the point, frontmost
+    /// (lowest z_index) among those. Untitled windows count — an overlay
+    /// terminal may have no title and is still the one under the pointer.
+    public static func windowUnder(point: CGPoint,
+                                   in windows: [[String: Any]]) -> [String: Any]? {
+        windows
+            .filter { window in
+                guard window["is_on_screen"] as? Bool != false,
+                      window["on_current_space"] as? Bool != false,
+                      let bounds = rect(window["bounds"]) else { return false }
+                return bounds.contains(point)
+            }
+            .min { (($0["z_index"] as? Int) ?? .max) < (($1["z_index"] as? Int) ?? .max) }
+    }
+
+    /// The app and controls of the window under the pointer, falling back to
+    /// the frontmost window when nothing is there. Same snapshot cache as
+    /// `frontmostContext`, so the three reads one command makes still cost
+    /// one look.
+    public func context(at point: CGPoint, limit: Int = 60) async
+        -> (app: String?, labels: [String], underPointer: Bool) {
+        if let fresh = await Self.cache.recent() { return (fresh.app, fresh.labels, await Self.cache.pointed()) }
+        var target: Target?
+        var pointed = false
+        if let windows = try? await driver.call("list_windows"),
+           let all = windows["windows"] as? [[String: Any]],
+           let under = Self.windowUnder(point: point, in: all),
+           let pid = under["pid"] as? Int, let windowID = under["window_id"] as? Int {
+            let apps = try? await driver.call("list_apps")
+            let name = ((apps?["apps"] as? [[String: Any]])?
+                .first { $0["pid"] as? Int == pid }?["name"] as? String) ?? "the app under the pointer"
+            let bounds = under["bounds"] as? [String: Any]
+            target = Target(pid: pid, windowID: windowID, appName: name,
+                            width: Self.number(bounds?["width"] ?? bounds?["w"]) ?? 0,
+                            height: Self.number(bounds?["height"] ?? bounds?["h"]) ?? 0)
+            pointed = true
+        }
+        if target == nil { target = try? await frontmostTarget() }
+        guard let target, let found = try? await elements(of: target) else { return (nil, [], false) }
+        var seen = Set<String>()
+        let actionable = found
+            .filter { Self.clickableRoles.contains($0.role) || Self.fieldRoles.contains($0.role) }
+        let labels = actionable
+            .compactMap { seen.insert($0.label).inserted ? $0.label : nil }
+            .prefix(limit).map { $0 }
+        let placed = actionable.compactMap { element -> (label: String, frame: CGRect)? in
+            guard let frame = element.frame else { return nil }
+            return (label: element.label, frame: frame)
+        }
+        await Self.cache.store((target.appName, labels), placed: placed, pointed: pointed)
+        return (target.appName, labels, pointed)
+    }
+
     /// Which window a command should act in.
     ///
     /// Pure, and separated out so the policy can be asserted offline. The
@@ -625,6 +685,7 @@ public struct CuaBackend: Sendable {
     private actor Snapshot {
         private var value: (app: String?, labels: [String])?
         private var frames: [(label: String, frame: CGRect)] = []
+        private var fromPointer = false
         private var takenAt = Date.distantPast
         private let lifetime: TimeInterval = 2.0
 
@@ -637,10 +698,13 @@ public struct CuaBackend: Sendable {
             Date().timeIntervalSince(takenAt) < lifetime ? frames : []
         }
 
+        func pointed() -> Bool { Date().timeIntervalSince(takenAt) < lifetime && fromPointer }
+
         func store(_ fresh: (app: String?, labels: [String]),
-                   placed: [(label: String, frame: CGRect)]) {
+                   placed: [(label: String, frame: CGRect)], pointed: Bool = false) {
             value = fresh
             frames = placed
+            fromPointer = pointed
             takenAt = Date()
         }
     }

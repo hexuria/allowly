@@ -709,6 +709,9 @@ actor JevRuntime {
             // One line per command saying what the world looked like. Without
             // it a stale-scope miss and a precedence miss are the same log.
             JevLog.write("[jev] scope: app=\(frontApp)"
+                + (scope.fromCursor && scope.activeApp != scope.app && !scope.activeApp.isEmpty
+                    ? " (macOS says \(scope.activeApp))" : "")
+                + " monitor=\(scope.monitorApps.prefix(4).joined(separator: "|"))"
                 + (scope.context.host.map { " page=\($0)" } ?? "")
                 + " controls=\(scope.visibleLabels.count)"
                 + (scope.underPointer.map { " pointer=“\($0.prefix(30))”" } ?? "")
