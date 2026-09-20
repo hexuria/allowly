@@ -121,6 +121,28 @@ final class KeychainManager {
         var value: T?
     }
 
+    /// `retrieve`, but it cannot wedge the caller.
+    ///
+    /// A Keychain read can put a prompt on screen, and a prompt nobody is
+    /// there to answer blocks forever. That is not hypothetical here: reading
+    /// twelve saved details at launch hung the daemon before it logged a
+    /// single line, on a binary whose Keychain access had not been granted.
+    /// Anything on a startup path or a command path uses this.
+    func retrieveWithTimeout(key: String) -> String? {
+        Self.keychainWithTimeout { [serviceName] in
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: serviceName,
+                kSecAttrAccount as String: key,
+                kSecReturnData as String: true,
+            ]
+            var result: AnyObject?
+            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+                  let data = result as? Data else { return nil }
+            return String(data: data, encoding: .utf8)
+        } ?? nil
+    }
+
     func delete(key: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -404,6 +426,24 @@ final class CommandExecutor {
             return .ok(reason: secret
                 ? "Asked your phone for the \(field) — it will not be spoken or logged"
                 : "Asked your phone for the \(field)")
+
+        case .fillDetail(let name):
+            // The value is fetched here, one line before it is typed, and is
+            // never put into a variable that outlives the call. Nothing above
+            // this point has ever held it.
+            let canonical = PersonalDetails.canonicalName(name)
+            guard PersonalDetails.field(named: name) != nil else {
+                return .failed(reason: "jev has no detail called \(canonical)")
+            }
+            guard let value = PersonalDetails.value(for: name), !value.isEmpty else {
+                return .failed(reason: "Nothing saved for \(canonical) — add it from the menu bar")
+            }
+            let typed = await Self.cua.type(value)
+            // Reports the NAME. The reason string reaches the phone, the log
+            // and the journal, so it must never carry what was typed.
+            return typed.status == .ok
+                ? .ok(reason: "Typed your \(canonical)")
+                : .failed(reason: "Could not type your \(canonical)")
 
         case .webTask(let goal, let startURL):
             return await executeWebTask(goal: goal, startURL: startURL)
@@ -1221,6 +1261,25 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // My details. Entered here rather than from the phone, deliberately:
+        // this is the one screen where a tax number is typed, and typing it
+        // at the Mac means it never crosses the network at all.
+        let detailsItem = NSMenuItem(title: "My details", action: nil, keyEquivalent: "")
+        let detailsMenu = NSMenu()
+        let savedNames = Set(PersonalDetails.saved().map(PersonalDetails.normalise))
+        for field in PersonalDetails.known {
+            let isSet = savedNames.contains(PersonalDetails.normalise(field.name))
+            let item = NSMenuItem(title: "\(field.name)\(isSet ? "  ✓" : "")",
+                                  action: #selector(editDetail(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = field.name
+            detailsMenu.addItem(item)
+        }
+        detailsItem.submenu = detailsMenu
+        menu.addItem(detailsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Voice language. The recogniser was pinned to en-US, which is the
         // wrong model for most people who speak English.
         let voiceItem = NSMenuItem(title: "Voice language", action: nil, keyEquivalent: "")
@@ -1360,6 +1419,49 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAutoApprove() {
         // Toggle auto-approve setting
+    }
+
+    @objc private func editDetail(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let field = PersonalDetails.field(named: name) else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Your \(field.name)"
+        alert.informativeText = field.isSensitive
+            ? "Typed here and kept in your Keychain. jev will type it when you ask for it by name — "
+              + "it is never spoken, transcribed, logged, or sent to a model."
+            : "Typed here and kept in your Keychain. jev will type it when you ask for it by name."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        if PersonalDetails.value(for: field.name)?.isEmpty == false {
+            alert.addButton(withTitle: "Forget it")
+        }
+
+        // A secure field for the sensitive ones: shoulder-surfing is the one
+        // threat left once it is no longer spoken.
+        let input: NSTextField = field.isSensitive
+            ? NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+            : NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        // Deliberately NOT pre-filled with the stored value. Opening a menu
+        // should not put a tax number on screen.
+        input.placeholderString = PersonalDetails.value(for: field.name)?.isEmpty == false
+            ? "Saved — type a new value to replace it" : field.name
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            do { try PersonalDetails.save(name: field.name, value: input.stringValue) }
+            catch {
+                // Never echoes what was typed.
+                JevLog.write("[jev] could not save \(field.name)")
+            }
+        case .alertThirdButtonReturn:
+            PersonalDetails.forget(name: field.name)
+        default:
+            break
+        }
+        input.stringValue = ""
     }
 
     @objc private func pickVoiceLocale(_ sender: NSMenuItem) {

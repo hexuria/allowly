@@ -30,7 +30,7 @@ enum JevIntent {
 
     private static let operations = [
         "open_app", "quit_app", "toggle_app", "click_control", "type_text", "scroll",
-        "known_capability", "open_url", "web_task", "unknown",
+        "known_capability", "open_url", "web_task", "fill_detail", "unknown",
     ]
 
     /// - Parameter controls: the labels of what is actually on screen, read by
@@ -50,7 +50,7 @@ enum JevIntent {
 
         var questions: [String: JevAPI.Question] = [
             "operation": .choice(
-                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is.",
+                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'open_url' means they only named a website to open and nothing more. 'web_task' means they want something DONE on a website — searching it, playing something, opening a result — not merely opening it. 'type_text' types the words themselves wherever the cursor already is. 'fill_detail' means typing one of the personal details already saved on this Mac — an email address, a phone number, a tax number — which the user refers to by name rather than saying the value.",
                 labels: operations
             ),
             "safe": .noul(
@@ -81,6 +81,17 @@ enum JevIntent {
             instructions: "If the user is asking for one of these known actions, which one? Choose 'none' if none of them fits.",
             labels: capabilities + ["none"]
         )
+
+        // Only what is actually saved. Offering a field nobody filled in gets
+        // a confident answer and nothing to type — and the list is names, so
+        // no value is ever part of a question.
+        let details = PersonalDetails.saved()
+        if !details.isEmpty {
+            questions["detail"] = .choice(
+                instructions: "If the user is asking to fill in one of their saved personal details, which one? Choose 'none' otherwise.",
+                labels: details + ["none"]
+            )
+        }
 
         questions["scroll_direction"] = .choice(
             instructions: "If the user is asking to scroll, in which direction? Choose 'none' if they are not.",
@@ -213,6 +224,19 @@ enum JevIntent {
                 command: .scroll(direction: direction.choice, amount: 5),
                 description: "Scroll \(direction.choice)",
                 confidence: min(operation.confidence, direction.confidence),
+                safety: safety
+            ))
+
+        case "fill_detail":
+            guard let detail = answers.choice("detail"), detail.choice != "none" else {
+                return .failure(IntentError("Jev could not tell which detail you meant"))
+            }
+            // The NAME travels; the value is fetched by the executor at the
+            // moment it types it.
+            return .success(Resolution(
+                command: .fillDetail(name: detail.choice),
+                description: "Type your \(PersonalDetails.canonicalName(detail.choice))",
+                confidence: min(operation.confidence, detail.confidence),
                 safety: safety
             ))
 
