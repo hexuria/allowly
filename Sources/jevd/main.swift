@@ -571,23 +571,34 @@ final class CommandExecutor {
     /// on a signed-in site is real. The tab is left open afterwards whatever
     /// happened, because it is the evidence.
     private func executeWebTask(goal: String, startURL: String?) async -> ExecutionResult {
-        let lookup = await ChromeDiscovery.lookup()
-        guard case .found(let endpoint) = lookup else {
-            // Names the next action rather than the fault. The four states need
-            // four different sentences — telling someone to restart Chrome when
-            // a consent prompt is waiting costs them every open tab.
-            return .failed(reason: ChromeDiscovery.explain(lookup))
-        }
-
         // The start is resolved here, from what was said and what is already
         // open — never by a model. BrowserContext reads the frontmost tab
         // through Apple Events, which jev already has consent for.
         let start: WebStart.Start = startURL.map { .url($0) }
             ?? WebStart.resolve(goal: goal, currentHost: BrowserContext.currentHost())
 
-        let session = WebSession(endpoint: endpoint)
+        // One connection, held across tasks. Chrome prompts for each new
+        // debugging connection, so opening one per task would ask every time.
+        let session: WebSession
         do {
-            try await session.open()
+            session = try await WebBrowser.shared.acquire()
+        } catch WebBrowser.Failure.unavailable(let why) {
+            // Names the next action rather than the fault. The states need
+            // different sentences — telling someone to restart Chrome when a
+            // consent prompt is waiting costs them every open tab.
+            return .failed(reason: why)
+        } catch WebBrowser.Failure.session(.cdp(.sessionRefused)) {
+            // The profile toggle can read "on" while Chrome still refuses the
+            // session: the per-browser opt-in and the per-connection grant are
+            // different things. Says the one thing that actually helps.
+            return .failed(reason: "Chrome would not open a debugging session. "
+                                 + "Look for an \"Allow remote debugging\" prompt in Chrome, "
+                                 + "or restart Chrome and try again.")
+        } catch {
+            return .failed(reason: "Could not reach Chrome")
+        }
+
+        do {
             switch start {
             case .url(let url):
                 try await session.navigate(to: url)
@@ -595,17 +606,14 @@ final class CommandExecutor {
                 // A tab of our own starts blank, so "the page you are on" means
                 // going to it rather than borrowing the tab itself.
                 guard let host = BrowserContext.currentHost() else {
-                    await session.closeTab()
                     return .failed(reason: WebStart.cannotStart)
                 }
                 try await session.navigate(to: "https://\(host)/")
             case .unknown:
-                await session.closeTab()
                 return .failed(reason: WebStart.cannotStart)
             }
 
             guard let apiKey = JevAPI.loadAPIKey() else {
-                await session.detach()
                 return .failed(reason: "No TypeSafe API key, so there is nothing to decide with")
             }
 
@@ -634,7 +642,6 @@ final class CommandExecutor {
 
             switch outcome {
             case .done(let steps, let url, let title):
-                await session.detach()
                 return .ok(reason: "Done in \(steps) step\(steps == 1 ? "" : "s") — "
                                  + "\(title.isEmpty ? url : title)")
 
@@ -644,7 +651,6 @@ final class CommandExecutor {
                 // where it stopped, so the picture goes with it. Informational
                 // — the task is already over, and nothing here resumes it.
                 let picture = await session.screenshot()
-                await session.detach()
                 _ = Self.onWebReport?("jev stopped in your browser",
                                       "\(why).\n\nOn: \(title)\nAfter \(steps) step"
                                       + "\(steps == 1 ? "" : "s"). The tab is still open.",
@@ -654,7 +660,6 @@ final class CommandExecutor {
 
             case .stuck(let steps, _, let title):
                 let picture = await session.screenshot()
-                await session.detach()
                 _ = Self.onWebReport?("jev could not finish that",
                                       "Nothing on the page moved it forward.\n\nOn: \(title)\n"
                                       + "After \(steps) step\(steps == 1 ? "" : "s"). "
@@ -665,7 +670,6 @@ final class CommandExecutor {
 
             case .exhausted(let steps, _, let title):
                 let picture = await session.screenshot()
-                await session.detach()
                 _ = Self.onWebReport?("jev ran out of steps",
                                       "Stopped after \(steps) steps without finishing.\n\n"
                                       + "On: \(title). The tab is still open.",
@@ -673,20 +677,10 @@ final class CommandExecutor {
                 return .failed(reason: "Gave up after \(steps) steps on \(title)")
 
             case .failed(let why, let steps):
-                await session.detach()
                 return .failed(reason: steps == 0 ? "Could not start: \(why)"
                                                   : "Stopped after \(steps) steps: \(why)")
             }
-        } catch WebSession.Failure.cdp(.sessionRefused) {
-            await session.detach()
-            // The profile toggle can read "on" while Chrome still refuses the
-            // session: the per-browser opt-in and the per-session grant are
-            // different things. Says the one thing that actually helps.
-            return .failed(reason: "Chrome would not open a debugging session. "
-                                 + "Look for an \"Allow remote debugging\" prompt in Chrome, "
-                                 + "or restart Chrome and try again.")
         } catch {
-            await session.detach()
             // Never echoes the page or the endpoint path: one is whatever they
             // were looking at, the other is a credential.
             return .failed(reason: "Could not read the page (\(error))")
@@ -1084,6 +1078,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // checks is the vendored table builder and the endpoint parser,
         // both of which decide what a model is allowed to see.
         testFailures.append(contentsOf: WebSelfTest.run())
+        testFailures.append(contentsOf: runBlocking { await WebSelfTest.runAsync() })
         JevLog.write("[jev] self-tests: \(testFailures.isEmpty ? "pass" : "FAIL \(testFailures)")")
         if !testFailures.isEmpty {
             printOnboardingWarning("Self-tests failed:")

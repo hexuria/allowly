@@ -7,6 +7,17 @@ import Foundation
 /// assertion the moment it stops being true.
 public enum WebSelfTest {
 
+    /// The checks that need an await. Kept separate so `run` stays callable
+    /// from anywhere, as the rest of jev's self-tests are.
+    public static func runAsync() async -> [String] {
+        var failures: [String] = []
+        func check(_ name: String, _ condition: Bool) {
+            if !condition { failures.append("web: \(name)") }
+        }
+        await checkBrowserHoldsNothingYet(check)
+        return failures
+    }
+
     public static func run() -> [String] {
         var failures: [String] = []
         func check(_ name: String, _ condition: Bool) {
@@ -484,6 +495,15 @@ public enum WebSelfTest {
         // silently sends nothing at all.
         check("the progress message serialises",
               (try? JSONSerialization.data(withJSONObject: step)) != nil)
+    }
+
+    private static func checkBrowserHoldsNothingYet(_ check: (String, Bool) -> Void) async {
+        // Nothing is connected until a web task asks for it. Chrome prompts
+        // for each new debugging connection, so a connection opened eagerly
+        // at launch would put a dialog in front of someone who never asked
+        // for one.
+        let fresh = WebBrowser()
+        check("a new browser holds no connection", await fresh.isConnected == false)
     }
 
     private static func checkScreenshotFormat(_ check: (String, Bool) -> Void) {

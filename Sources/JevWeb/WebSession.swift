@@ -42,6 +42,36 @@ public actor WebSession {
 
     // MARK: - Opening
 
+    /// Make sure there is a live connection and a tab to work in.
+    ///
+    /// Safe to call before every task, and cheap when nothing has changed:
+    /// the connection is verified with one browser-level call and the tab is
+    /// only recreated if it has gone. Reconnecting is the expensive part, and
+    /// not because of the round trip — Chrome asks the person to allow each
+    /// new debugging connection, so a connection opened per task means a
+    /// prompt per task, which is not a thing anyone would use.
+    public func ensureReady() async throws {
+        if sessionID != nil, await isConnectionAlive(), await isTabAlive() { return }
+
+        // Something is gone. Start clean rather than reason about which half.
+        await client.close()
+        sessionID = nil
+        targetID = nil
+        try await open()
+    }
+
+    /// Whether the socket still answers.
+    func isConnectionAlive() async -> Bool {
+        (try? await client.call("Browser.getVersion", timeout: 5)) != nil
+    }
+
+    /// Whether our tab is still there. The person can close it at any time —
+    /// it is a tab in their browser, in their tab strip.
+    func isTabAlive() async -> Bool {
+        guard targetID != nil, sessionID != nil else { return false }
+        return (try? await evaluateString("'ok'")) == "ok"
+    }
+
     /// Open the tab. Backgrounded, so it appears in the tab strip without
     /// stealing focus.
     public func open() async throws {
@@ -72,11 +102,10 @@ public actor WebSession {
         try await call("Emulation.setFocusEmulationEnabled", ["enabled": true])
     }
 
-    /// Leave the tab open.
+    /// Drop the connection.
     ///
-    /// Closing it would erase the evidence. When a task ends — finished,
-    /// refused or wrong — the person should be able to look at the page and see
-    /// what happened, so only the socket is dropped.
+    /// Not called between tasks any more — see `ensureReady`. Kept for
+    /// shutdown and for tests.
     public func detach() async {
         await client.close()
         targetID = nil
