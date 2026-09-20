@@ -820,11 +820,6 @@ enum Phrasebook {
         if !words.isDisjoint(with: taskVerbs) { return false }
         if words.contains("then") { return false }
 
-        // Something more specific already understands this sentence. There is
-        // a parser for "go to workspace 3", spoken digits and all, that never
-        // ran because this binding claimed the words first.
-        if VoiceCommand.workspaceId(in: text) != nil { return false }
-
         // An address, written or spoken. No judgement required.
         if text.contains(".") || text.hasPrefix("http") || text.contains(" dot ") { return true }
 

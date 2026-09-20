@@ -861,17 +861,21 @@ actor JevRuntime {
                     kind: command, heard: text, unparsed: choice.saidIsPrivate)
             }
 
+            // Every stage proposes; one comparison chooses, cursor outward.
+            // See Candidates. The vocabulary keeps its effect check below.
             let pressed = JevIntent.startsWithPressVerb(text)
-            if pressed, let onScreen = await self.controlMatching(text, in: scope) {
-                JevLog.write("[jev] on screen: “\(onScreen)” — you said press, so pressing it")
-                return journal("screen/press", "clickControl(\(onScreen))", await self.dispatch(
-                    VoiceCommand.Parsed(command: .clickControl(label: onScreen),
-                                        description: "Click “\(onScreen)”"),
-                    spokenAs: text),
-                    kind: .clickControl(label: onScreen))
+            let onScreen = await self.controlMatching(text, in: scope)
+            let chosen = Candidates.choose(text: text, scope: scope, pressed: pressed,
+                                           onScreen: onScreen,
+                                           parsed: VoiceCommand.parse(text, in: scope.context))
+            if let chosen, chosen.level != .global {
+                JevLog.write("[jev] \(chosen.route): \(chosen.parsed.description)")
+                return journal(chosen.route, chosen.parsed.description,
+                               await self.dispatch(chosen.parsed, spokenAs: text),
+                               kind: chosen.parsed.command)
             }
 
-            if let parsed = VoiceCommand.parse(text, in: scope.context) {
+            if let chosen, chosen.level == .global, case let parsed = chosen.parsed {
                 // Take a fingerprint of the screen either side, for the
                 // commands that cannot report their own effect. A keystroke
                 // says "delivered", never "it worked".
@@ -956,7 +960,10 @@ actor JevRuntime {
 
             // No verb and no shortcut: a bare word that happens to name a
             // button on screen is almost certainly that button.
-            if !pressed, let onScreen = await self.controlMatching(text, in: scope) {
+            // The window level, bubbled past global: a bare word that names a
+            // button and nothing else claimed. Same answer as above, not a
+            // second look.
+            if !pressed, let onScreen {
                 JevLog.write("[jev] on screen: “\(onScreen)” — nothing else claims that word")
                 return journal("screen/bare", "clickControl(\(onScreen))", await self.dispatch(
                     VoiceCommand.Parsed(command: .clickControl(label: onScreen),

@@ -287,6 +287,46 @@ enum VocabularySelfTest {
         if WorkspaceManager.spacesShortcut(for: "10") != nil { failures.append("spaces: 10 has no shortcut") }
         if WorkspaceManager.spacesShortcut(for: "three") != nil { failures.append("spaces: words are not spaces") }
 
+        // MARK: One comparison, cursor outward.
+        //
+        // Precedence used to be a line number. These pin the order that
+        // replaced it, including the one asymmetry kept from the history:
+        // without a press verb a global phrase beats a bare screen match,
+        // because letting the screen win stole "save", "back", "find".
+        func pointing(at label: String?, workspaces: [String] = ["1", "2", "3"]) -> Scope {
+            Scope(context: Phrasebook.neutral, app: "App", visibleLabels: [], fromCursor: true,
+                  activeApp: "App", monitorApps: [], underPointer: label, runningApps: [],
+                  installedApps: [], workspaces: workspaces, workspace: "1",
+                  workspaceManager: .aerospace, takenAt: Date())
+        }
+        let saveShortcut = VoiceCommand.Parsed(command: .pressKeys(spec: "cmd+s"), description: "Save")
+        func level(_ name: String, _ text: String, pressed: Bool, onScreen: String?,
+                   parsed: VoiceCommand.Parsed?, pointer: String? = nil,
+                   _ expected: Candidates.Level?) {
+            let got = Candidates.choose(text: text, scope: pointing(at: pointer), pressed: pressed,
+                                        onScreen: onScreen, parsed: parsed)?.level
+            if got != expected { failures.append("order: \(name) gave \(got.map { "\($0)" } ?? "nil")") }
+        }
+        level("what the cursor is on wins over everything",
+              "click free shipping zone", pressed: true, onScreen: "Free Shipping Zone",
+              parsed: saveShortcut, pointer: "Free Shipping Zone", .cursor)
+        level("a press verb makes the window inner", "click save",
+              pressed: true, onScreen: "Save", parsed: saveShortcut, .window)
+        level("no verb: the global phrase beats a bare screen match", "save",
+              pressed: false, onScreen: "Save", parsed: saveShortcut, .global)
+        level("a workspace beats a global phrase for the same words", "go to workspace 3",
+              pressed: false, onScreen: nil, parsed: saveShortcut, .workspace)
+        level("a workspace that does not exist is not proposed", "go to workspace 9",
+              pressed: false, onScreen: nil, parsed: nil, nil)
+        level("nothing claims nothing", "blorp", pressed: false, onScreen: nil, parsed: nil, nil)
+
+        if !Candidates.namesExactly("click the free shipping zone", "Free Shipping Zone", pressed: true) {
+            failures.append("order: a press verb and article are not stripped")
+        }
+        if Candidates.namesExactly("free shipping", "Free Shipping Zone", pressed: false) {
+            failures.append("order: a partial label matched the cursor")
+        }
+
         // MARK: Saying "click X" means clicking X.
         //
         // Measured on a real Amazon page: "click free shipping to philippines"
