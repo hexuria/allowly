@@ -26,21 +26,59 @@ struct GeminiTranscriber: Transcriber {
     static let defaultModel = "gemini-3.5-transcribe"
     static let host = URL(string: "https://generativelanguage.googleapis.com")!
 
+    /// Where a key set from the menu bar lives.
+    static let keychainKey = "gemini-api-key"
+
     /// The key, or nil when Gemini is simply not configured.
     ///
-    /// Same shape as every other credential jev holds: the environment first
-    /// for a terminal, then a file, because `open` inherits no shell and the
-    /// file is the path that works when Jev.app is launched normally.
+    /// Three sources, in the order that lets each one win where it should:
+    /// the environment for a terminal launch, then the Keychain, which is
+    /// where the menu bar puts it and the right place for a credential, then
+    /// a file for anyone who would rather manage it that way. `open` inherits
+    /// no shell, so the environment alone would never work for Jev.app.
+    ///
+    /// The Keychain read is timed out. A Keychain read can raise a prompt,
+    /// and a prompt nobody is there to answer blocks forever — that hung the
+    /// daemon once already tonight, on this same pattern.
     static func loadAPIKey() -> String? {
         if let fromEnv = ProcessInfo.processInfo.environment["GEMINI_API_KEY"]?
             .trimmingCharacters(in: .whitespacesAndNewlines), !fromEnv.isEmpty {
             return fromEnv
+        }
+        if let stored = KeychainManager.shared.retrieveWithTimeout(key: keychainKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !stored.isEmpty {
+            return stored
         }
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/jev/gemini-api-key")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Keep a key typed into the menu bar.
+    static func saveAPIKey(_ key: String) throws {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw TranscriptionError.recognitionFailed("Empty key") }
+        try KeychainManager.shared.store(key: keychainKey, value: trimmed)
+        // That one was set, never what it is.
+        JevLog.write("[jev] Gemini key saved; transcription will use \(model)")
+    }
+
+    static func clearAPIKey() {
+        try? KeychainManager.shared.store(key: keychainKey, value: "")
+        JevLog.write("[jev] Gemini key removed; using the built-in recogniser")
+    }
+
+    /// Where the key in use came from, for the menu. Never the key.
+    static func sourceDescription() -> String {
+        if ProcessInfo.processInfo.environment["GEMINI_API_KEY"]?.isEmpty == false {
+            return "from the environment"
+        }
+        if KeychainManager.shared.retrieveWithTimeout(key: keychainKey)?.isEmpty == false {
+            return "in your Keychain"
+        }
+        return "from a file"
     }
 
     static var model: String {

@@ -55,6 +55,26 @@ enum VocabularySelfTest {
             failures.append("gemini: the request body does not serialise")
         }
 
+        // Where the key lives. Namespaced so it cannot collide with a saved
+        // detail or the pairing token, and describable without being shown.
+        if GeminiTranscriber.keychainKey == PersonalDetails.storageKey(for: "email") {
+            failures.append("gemini: the key collides with a saved detail")
+        }
+        if GeminiTranscriber.sourceDescription().count > 40 {
+            failures.append("gemini: the source description is too long for a menu")
+        }
+        // A description of where the key is must never be able to contain the
+        // key. It is built from three fixed strings; this holds that.
+        for source in ["from the environment", "in your Keychain", "from a file"]
+        where source.contains(where: { $0.isNumber }) {
+            failures.append("gemini: a source description carries a value")
+        }
+        // Naming the model is how the menu says which recogniser is in use,
+        // so it must never be empty.
+        if GeminiTranscriber.model.isEmpty {
+            failures.append("gemini: no model named")
+        }
+
         // The phone calls everything ".webm" and sends MP4, so the container
         // is sniffed. An unknown type is refused rather than guessed: a wrong
         // guess is a failed request, and falling back is better than that.

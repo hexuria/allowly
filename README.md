@@ -58,15 +58,14 @@ recogniser's hint list, "press cmd 1" came back as *"prayers for man one"* and
 "create new tab" as *"create new dog"*. Locale helped. Biasing helped. Neither
 fixed it.
 
-So Gemini can do it instead. Give jev a key and it is used for every spoken
-command:
-
-```sh
-echo 'YOUR_KEY' > ~/"Library/Application Support/jev/gemini-api-key"
-```
-
-Or set `GEMINI_API_KEY` if you launch jevd from a terminal. The model defaults
-to `gemini-3.5-transcribe` and `JEV_GEMINI_MODEL` overrides it. The same
+So Gemini can do it instead. Open **Hearing you → Set Gemini key…** in the
+menu bar and paste a key from Google AI Studio. It goes into your Keychain,
+takes effect on the next thing you say, and the menu then tells you which
+recogniser is listening. `GEMINI_API_KEY` works too if you launch jevd from a
+terminal, as does a file at
+`~/Library/Application Support/jev/gemini-api-key`; the environment wins, then
+the Keychain, then the file. The model defaults to `gemini-3.5-transcribe` and
+`JEV_GEMINI_MODEL` overrides it. The same
 vocabulary Apple's recogniser is biased with — your app names, the command
 phrases, the keys — is sent along, so short unusual words stand the same
 chance.

@@ -1261,6 +1261,36 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Transcription. Which recogniser hears you, and the key that
+        // decides it. Here rather than in a file because a key you have to
+        // find a path for is a key nobody sets.
+        let heardBy = GeminiTranscriber.isConfigured
+            ? "Gemini (\(GeminiTranscriber.model))" : "Built-in (Apple)"
+        let hearingItem = NSMenuItem(title: "Hearing you: \(heardBy)", action: nil, keyEquivalent: "")
+        let hearingMenu = NSMenu()
+
+        let keyItem = NSMenuItem(
+            title: GeminiTranscriber.isConfigured ? "Replace Gemini key…" : "Set Gemini key…",
+            action: #selector(editGeminiKey), keyEquivalent: "")
+        keyItem.target = self
+        hearingMenu.addItem(keyItem)
+
+        if GeminiTranscriber.isConfigured {
+            let whereItem = NSMenuItem(
+                title: "Key \(GeminiTranscriber.sourceDescription())", action: nil, keyEquivalent: "")
+            whereItem.isEnabled = false
+            hearingMenu.addItem(whereItem)
+
+            let removeItem = NSMenuItem(title: "Remove Gemini key",
+                                        action: #selector(removeGeminiKey), keyEquivalent: "")
+            removeItem.target = self
+            hearingMenu.addItem(removeItem)
+        }
+        hearingItem.submenu = hearingMenu
+        menu.addItem(hearingItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // My details. Entered here rather than from the phone, deliberately:
         // this is the one screen where a tax number is typed, and typing it
         // at the Mac means it never crosses the network at all.
@@ -1419,6 +1449,39 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAutoApprove() {
         // Toggle auto-approve setting
+    }
+
+    @objc private func editGeminiKey() {
+        let alert = NSAlert()
+        alert.messageText = "Gemini transcription"
+        alert.informativeText = """
+            Paste a Google AI Studio key. jev will use \(GeminiTranscriber.model) for             everything you say, and fall back to the built-in recogniser whenever it             cannot answer.
+
+            The key is kept in your Keychain and never written to the log.
+            """
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        // Secure, and never pre-filled with what is stored: opening a menu
+        // should not put a key on screen.
+        let input = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        input.placeholderString = GeminiTranscriber.isConfigured
+            ? "Saved — paste a new key to replace it" : "AI Studio API key"
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            do { try GeminiTranscriber.saveAPIKey(input.stringValue) }
+            catch {
+                // Never echoes what was typed.
+                JevLog.write("[jev] could not save the Gemini key")
+            }
+        }
+        input.stringValue = ""
+    }
+
+    @objc private func removeGeminiKey() {
+        GeminiTranscriber.clearAPIKey()
     }
 
     @objc private func editDetail(_ sender: NSMenuItem) {
