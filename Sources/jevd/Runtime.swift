@@ -6,6 +6,7 @@ import JevCapture
 import JevDecide
 import JevServer
 import JevCua
+import JevWeb
 
 /// Owns the running system and connects the parts.
 ///
@@ -32,6 +33,11 @@ actor JevRuntime {
     /// Chrome — say which one, like number two → number two".
     private var pendingCommands: [String: (command: Command, said: String,
                                           saidIsPrivate: Bool)] = [:]
+    /// Cards that only report something. Tapping one must not be mistaken for
+    /// answering a dialog: the fallback in `onDecide` turns any unclaimed id
+    /// into a `pressButton`, which would go looking for a button on screen
+    /// that was never there.
+    private var webReports: Set<String> = []
     /// Permission requests from the Claude Code hook that are on the phone
     /// right now, waiting for a thumb, and the answers that have come back.
     ///
@@ -174,6 +180,17 @@ actor JevRuntime {
             // an empty socket list and reporting "Numbers on screen".
             guard let self, self.hasConnectedPhone else { return false }
             Task { await self.broadcastNumbers(on) }
+            return true
+        }
+        CommandExecutor.onWebProgress = { [weak self] step, operation, target, isRetry, finished in
+            guard let self else { return }
+            Task { await self.broadcastWebProgress(step: step, operation: operation,
+                                                   target: target, isRetry: isRetry,
+                                                   finished: finished) }
+        }
+        CommandExecutor.onWebReport = { [weak self] title, body, picture in
+            guard let self, self.hasConnectedPhone else { return false }
+            Task { await self.reportWebOutcome(title: title, body: body, picture: picture) }
             return true
         }
         let watcher = DialogWatcher { [weak self] request in
@@ -521,6 +538,14 @@ actor JevRuntime {
                 _ = await store.resolve(id: requestId)
                 await self.broadcastResolved(id: requestId)
                 return .ok(reason: "Told Claude Code")
+            }
+
+            // A report has nothing to answer. Claimed before the fallback
+            // below, which would otherwise try to press a button on screen.
+            if await self.claimWebReport(id: requestId) {
+                _ = await store.resolve(id: requestId)
+                await self.broadcastResolved(id: requestId)
+                return .ok(reason: "Dismissed")
             }
 
             // A parked voice command resolves here, not through the AX path.
@@ -1926,6 +1951,9 @@ actor JevRuntime {
         return .ok(reason: "Needs your approval — check the Approvals tab")
     }
 
+    /// Whether this id was a report, claiming it if so.
+    func claimWebReport(id: String) -> Bool { webReports.remove(id) != nil }
+
     /// Answer a parked command. Returns nil when the id is not one of ours.
     func resolveCommandApproval(id: String, optionId: String) async -> ExecutionResult? {
         // CLAIM it first, in one synchronous step.
@@ -2096,6 +2124,48 @@ actor JevRuntime {
               let json = String(data: data, encoding: .utf8) else { return }
         JevLog.write("[jev] sending a \(fields.count)-field form to the phone as a spec")
         for socket in pruneSockets() { await socket.send(text: json) }
+    }
+
+    /// Say what a web task is doing, step by step.
+    ///
+    /// A web task changes nothing on the Mac's screen — it runs in a tab
+    /// nobody is looking at — so without this the phone shows a spinner for a
+    /// minute and gives no reason to believe anything is happening. Retries
+    /// are marked rather than hidden: two lines with the same number are the
+    /// truth about what jev did.
+    func broadcastWebProgress(step: Int, operation: String, target: String,
+                              isRetry: Bool, finished: Bool) async {
+        let payload = WebAgent.progressMessage(step: step, operation: operation,
+                                               target: target, isRetry: isRetry,
+                                               finished: finished)
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        for socket in pruneSockets() { await socket.send(text: json) }
+    }
+
+    /// Put a card on the phone saying how a web task ended.
+    ///
+    /// Informational. The task is already over — command approval in jev is
+    /// park-and-return, so there is no caller left to resume — and a card
+    /// that looked like it could resume one would be a lie. Its single option
+    /// dismisses it, and `webReports` is what stops that tap being taken for
+    /// a button press in a dialog that does not exist.
+    func reportWebOutcome(title: String, body: String, picture: String?) async {
+        let id = UUID().uuidString
+        let request = ApprovalRequest(
+            id: id,
+            kind: .spokenCommand,
+            title: title,
+            bodyText: body,
+            options: [ApprovalOption(id: "ok", label: "OK", riskLevel: .low)],
+            originatingApp: ApplicationInfo(name: "Google Chrome",
+                                            bundleIdentifier: "com.google.Chrome"),
+            timestamp: Date(),
+            screenshotReference: picture)
+        guard await store.addDeduplicated(request) else { return }
+        webReports.insert(id)
+        await broadcast(event: "approval", request: request)
+        JevLog.write("[jev] web task ended: \(title)\(picture == nil ? "" : " (with a picture)")")
     }
 
     /// Ask the phone to open its text sheet, aimed at a named field.

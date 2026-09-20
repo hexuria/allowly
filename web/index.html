@@ -291,6 +291,10 @@
              from a dropped tap. role=status announces it without stealing
              focus, and it replaces the alert() calls, which block the whole
              page on a phone. -->
+        <div id="webProgress" class="web-progress" role="status" aria-live="polite" hidden>
+            <span class="web-progress-spinner" aria-hidden="true"></span>
+            <span id="webProgressText" class="web-progress-text"></span>
+        </div>
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
 

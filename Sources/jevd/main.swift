@@ -213,6 +213,13 @@ final class CommandExecutor {
     nonisolated(unsafe) static var onFormFound: (([FormScanner.Field]) -> Bool)?
     /// Ask the phone to draw numbers over its picture of the screen.
     nonisolated(unsafe) static var onNumbersRequested: ((Bool) -> Bool)?
+    /// Set by the runtime: tell the phone what a web task is doing, step by
+    /// step. A web task can run for a minute with nothing on screen changing
+    /// on the Mac, so without this it looks like nothing is happening.
+    nonisolated(unsafe) static var onWebProgress: ((Int, String, String, Bool, Bool) -> Void)?
+    /// Set by the runtime: put a card on the phone saying how a web task
+    /// ended, with a picture of where it stopped.
+    nonisolated(unsafe) static var onWebReport: ((String, String, String?) -> Bool)?
 
     /// Looking and pointing now go through Cua Driver, which holds its own
     /// Accessibility grant and refuses rather than guesses. See JevCua.
@@ -611,27 +618,62 @@ final class CommandExecutor {
                 JevLog.write("[jev] web step \(progress.step)"
                            + "\(progress.isRetry ? " (retry)" : ""): "
                            + "\(progress.operation) \(label.prefix(40))")
+                // A web task changes nothing on the Mac's screen, so without
+                // this the phone shows a spinner and no reason to trust it.
+                Self.onWebProgress?(progress.step, progress.operation,
+                                    String(label.prefix(60)), progress.isRetry, false)
             }
             let outcome = await agent.run(goal: goal)
             // The tab is left open whatever happened: it is the evidence, and
-            // the person should be able to look at what jev did.
-            await session.detach()
+            // the person should be able to look at what jev did. Only the
+            // socket is dropped — and only after any picture has been taken,
+            // since taking one needs it.
+
+            // Whatever happened, take the progress banner down.
+            Self.onWebProgress?(0, "", "", false, true)
 
             switch outcome {
             case .done(let steps, let url, let title):
+                await session.detach()
                 return .ok(reason: "Done in \(steps) step\(steps == 1 ? "" : "s") — "
                                  + "\(title.isEmpty ? url : title)")
+
             case .blocked(let why, let steps, _, let title):
-                // Not an error and not a success. Reported as a failure so it
-                // never reads as "done", with the tab left open to look at.
+                // A refusal is the one outcome that has to be seen rather than
+                // read out: the person needs to know what jev would not do and
+                // where it stopped, so the picture goes with it. Informational
+                // — the task is already over, and nothing here resumes it.
+                let picture = await session.screenshot()
+                await session.detach()
+                _ = Self.onWebReport?("jev stopped in your browser",
+                                      "\(why).\n\nOn: \(title)\nAfter \(steps) step"
+                                      + "\(steps == 1 ? "" : "s"). The tab is still open.",
+                                      picture)
                 return .failed(reason: "Stopped after \(steps) step\(steps == 1 ? "" : "s") "
                                      + "on \(title): \(why)")
+
             case .stuck(let steps, _, let title):
+                let picture = await session.screenshot()
+                await session.detach()
+                _ = Self.onWebReport?("jev could not finish that",
+                                      "Nothing on the page moved it forward.\n\nOn: \(title)\n"
+                                      + "After \(steps) step\(steps == 1 ? "" : "s"). "
+                                      + "The tab is still open.",
+                                      picture)
                 return .failed(reason: "Could not find a way forward on \(title)"
                                      + (steps == 0 ? "" : " after \(steps) steps"))
+
             case .exhausted(let steps, _, let title):
+                let picture = await session.screenshot()
+                await session.detach()
+                _ = Self.onWebReport?("jev ran out of steps",
+                                      "Stopped after \(steps) steps without finishing.\n\n"
+                                      + "On: \(title). The tab is still open.",
+                                      picture)
                 return .failed(reason: "Gave up after \(steps) steps on \(title)")
+
             case .failed(let why, let steps):
+                await session.detach()
                 return .failed(reason: steps == 0 ? "Could not start: \(why)"
                                                   : "Stopped after \(steps) steps: \(why)")
             }
