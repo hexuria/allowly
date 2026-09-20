@@ -41,6 +41,46 @@ public final class DialogRegistry: @unchecked Sendable {
         return entries[id]?.element
     }
 
+    /// Is this dialog still really on screen?
+    ///
+    /// `element(for:)` only says we once knew about it. A sheet the human
+    /// dismissed at the Mac leaves its entry sitting here with a dead
+    /// AXUIElement, and the card stays on the phone forever with nothing
+    /// behind it — tapping Allow presses a dialog that is not there. The only
+    /// way to know is to ask the element something and see if it answers.
+    public func isLive(id: String) -> Bool {
+        guard let element = element(for: id) else { return false }
+        var value: AnyObject?
+        let status = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
+        switch status {
+        case .success:
+            return true
+        case .invalidUIElement:
+            // The one answer that means the element is gone. Everything else
+            // is the API being unhelpful.
+            return false
+        default:
+            // `cannotComplete` in particular is a TIMEOUT, not a death
+            // certificate: an app busy on its main thread — spinner,
+            // beachball, a long save — stops answering AX for a second or
+            // two while its sheet is plainly still on screen. Treating that
+            // as dead let the 2-second sweep withdraw a live card, and
+            // because the sweep also discards the registry entry, the dialog
+            // could never be answered from the phone again. Losing a real
+            // dialog is far worse than leaving a stale card up, so anything
+            // short of `invalidUIElement` leaves the card alone.
+            return true
+        }
+    }
+
+    /// Every approval id we are still holding a dialog for.
+    public func trackedIDs() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        expireLocked()
+        return Array(entries.keys)
+    }
+
     /// Drop an entry once its approval has been answered.
     public func discard(id: String) {
         lock.lock()

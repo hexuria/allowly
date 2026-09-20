@@ -1,11 +1,12 @@
 import Foundation
-import AppKit
-import ApplicationServices
 import JevCore
-import JevAX
 import JevDecide
 
-/// Finds the fields on screen so they can be filled from the phone.
+/// Turns the fields on screen into something the phone can show as a form.
+///
+/// The finding itself now belongs to Cua Driver — see `CuaBackend.formFields`.
+/// What is left here is the part that is genuinely ours: giving a name to the
+/// fields a form could not be bothered to label.
 ///
 /// Dictating a password is not an option — it would be spoken aloud, sent to a
 /// transcription service and written to a log. Typing it blind on the phone is
@@ -15,102 +16,30 @@ import JevDecide
 enum FormScanner {
 
     struct Field: Codable, Sendable {
+        /// What the phone shows you. May be a name Jev invented for a field
+        /// the form left unlabelled.
         let label: String
         let secret: Bool
         /// The accessibility role, for the phone's keyboard hints.
         let kind: String
-    }
+        /// What the Mac actually calls it — the label the accessibility tree
+        /// reports, before any renaming.
+        ///
+        /// Without this, naming an unlabelled field broke the very thing the
+        /// naming exists for: the phone sent back "Card Number", the Mac
+        /// looked for a control called "Card Number", the real label was
+        /// still "Field 3", and the fill failed with "Nothing called Card
+        /// Number" — on exactly the forms the feature was written to rescue.
+        let realLabel: String
 
-    private static let fieldRoles = [
-        "AXTextField", "AXSecureTextField", "AXTextArea", "AXComboBox",
-    ]
-
-    /// Every fillable field in the frontmost window, in reading order.
-    static func frontmostFields(limit: Int = 12) -> [Field] {
-        guard AccessibilityPermission.isTrusted(),
-              let app = NSWorkspace.shared.frontmostApplication else { return [] }
-
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        // Chromium and Electron expose nothing until asked.
-        AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, true as CFTypeRef)
-        AXUIElementSetMessagingTimeout(axApp, 2.0)
-
-        var windowValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
-              CFGetTypeID(windowValue!) == AXUIElementGetTypeID() else { return [] }
-
-        var found: [(field: Field, frame: CGRect)] = []
-        walk(windowValue as! AXUIElement, depth: 0, into: &found, limit: limit)
-
-        // Reading order: down the page, then across.
-        return found
-            .sorted { lhs, rhs in
-                abs(lhs.frame.minY - rhs.frame.minY) > 8
-                    ? lhs.frame.minY < rhs.frame.minY
-                    : lhs.frame.minX < rhs.frame.minX
-            }
-            .map(\.field)
-    }
-
-    private static func walk(_ element: AXUIElement, depth: Int,
-                             into out: inout [(field: Field, frame: CGRect)], limit: Int) {
-        guard depth < 16, out.count < limit else { return }
-
-        let role = string(element, kAXRoleAttribute) ?? ""
-        if fieldRoles.contains(role) {
-            // A form field is usually empty, so its *value* is no help. The
-            // placeholder is what a person reads, which is why it comes first.
-            let label = string(element, kAXPlaceholderValueAttribute)
-                ?? string(element, kAXTitleAttribute)
-                ?? string(element, kAXDescriptionAttribute)
-                ?? labelFromSibling(of: element)
-                ?? (role == "AXSecureTextField" ? "Password" : "Field \(out.count + 1)")
-
-            // A secure field is definitive; a plain field named "password" is
-            // a site that built its own, and the value is just as sensitive.
-            let secret = role == "AXSecureTextField"
-                || label.lowercased().contains("password")
-                || label.lowercased().contains("passcode")
-
-            out.append((Field(label: label, secret: secret, kind: role), frame(of: element)))
+        init(label: String, secret: Bool, kind: String, realLabel: String? = nil) {
+            self.label = label
+            self.secret = secret
+            self.kind = kind
+            self.realLabel = realLabel ?? label
         }
-
-        var childrenValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-              let children = childrenValue as? [AXUIElement] else { return }
-        for child in children { walk(child, depth: depth + 1, into: &out, limit: limit) }
     }
 
-    /// Many forms put the label in a separate static text next to the box.
-    /// AXTitleUIElement points at it when the app bothered to link them.
-    private static func labelFromSibling(of element: AXUIElement) -> String? {
-        var linked: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXTitleUIElementAttribute as CFString, &linked) == .success,
-              CFGetTypeID(linked!) == AXUIElementGetTypeID() else { return nil }
-        let label = linked as! AXUIElement
-        return string(label, kAXValueAttribute) ?? string(label, kAXTitleAttribute)
-    }
-
-    private static func string(_ element: AXUIElement, _ attribute: String) -> String? {
-        var value: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
-              let text = value as? String else { return nil }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func frame(of element: AXUIElement) -> CGRect {
-        var positionValue: AnyObject?
-        var sizeValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success
-        else { return .zero }
-        var point = CGPoint.zero
-        var size = CGSize.zero
-        AXValueGetValue(positionValue as! AXValue, .cgPoint, &point)
-        AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
-        return CGRect(origin: point, size: size)
-    }
 
     /// Name the fields a form left unlabelled.
     ///
@@ -119,14 +48,24 @@ enum FormScanner {
     /// visible text and say which is which — a closed choice over field
     /// kinds, which is what it is good at. Only called when something is
     /// genuinely unnamed, so a well-built form costs nothing.
-    static func nameUnlabelled(_ fields: [Field], apiKey: String?) async -> [Field] {
-        let unnamed = fields.enumerated().filter { $0.element.label.hasPrefix("Field ") }
+    /// Names that mean "do not let this be dictated", whatever the form
+    /// chose to call the box.
+    static func sensitive(_ choice: String) -> Bool {
+        ["password", "card number", "code", "pin", "security code"].contains(choice.lowercased())
+    }
+
+    /// - Parameter nearby: visible labels from Cua Driver, used as context.
+    static func nameUnlabelled(_ fields: [Field], nearby: [String], apiKey: String?) async -> [Field] {
+        // Both spellings jev invents for an unlabelled box. Filtering on
+        // "Field " alone meant a box that had to fall back to the other
+        // name was quietly excluded from the naming pass.
+        let unnamed = fields.enumerated().filter {
+            $0.element.label.hasPrefix("Field ") || $0.element.label.hasPrefix("Unnamed box ")
+        }
         guard !unnamed.isEmpty, let apiKey else { return fields }
 
         let kinds = ["email", "username", "password", "search", "full name", "phone",
                      "address", "card number", "code", "message", "other"]
-        let nearby = JevIntent.frontmostControls(limit: 40).map(\.label)
-
         var questions: [String: JevAPI.Question] = [:]
         for (index, _) in unnamed {
             questions["field_\(index)"] = .choice(
@@ -145,8 +84,14 @@ enum FormScanner {
             guard let answer = answers.choice("field_\(index)"),
                   answer.confidence >= 0.5, answer.choice != "other" else { return field }
             return Field(label: answer.choice.capitalized,
-                         secret: field.secret || answer.choice == "password",
-                         kind: field.kind)
+                         // A field Jev names "card number", "code" or "pin"
+                         // is as secret as one it names "password".
+                         secret: field.secret || Self.sensitive(answer.choice),
+                         kind: field.kind,
+                         // Keep the ADDRESS, not the caption. Renaming
+                         // "Field 3" to "Card Number" must not change where
+                         // the value goes.
+                         realLabel: field.realLabel)
         }
     }
 }

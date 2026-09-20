@@ -12,9 +12,32 @@ public actor ApprovalStore: Sendable {
     /// Repeating a command that is already queued should not produce a second
     /// card to dismiss; saying something three times because nothing appeared
     /// to happen is normal, and the queue should absorb that.
+    /// The body counts too, not just the heading.
+    ///
+    /// An untitled sheet takes its app's name as a heading, and a great
+    /// many sheets are untitled — so keying on the heading alone made every
+    /// button-only sheet from one app identical to every other. Chrome's
+    /// "Close Tab and Delete Group?" would have swallowed a "Leave site?"
+    /// raised thirty seconds later, and the second dialog would never have
+    /// reached the phone at all while its app sat waiting on it. Two
+    /// dialogs are the same dialog only if they say the same thing AND
+    /// offer the same answers.
     public func addDeduplicated(_ request: ApprovalRequest) -> Bool {
+        func identity(_ r: ApprovalRequest) -> String {
+            // The body is part of the identity for a DIALOG, whose title is
+            // often just its app's name — but not for a spoken command,
+            // whose body is the transcript. Saying "skip", then "click
+            // skip", then "press the skip button" builds the same command
+            // with the same title and three different bodies, and this
+            // rule turned one card into three, each of which would click
+            // Skip again. That is the exact case the method exists to
+            // absorb.
+            let body = r.kind == .spokenCommand ? "" : r.bodyText
+            return "\(r.title)\u{1F}\(body)\u{1F}\(r.options.map(\.id).joined(separator: "\u{1E}"))"
+        }
+        let wanted = identity(request)
         let duplicate = pendingRequests.values.contains { existing in
-            existing.title == request.title
+            identity(existing) == wanted
                 && existing.originatingApp.bundleIdentifier == request.originatingApp.bundleIdentifier
                 && request.timestamp.timeIntervalSince(existing.timestamp) < 120
         }
@@ -28,47 +51,72 @@ public actor ApprovalStore: Sendable {
     }
 
     /// Retrieve a pending request by id.
+    ///
+    /// Expired means expired, even before the sweep has got to it. Without
+    /// this, a card that aged out minutes ago was still answerable for as
+    /// long as nothing reaped it — and nothing reaps it at all when
+    /// Accessibility is not granted, because the sweep never starts.
     public func get(id: String) -> ApprovalRequest? {
-        return pendingRequests[id]
+        guard let request = pendingRequests[id],
+              Date().timeIntervalSince(request.timestamp) <= expirationInterval else { return nil }
+        return request
     }
 
     /// Resolve a request by id and remove it from pending.
+    ///
+    /// Removing an expired one is fine — that is what resolving means —
+    /// but it must not be HANDED BACK as if it were still answerable.
+    /// `executeAnswerAgentPrompt` treats a non-nil return as permission
+    /// to act, so an agent prompt that aged out was still answerable
+    /// while `get(id:)` had already stopped acknowledging it.
     public func resolve(id: String) -> ApprovalRequest? {
-        return pendingRequests.removeValue(forKey: id)
+        guard let request = pendingRequests.removeValue(forKey: id) else { return nil }
+        return Date().timeIntervalSince(request.timestamp) <= expirationInterval ? request : nil
     }
 
-    /// Get all pending requests, removing expired ones.
+    /// Requests that have just aged out — removed, and handed back so
+    /// somebody can say so.
+    ///
+    /// `getAllPending` drops them silently, which left the phone showing a
+    /// card the Mac had already forgotten: tapping it answered "No pending
+    /// approval with that id", and since nothing ever broadcast `resolved`
+    /// for it, the card stayed on screen until the app was reopened. A card
+    /// that cannot be answered and cannot be dismissed is the worst state
+    /// this app has.
+    public func reapExpired() -> [ApprovalRequest] {
+        let now = Date()
+        var reaped: [ApprovalRequest] = []
+        for (id, request) in pendingRequests
+        where now.timeIntervalSince(request.timestamp) > expirationInterval {
+            pendingRequests.removeValue(forKey: id)
+            reaped.append(request)
+        }
+        return reaped
+    }
+
+    /// Get all pending requests. Expired ones are hidden but NOT removed.
+    ///
+    /// Removal belongs to `reapExpired` alone, because removal is the thing
+    /// somebody has to announce. While this also reaped, whichever of the
+    /// two ran first won — and `/api/pending`, which the phone now calls
+    /// every time you come back to the app, could quietly delete a request
+    /// before the sweep ever saw it. No `resolved` was broadcast, the AX
+    /// handle stayed in the registry for its full 15 minutes, and a second
+    /// paired device kept a card it could never answer. That is the exact
+    /// state `reapExpired` was written to eliminate.
     public func getAllPending() -> [ApprovalRequest] {
         let now = Date()
-        var active: [ApprovalRequest] = []
-
-        for (id, request) in pendingRequests {
-            let age = now.timeIntervalSince(request.timestamp)
-            if age > expirationInterval {
-                pendingRequests.removeValue(forKey: id)
-            } else {
-                active.append(request)
-            }
+        return pendingRequests.values.filter {
+            now.timeIntervalSince($0.timestamp) <= expirationInterval
         }
-
-        return active
     }
 
-    /// Count of pending requests.
+    /// Count of pending requests. Also non-mutating, for the same reason.
     public func count() -> Int {
         let now = Date()
-        var count = 0
-
-        for (id, request) in pendingRequests {
-            let age = now.timeIntervalSince(request.timestamp)
-            if age > expirationInterval {
-                pendingRequests.removeValue(forKey: id)
-            } else {
-                count += 1
-            }
+        return pendingRequests.values.count {
+            now.timeIntervalSince($0.timestamp) <= expirationInterval
         }
-
-        return count
     }
 
     /// Clear all pending requests.

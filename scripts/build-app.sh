@@ -9,6 +9,20 @@ MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 RELEASE_BINARY="${PROJECT_DIR}/.build/release/jevd"
 
+# Local settings, never committed. See .env.example for the shape.
+#
+# This exists because signing needs an Apple Team ID, and a team id is
+# not a secret — it is in every binary you sign, and `codesign -dv` reads
+# it off anything you have shipped — but it does tie a public repo to a
+# named Apple Developer account. Keeping it in an untracked file is about
+# attribution, not security.
+if [ -f "${PROJECT_DIR}/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "${PROJECT_DIR}/.env"
+    set +a
+fi
+
 echo "Building Jev.app..."
 
 # Compile first. This script used to only copy whatever binary happened to be
@@ -78,8 +92,60 @@ echo "Signing Jev.app..."
 # System Settings. A Developer ID signature gives a fixed designated
 # requirement (identifier + team), so the grant survives rebuilds.
 # Override with JEV_SIGN_IDENTITY=... if you want a different certificate.
+#
+# The TEAM is pinned, because `head -1` is not a choice. On a machine with
+# two Developer ID certificates it silently picks whichever the keychain
+# lists first; the designated requirement then changes, and the
+# Accessibility and Screen Recording grants die while still showing as
+# enabled in System Settings -- the exact failure the paragraph above
+# describes. docs/SCREEN-MODEL.md explains the constraint.
+#
+# `APPLE_TEAM_ID` is the name the rest of the Apple world uses — notarytool,
+# CI examples and most .env files — so one value can serve every tool that
+# needs it. `JEV_TEAM_ID` still works, because the other knobs in this
+# project are namespaced that way and somebody may have it set.
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-${JEV_TEAM_ID:-}}"
 SIGN_IDENTITY="${JEV_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
-  | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)"/\1/')}"
+  | grep "Developer ID Application" | grep "(${APPLE_TEAM_ID})" | head -1 | sed -E 's/.*"(.*)"/\1/')}"
+
+# Stop, rather than quietly ad-hoc signing a machine that HAS a real
+# certificate. Falling through here was worse than `head -1`: a developer
+# holding a Developer ID for another team used to get a stable signature
+# and would now get an ad-hoc one, losing the Accessibility and Screen
+# Recording grants on every single rebuild — the exact failure the pin
+# was added to prevent, inflicted on the people it was meant to protect.
+if [ -z "${SIGN_IDENTITY}" ]; then
+  OTHERS=$(security find-identity -v -p codesigning 2>/dev/null | grep -c "Developer ID Application" || true)
+  if [ -z "${APPLE_TEAM_ID}" ] && [ "${OTHERS}" -gt 0 ]; then
+    echo ""
+    echo "No Apple Team ID is set, and this Mac has ${OTHERS} Developer ID certificate(s)."
+    echo ""
+    echo "Which one signs the app decides whether its Accessibility and Screen"
+    echo "Recording grants survive a rebuild, so this script will not choose for you."
+    echo ""
+    echo "Put yours in .env at the root of the checkout (it is gitignored):"
+    echo "  cp .env.example .env    # then set APPLE_TEAM_ID"
+    echo ""
+    echo "Your Developer ID certificates:"
+    security find-identity -v -p codesigning | grep "Developer ID Application" || true
+    exit 1
+  fi
+  if [ "${OTHERS}" -gt 0 ]; then
+    echo ""
+    echo "This Mac has ${OTHERS} Developer ID certificate(s), none for team ${APPLE_TEAM_ID}."
+    echo ""
+    echo "Signing with a different team changes the app's designated requirement,"
+    echo "which silently invalidates its Accessibility and Screen Recording grants"
+    echo "— they keep showing as enabled in System Settings and stop working."
+    echo ""
+    echo "Pick deliberately, then build again:"
+    echo "  APPLE_TEAM_ID=YOURTEAMID make app   # sign as your own team"
+    echo "  JEV_SIGN_IDENTITY=\"Developer ID Application: ...\" make app"
+    echo ""
+    security find-identity -v -p codesigning | grep "Developer ID Application" || true
+    exit 1
+  fi
+fi
 
 if [ -n "${SIGN_IDENTITY}" ]; then
   echo "Signing with: ${SIGN_IDENTITY}"
@@ -99,6 +165,9 @@ echo "IMPORTANT: Before running Jev, grant permissions in System Settings:"
 echo "  • Accessibility → Jev (required to interact with dialogs)"
 echo "  • Screen Recording → Jev (required to capture screenshots)"
 echo ""
-echo "⚠️  If you re-sign Jev.app with a different identity, those grants"
-echo "   will be invalidated and must be re-granted."
+echo "⚠️  Screen Recording consent is bound to this exact binary, so macOS"
+echo "   may ask for it again after ANY rebuild — not only after a change of"
+echo "   signing identity, which is the case that wipes the grant outright."
+echo "   macOS also re-asks on its own schedule for apps that capture the"
+echo "   screen continuously, which Jev does. Neither is a bug."
 echo "============================================"

@@ -31,7 +31,7 @@ Edit `~/.claude/settings.json` and add the following under the `"hooks"` key:
 
 ### 3. Pair your phone and start the jev daemon
 
-The hook requires the jev daemon (`jevd`) to be running on your Mac with an active pairing token. The pairing process stores the token in the macOS Keychain under:
+The hook requires the jev daemon (`jevd`) to be running on your Mac with an active pairing token. The daemon writes the token to a 0600 file at `~/Library/Application Support/jev/pairing-token`, and the hook reads that first, falling back to the Keychain:
 
 - **Service:** `com.jev.agent`
 - **Account:** `daemon-pairing-token`
@@ -43,15 +43,15 @@ See [SETUP.md](../docs/SETUP.md) for the pairing workflow.
 When Claude Code needs a permission decision (e.g., to run a bash command or read a file):
 
 1. **Hook receives request** — Claude Code invokes the hook with a JSON permission request on stdin.
-2. **Token lookup** — The hook retrieves the pairing token from the macOS Keychain.
-3. **POST to daemon** — The hook sends the permission request to `http://127.0.0.1:8080/api/permission` with the token as an `Authorization` header.
+2. **Token lookup** — The hook reads the pairing token from `~/Library/Application Support/jev/pairing-token`, and falls back to the Keychain if that file is unreadable.
+3. **POST to daemon** — The hook sends the permission request to `http://127.0.0.1:8787/api/permission` with the token as an `Authorization` header.
 4. **Wait for decision** — The daemon evaluates the request against the jev Policy and returns a decision (allow, deny, or ask human).
 5. **Return response** — The hook emits the decision back to Claude Code.
 6. **Claude Code acts** — If denied, Claude Code will fail the operation. If allowed, it proceeds. If "ask human," Claude Code shows an interactive prompt.
 
 ## Behavior When jev Daemon Is Not Running
 
-If the daemon is not running or does not respond within 5 seconds:
+If the daemon is not running or does not respond within 6 seconds:
 
 - The hook **emits a deny response** with reason `"jev daemon not available; falling back to interactive prompt"`.
 - Claude Code treats this as a **deny decision** and will **show an interactive prompt** instead of silently allowing or blocking.
@@ -59,7 +59,7 @@ If the daemon is not running or does not respond within 5 seconds:
 
 ## Pairing Token Storage
 
-The daemon pairing token is stored in the macOS Keychain for security:
+The daemon pairing token is stored in a 0600 file, with the Keychain as a fallback:
 
 ```bash
 # To view the token (returns the pairing token)
@@ -76,9 +76,9 @@ security delete-generic-password -s com.jev.agent -a daemon-pairing-token
 
 ### Hook shows "jev daemon not available" but daemon is running
 
-- **Check the daemon is listening on loopback:** Run `lsof -i :8080` and verify the daemon is bound to `127.0.0.1`.
+- **Check the daemon is listening on loopback:** Run `lsof -i :8787` and verify the daemon is bound to `127.0.0.1`.
 - **Check the pairing token:** Run the command above to verify the token is in the Keychain. If empty, re-run the pairing flow.
-- **Check the timeout:** The hook waits 5 seconds. If the daemon is slow, increase `TIMEOUT_SECONDS` in the script.
+- **Check the timeout:** The hook waits 6 seconds. If the daemon is slow, increase `TIMEOUT_SECONDS` in the script.
 
 ### "No pairing token found in Keychain"
 
@@ -96,6 +96,33 @@ security delete-generic-password -s com.jev.agent -a daemon-pairing-token
 - The pairing token has expired or been revoked.
 - Re-pair the phone (see [SETUP.md](../docs/SETUP.md)).
 - Verify the daemon is using the same token by checking the Keychain.
+
+## Where the token comes from
+
+The daemon writes the pairing token to a `0600` file:
+
+```
+~/Library/Application Support/jev/pairing-token
+```
+
+**not** the Keychain — see the comment on `KeychainManager.loadOrCreatePairingToken`
+in `Sources/jevd/main.swift`, which explains why. The hook reads the file first and
+falls back to the Keychain, so it keeps working if the token ever moves back.
+
+This was one of three reasons the hook had never worked: it read only the Keychain,
+found nothing, and fell back to the interactive prompt every time. The other two were
+the missing `/api/permission` route and a port mismatch (the hook posted to 8080; the
+daemon listens on 8787).
+
+## What the daemon does with a request
+
+1. **Policy first.** If you have set Claude Code to *always* or *never*, it answers in
+   about 15ms and no card is raised.
+2. Otherwise a **card goes to your phone** — Allow once / Always allow Claude Code / Deny.
+3. The route **waits up to 4 seconds** for you, which leaves the hook's 6-second curl a
+   margin to write its own answer.
+4. If nobody answers in time it **fails closed** (`allow: false`) and Claude Code shows
+   its own prompt. The card stays on the phone, so whichever you reach first wins.
 
 ## Protocol Details
 

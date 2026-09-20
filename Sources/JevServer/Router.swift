@@ -5,20 +5,21 @@ actor Router {
     // MARK: - Handler Types
 
     typealias PendingRequestsHandler = () async -> [ApprovalRequest]
+    typealias ControlsHandler = () async -> String
+    typealias JournalHandler = () async -> String
     typealias DecideHandler = (String, String, Nonce) async -> ExecutionResult
     typealias ScreenshotHandler = (String?) async -> Data?
     typealias VoiceUploadHandler = (Data) async -> String?
     typealias CommandHandler = (String) async -> ExecutionResult
-    typealias ControlsHandler = () async -> String
-    typealias HintsHandler = () async -> String
     typealias VapidKeyHandler = () async -> String
     typealias SubscribeHandler = (String) async -> String
     typealias PolicyHandler = () async -> String
     typealias TypeHandler = (String, String?, Bool) async -> String
-    typealias DisplayInfoHandler = () async -> String
     typealias TapHandler = (Double, Double, String) async -> String
     typealias SwipeHandler = (Double, Double, Double, Double) async -> String
     typealias SetPolicyHandler = (String) async -> String
+    /// Claude Code's PermissionRequest hook. Body in, decision JSON out.
+    typealias PermissionHandler = (String) async -> String
     typealias WebSocketConnectHandler = (WebSocketSession) -> Void
 
     // MARK: - State
@@ -26,22 +27,22 @@ actor Router {
     let config: HTTPServer.Config
 
     private var pendingRequestsHandler: PendingRequestsHandler?
+    private var controlsHandler: ControlsHandler?
+    private var journalHandler: JournalHandler?
     private var decideHandler: DecideHandler?
     private var screenshotHandler: ScreenshotHandler?
     private var voiceUploadHandler: VoiceUploadHandler?
     private var commandHandler: CommandHandler?
-    private var controlsHandler: ControlsHandler?
-    private var hintsHandler: HintsHandler?
     private var vapidKeyHandler: VapidKeyHandler?
     private var subscribeHandler: SubscribeHandler?
     private var policyHandler: PolicyHandler?
     private var typeHandler: TypeHandler?
-    private var displayInfoHandler: DisplayInfoHandler?
     /// Returns the pointer position as a JSON object, normalised 0..1.
     private var cursorHandler: (@Sendable () async -> String)?
     private var tapHandler: TapHandler?
     private var swipeHandler: SwipeHandler?
     private var setPolicyHandler: SetPolicyHandler?
+    private var permissionHandler: PermissionHandler?
     private var webSocketConnectHandler: WebSocketConnectHandler?
     private let staticFiles: StaticFiles
 
@@ -55,6 +56,9 @@ actor Router {
     func onPendingRequests(_ handler: @escaping PendingRequestsHandler) {
         self.pendingRequestsHandler = handler
     }
+
+    func onControls(_ handler: @escaping ControlsHandler) { self.controlsHandler = handler }
+    func onJournal(_ handler: @escaping JournalHandler) { self.journalHandler = handler }
 
     func onDecide(_ handler: @escaping DecideHandler) {
         self.decideHandler = handler
@@ -72,20 +76,15 @@ actor Router {
         self.commandHandler = handler
     }
 
-    func onControls(_ handler: @escaping ControlsHandler) {
-        self.controlsHandler = handler
-    }
-
-    func onHints(_ handler: @escaping HintsHandler) { self.hintsHandler = handler }
     func onVapidKey(_ handler: @escaping VapidKeyHandler) { self.vapidKeyHandler = handler }
     func onSubscribe(_ handler: @escaping SubscribeHandler) { self.subscribeHandler = handler }
     func onType(_ handler: @escaping TypeHandler) { self.typeHandler = handler }
-    func onDisplayInfo(_ handler: @escaping DisplayInfoHandler) { self.displayInfoHandler = handler }
     func onCursor(_ handler: @escaping @Sendable () async -> String) { self.cursorHandler = handler }
     func onTap(_ handler: @escaping TapHandler) { self.tapHandler = handler }
     func onSwipe(_ handler: @escaping SwipeHandler) { self.swipeHandler = handler }
     func onPolicy(_ handler: @escaping PolicyHandler) { self.policyHandler = handler }
     func onSetPolicy(_ handler: @escaping SetPolicyHandler) { self.setPolicyHandler = handler }
+    func onPermission(_ handler: @escaping PermissionHandler) { self.permissionHandler = handler }
 
     func onWebSocketConnect(_ handler: @escaping WebSocketConnectHandler) {
         self.webSocketConnectHandler = handler
@@ -137,17 +136,22 @@ actor Router {
             await handleGetPending(completion)
         } else if request.method == "POST" && components.count == 2 && components[0] == "api" && components[1] == "decide" {
             await handlePostDecide(request, completion)
+        } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "journal" {
+            let json = await (journalHandler?() ?? "[]")
+            completion(HTTPResponse(status: 200,
+                                    headers: ["content-type": "application/json", "cache-control": "no-store"],
+                                    body: json))
+        } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "controls" {
+            let json = await (controlsHandler?() ?? "[]")
+            completion(HTTPResponse(status: 200,
+                                    headers: ["content-type": "application/json", "cache-control": "no-store"],
+                                    body: json))
         } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "screenshot" {
             await handleGetScreenshot(request, completion)
         } else if request.method == "POST" && components.count == 2 && components[0] == "api" && components[1] == "voice" {
             await handlePostVoice(request, completion)
         } else if request.method == "POST" && components.count == 2 && components[0] == "api" && components[1] == "command" {
             await handlePostCommand(request, completion)
-        } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "display" {
-            let json = await (displayInfoHandler?() ?? "{}")
-            completion(HTTPResponse(status: 200,
-                                    headers: ["content-type": "application/json", "cache-control": "no-store"],
-                                    body: json))
         } else if request.method == "POST" && components.count == 2 && components[0] == "api" && components[1] == "tap" {
             guard let data = request.body.data(using: .utf8),
                   let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -199,6 +203,15 @@ actor Router {
                                     headers: ["content-type": "application/json",
                                               "cache-control": "no-store"],
                                     body: json))
+        } else if request.method == "POST" && components.count == 2 && components[0] == "api" && components[1] == "permission" {
+            // The Claude Code hook. It gives up after 6 seconds, so whatever
+            // happens here must answer well inside that.
+            let json = await (permissionHandler?(request.body)
+                ?? #"{"allow":false,"reason":"jev has no permission handler"}"#)
+            completion(HTTPResponse(status: 200,
+                                    headers: ["content-type": "application/json",
+                                              "cache-control": "no-store"],
+                                    body: json))
         } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "vapid-key" {
             let json = await (vapidKeyHandler?() ?? "{}")
             completion(HTTPResponse(status: 200,
@@ -209,14 +222,6 @@ actor Router {
             completion(HTTPResponse(status: 200,
                                     headers: ["content-type": "application/json", "cache-control": "no-store"],
                                     body: json))
-        } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "hints" {
-            let json = await (hintsHandler?() ?? "[]")
-            completion(HTTPResponse(status: 200,
-                                    headers: ["content-type": "application/json", "cache-control": "no-store"],
-                                    body: json))
-        } else if request.method == "GET" && components.count == 2 && components[0] == "api" && components[1] == "controls" {
-            let json = await (controlsHandler?() ?? "[]")
-            completion(HTTPResponse(status: 200, headers: ["content-type": "application/json"], body: json))
         } else {
             // Try to serve static file from web root
             await staticFiles.serve(path: route) { data, mimeType in

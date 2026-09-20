@@ -129,30 +129,6 @@ enum AppProfiles {
             description: "\(action.label) (\(key))")
     }
 
-    /// What a site calls its own things.
-    ///
-    /// Deliberately thin. Every site invents its own noun for its own tiles,
-    /// so a table like this can never be complete — it exists to make the
-    /// handful of sites you are on all day instant, and Jev covers the rest.
-    private static let guideNouns: [String: [String: HintScope.Kind]] = [
-        "youtube.com": ["videos": .links, "video": .links, "thumbnails": .links,
-                        "channels": .links, "results": .links],
-        "google.com": ["results": .links, "search results": .links],
-        "github.com": ["files": .links, "issues": .links, "pull requests": .links,
-                       "repos": .links, "repositories": .links],
-    ]
-
-    /// Resolve a site's own word for a kind of thing. Nil means "no opinion".
-    static func guideKind(for noun: String, in context: Phrasebook.Context) -> HintScope.Kind? {
-        guard let host = context.host else { return nil }
-        if let kind = guideNouns[host]?[noun] { return kind }
-        // Subdomains of a known site count, so music.youtube.com works.
-        for (key, nouns) in guideNouns where host.hasSuffix("." + key) {
-            if let kind = nouns[noun] { return kind }
-        }
-        return nil
-    }
-
     /// Every phrase the current context defines, for telling the user what
     /// changed meaning where they are.
     static func phrases(bundleId: String, host: String?) -> [String] {

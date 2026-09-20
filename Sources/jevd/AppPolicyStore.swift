@@ -154,6 +154,16 @@ final class AppPolicyStore: @unchecked Sendable {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(Stored(global: global, modes: snapshot)) else { return }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil,
+                                           attributes: [.posixPermissions: 0o600])
+        }
         try? data.write(to: url, options: .atomic)
+        // 0600, because this file decides what jev does unattended.
+        // Writing {"com.apple.Terminal":"always"} into a world-writable
+        // copy widens what runs without asking, behind jev's own
+        // Accessibility grant.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                ofItemAtPath: url.path)
     }
 }

@@ -29,7 +29,7 @@ private func testMessageRoundTrip() async -> [String] {
                     auth: base64url(authSecret)))
 
     let vapid = VAPID(privateKey: P256.Signing.PrivateKey())
-    let sender = PushSender(vapid: vapid, subscriberEmail: "mailto:jev@localhost")
+    let sender = PushSender(vapid: vapid, subscriberEmail: VAPIDSubject.configured)
     let notification = PushNotification(title: "Needs you",
                                         body: "Terminal wants Full Disk Access",
                                         actionURL: URL(string: "https://example.test/?id=42"))
@@ -162,4 +162,28 @@ private func expand(salt: Data, ikm: Data, info: Data, length: Int) -> Data {
     var block = info
     block.append(0x01)
     return Data(HMAC<SHA256>.authenticationCode(for: block, using: SymmetricKey(data: Data(prk)))).prefix(length)
+}
+
+/// Would a push service accept the contact jev signs with?
+///
+/// A shape test, run at every launch, because the value this project
+/// shipped with — `mailto:jev@localhost` — was refused by Apple with
+/// 403 on every single notification, and the existing assertions only
+/// checked that a `sub` claim was PRESENT. "self-tests: pass" was
+/// entirely compatible with push being completely dead.
+public func vapidSubjectSelfTest() -> [String] {
+    var failures: [String] = []
+    func check(_ name: String, _ condition: Bool) {
+        if !condition { failures.append("vapid: \(name)") }
+    }
+    check("the configured subject is one a push service will take",
+          VAPIDSubject.isAcceptable(VAPIDSubject.configured))
+    check("localhost is refused", !VAPIDSubject.isAcceptable("mailto:jev@localhost"))
+    check("a bare hostname is refused", !VAPIDSubject.isAcceptable("mailto:jev@mac"))
+    check("an address literal is refused", !VAPIDSubject.isAcceptable("mailto:jev@127.0.0.1"))
+    check("http is refused", !VAPIDSubject.isAcceptable("http://example.com/jev"))
+    check("nonsense is refused", !VAPIDSubject.isAcceptable("jev"))
+    check("a real mailto is fine", VAPIDSubject.isAcceptable("mailto:someone@example.org"))
+    check("an https page is fine", VAPIDSubject.isAcceptable("https://example.org/jev"))
+    return failures
 }

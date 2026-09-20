@@ -114,6 +114,39 @@ enum Phrasebook {
         return best?.parsed
     }
 
+    /// The phrase this sentence matched that wants a value it was not given.
+    ///
+    /// "switch workspace" and "go to tab" are perfectly good commands with a
+    /// number missing. Today they parse to nothing and come back as "did not
+    /// understand", so the whole sentence has to be said again — which is a
+    /// silly thing to demand when the only missing part is "2".
+    ///
+    /// No table of which phrase needs what: the binding is simply asked. If
+    /// it refuses an empty argument but accepts a sample one, then it needs
+    /// an argument, and that is true by construction for every binding
+    /// present and any added later.
+    static func awaitingArgument(_ text: String, in context: Context) -> String? {
+        let cleaned = text.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
+        guard !cleaned.isEmpty else { return nil }
+
+        for binding in bindings {
+            for phrase in binding.phrases {
+                // The whole sentence must BE the phrase. A sentence with a
+                // trailing argument that failed to parse is a different
+                // problem and must not be turned into a question.
+                guard cleaned == phrase else { continue }
+                guard binding.build("", context) == nil else { continue }
+                // Would it work with something? Numbers cover the counted
+                // phrases, a word covers the rest.
+                let accepts = ["2", "hello"].contains { binding.build($0, context) != nil }
+                if accepts { return phrase }
+            }
+        }
+        return nil
+    }
+
     /// Build a binding from a trailing argument, refusing the match when the
     /// binding does not actually use it.
     ///
@@ -180,6 +213,10 @@ enum Phrasebook {
         VoiceCommand.Parsed(command: .sequence(label: label, steps: steps), description: label)
     }
 
+    /// Every phrase in the table, in table order, for the self-test that
+    /// asserts no two bindings claim the same one.
+    static var allPhrases: [String] { bindings.flatMap(\.phrases) }
+
     private static let bindings: [Binding] = [
         // MARK: Text editing
         Binding(phrases: ["select all", "select everything", "highlight all"]) { _, _ in
@@ -210,7 +247,11 @@ enum Phrasebook {
         Binding(phrases: ["escape", "cancel", "dismiss", "close this", "click away", "tab away"]) { _, _ in
             step("Escape", [keys("escape")])
         },
-        Binding(phrases: ["tab", "next field"]) { _, _ in step("Tab", [keys("tab")]) },
+        // "next field" belongs to the form binding further down, which
+        // says "Next field" rather than "Tab" — the same keystroke, a
+        // description that matches what you asked for. Claimed here as
+        // well, which of the two answered was down to an unstable sort.
+        Binding(phrases: ["tab"]) { _, _ in step("Tab", [keys("tab")]) },
 
         Binding(phrases: ["show me the form", "show the form", "fill the form",
                           "fill out the form", "show the login form", "show form",
@@ -291,9 +332,39 @@ enum Phrasebook {
                                 description: "Volume 0%")
         },
         Binding(phrases: ["set volume to", "volume"]) { argument, _ in
+            // Whether "percent" was actually said, before it is stripped.
+            // Without this, "set volume to 5 percent" took the tenths
+            // path and produced 50% — an explicitly stated unit ignored,
+            // on a request that is usually made to make something quiet.
+            let saidPercent = argument.contains("percent") || argument.contains("%")
             let token = argument.replacingOccurrences(of: "percent", with: "")
+                .replacingOccurrences(of: "%", with: "")
                 .trimmingCharacters(in: .whitespaces)
-            guard let level = Int(token) ?? spokenDigits[token].map({ $0 * 10 }) else { return nil }
+            // One meaning per number, whichever way the recogniser wrote
+            // it. A single digit was read as a percentage when it came
+            // back as "5" and as a tenth when it came back as "five" —
+            // so the same words gave 5% or 50% depending on a choice
+            // nobody made, and Apple's recogniser prefers digits for
+            // short numerics, which is the wrong one of the two.
+            //
+            // A bare single number means tenths, because "volume 5" is
+            // how a person asks for half. "volume 50" is still 50.
+            //
+            // Keyed on the VALUE, not the token's length. Keying on
+            // `token.count <= 2` looked right and could never be true
+            // for a spelled digit — every one of them is at least three
+            // characters — so "five" and "5" went on meaning different
+            // things, merely swapped over from before.
+            let spelled = spokenDigits[token]
+            let written = Int(token)
+            guard let raw = spelled ?? written else { return nil }
+            let asked = (raw <= 10 && !saidPercent) ? raw * 10 : raw
+            // Clamped, not refused. Returning nil here dropped the phrase
+            // into the fuzzy matcher, which scored "volume up" against
+            // "volume -5" within its edit budget — so asking for a
+            // nonsense volume turned the volume UP. A number outside the
+            // range is still unambiguously a volume request.
+            let level = min(100, max(0, asked))
             return VoiceCommand.Parsed(command: .systemAction(name: "volumeSet", value: level),
                                        description: "Volume \(level)%")
         },
@@ -381,83 +452,6 @@ enum Phrasebook {
             step("Toggle hidden files", [keys("cmd+shift+period")])
         },
 
-        // MARK: Numbered hints
-        Binding(phrases: ["show boxes", "show guides", "show helpers", "show numbers",
-                          "show actionable boxes", "show hints", "show labels",
-                          "what can i click", "number everything", "show targets"]) { _, _ in
-            VoiceCommand.Parsed(command: .showHints, description: "Show numbers")
-        },
-        Binding(phrases: ["show guides everywhere", "show numbers everywhere",
-                          "show all guides", "show guides for everything",
-                          "number every window"]) { _, _ in
-            VoiceCommand.Parsed(command: .showHintsEverywhere, description: "Show numbers everywhere")
-        },
-        Binding(phrases: ["show box", "outline", "show outline", "which is"]) { argument, _ in
-            let token = argument.split(separator: " ").first.map(String.init) ?? ""
-            guard let number = Int(token) ?? spokenDigits[token] else { return nil }
-            return VoiceCommand.Parsed(command: .showHintBox(number: number),
-                                       description: "Outline \(number)")
-        },
-        Binding(phrases: ["show guides for", "show numbers for", "show boxes for",
-                          "show guides on", "number the"]) { argument, _ in
-            guard !argument.isEmpty else { return nil }
-            let text = argument.hasPrefix("the ") ? String(argument.dropFirst(4)) : argument
-
-            // A kind of thing — "images", "buttons", "links" — cuts eighty
-            // targets down to a handful, which is worth far more than shorter
-            // labels.
-            if let kind = HintScope.Kind.spoken[text] {
-                return VoiceCommand.Parsed(
-                    command: .showHintsScoped(kind: kind.rawValue, region: ""),
-                    description: "Show \(kind.rawValue)")
-            }
-            // A part of the window.
-            if let region = HintScope.Region.spoken[text] {
-                return VoiceCommand.Parsed(
-                    command: .showHintsScoped(kind: "", region: region.rawValue),
-                    description: "Show the \(region.rawValue)")
-            }
-            // "images in the sidebar"
-            for separator in [" in the ", " in ", " on the "] {
-                guard let range = text.range(of: separator) else { continue }
-                let kindText = String(text[..<range.lowerBound])
-                let regionText = String(text[range.upperBound...])
-                if let kind = HintScope.Kind.spoken[kindText],
-                   let region = HintScope.Region.spoken[regionText] {
-                    return VoiceCommand.Parsed(
-                        command: .showHintsScoped(kind: kind.rawValue, region: region.rawValue),
-                        description: "Show \(kind.rawValue) in the \(region.rawValue)")
-                }
-            }
-            // Otherwise it names an app.
-            if let app = AppCatalog.shared.resolve(spokenName: text) {
-                return VoiceCommand.Parsed(
-                    command: .showHintsForApp(bundleIdentifier: app.bundleIdentifier),
-                    description: "Show numbers in \(app.name)")
-            }
-            // A noun nobody taught it — "the videos", "the posts", "the
-            // results". Every site invents its own word for its own tiles, so
-            // a fixed synonym list can never keep up. Carry the word through
-            // with a "?" and let the executor, which can await, resolve it
-            // against the site's profile and then against Jev.
-            guard text.count <= 40 else { return nil }
-            return VoiceCommand.Parsed(
-                command: .showHintsScoped(kind: "?" + text, region: ""),
-                description: "Show the \(text)")
-        },
-        Binding(phrases: ["hide boxes", "hide numbers", "hide hints", "clear boxes",
-                          "clear numbers", "hide the guides", "never mind"]) { _, _ in
-            // This used to build selectHint(-1) as a sentinel, and nothing
-            // ever looked for it: the command reported "there is no number -1"
-            // and the numbers stayed on the phone.
-            VoiceCommand.Parsed(command: .hideHints, description: "Hide numbers")
-        },
-        Binding(phrases: ["select", "choose", "click number", "pick", "number"]) { argument, _ in
-            let token = argument.split(separator: " ").first.map(String.init) ?? ""
-            guard let number = Int(token) ?? spokenDigits[token] else { return nil }
-            return VoiceCommand.Parsed(command: .selectHint(number: number),
-                                       description: "Select \(number)")
-        },
 
         // MARK: Jumping to the ends
         Binding(phrases: ["scroll to the bottom", "scroll to bottom", "go to the bottom",
@@ -578,7 +572,14 @@ enum Phrasebook {
             if !argument.isEmpty { steps += [.typeText(text: argument), keys("return")] }
             return step("Search Mail", steps)
         },
-        Binding(phrases: ["search notes", "search for", "search"]) { argument, context in
+        // NOT "search notes" — the Notes binding above owns that, and
+        // both claimed it. Matching orders by the length of a binding's
+        // FIRST phrase, both first phrases were "search notes", and
+        // `sorted(by:)` is not documented to be stable, so "search notes
+        // shopping" either searched Notes or pressed cmd+L in the
+        // browser and sent the words to a search engine. Which one was
+        // down to the sort.
+        Binding(phrases: ["search for", "search"]) { argument, context in
             var steps: [Command] = [keys(context.isBrowserLike ? "cmd+l" : "cmd+f"), keys("cmd+a")]
             if !argument.isEmpty {
                 steps.append(.typeText(text: argument))
@@ -586,6 +587,14 @@ enum Phrasebook {
             }
             return step(argument.isEmpty ? "Search in \(context.appName)"
                                          : "Search for “\(argument)”", steps)
+        },
+        Binding(phrases: ["show numbers", "show number", "numbers", "show guide",
+                          "show guides", "number things", "label things",
+                          "which is which", "show labels"]) { _, _ in
+            step("Numbers on screen", [.showNumbers(on: true)])
+        },
+        Binding(phrases: ["hide numbers", "hide guide", "hide guides", "hide labels"]) { _, _ in
+            step("Numbers off", [.showNumbers(on: false)])
         },
         Binding(phrases: ["type", "write", "enter text", "say"]) { argument, _ in
             guard !argument.isEmpty else { return nil }
@@ -657,8 +666,11 @@ enum Phrasebook {
     // MARK: Helpers
 
     private static let spokenDigits = [
-        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-        "six": 6, "seven": 7, "eight": 8, "nine": 9,
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        // Both ends of the volume range as people actually say them.
+        // "volume ten" matched nothing while "volume 10" was 100%.
+        "half": 5, "full": 10,
     ]
 
     private static func digit(_ text: String) -> Int? {

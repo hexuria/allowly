@@ -121,13 +121,44 @@ public struct ExecutionResult: Codable, Sendable {
     public let status: ExecutionStatus
     public let reason: String
 
-    public init(status: ExecutionStatus, reason: String) {
+    /// Did the thing asked for actually happen?
+    ///
+    /// Separate from `status` because "the instruction was delivered"
+    /// and "the Mac acted on it" are different facts, and a macOS
+    /// consent sheet is the case where they come apart: it accepts a
+    /// synthetic press, reports success, and does nothing.
+    ///
+    /// `true` for everything that has no way to tell — this is a
+    /// downgrade from a claim, not an upgrade to one, and only the
+    /// paths that genuinely check ever set it false. Three places in
+    /// `Runtime` decide whether to take a card off the phone; all three
+    /// read this, because a dialog that is still on screen must keep
+    /// its card or it can never be answered at all.
+    public let landed: Bool
+
+    public init(status: ExecutionStatus, reason: String, landed: Bool = true) {
         self.status = status
         self.reason = reason
+        self.landed = landed
     }
 
-    public static func ok(reason: String = "Success") -> ExecutionResult {
-        ExecutionResult(status: .ok, reason: reason)
+    /// Absent means `true`.
+    ///
+    /// Nothing in the tree decodes an `ExecutionResult` today — it is
+    /// encoded on the Mac and read as plain JSON by the phone — so this
+    /// is insurance, not a fix for a known caller. Said plainly because
+    /// the first version of this comment claimed to protect "an older
+    /// client's payload", which described a direction that does not
+    /// exist.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(ExecutionStatus.self, forKey: .status)
+        reason = try container.decode(String.self, forKey: .reason)
+        landed = try container.decodeIfPresent(Bool.self, forKey: .landed) ?? true
+    }
+
+    public static func ok(reason: String = "Success", landed: Bool = true) -> ExecutionResult {
+        ExecutionResult(status: .ok, reason: reason, landed: landed)
     }
 
     public static func failed(reason: String) -> ExecutionResult {
@@ -153,20 +184,8 @@ public enum Command: Codable, Sendable {
     case fillField(label: String, text: String)
     /// Open a URL in the default browser. Vastly more reliable than typing one.
     case openURL(url: String)
-    /// Number every actionable thing on screen and show it on the phone.
-    case showHints
-    case showHintsForApp(bundleIdentifier: String)
-    case showHintsEverywhere
-    /// Narrow the numbers to a kind of thing and/or a part of the window.
-    case showHintsScoped(kind: String, region: String)
-    /// Outline a single number without covering the screen in boxes.
-    case showHintBox(number: Int)
     /// Volume, brightness, appearance — things keystrokes do not reach well.
     case systemAction(name: String, value: Int)
-    /// Act on one of those numbers.
-    case selectHint(number: Int)
-    /// Take the numbers down again.
-    case hideHints
     /// Act wherever the pointer already is. "this" and "here" are the fastest
     /// way to say what you mean when you can see the pointer on your phone and
     /// put it where you want it.
@@ -176,6 +195,10 @@ public enum Command: Codable, Sendable {
     case requestInput(field: String, secret: Bool)
     /// Read the form in front of you and show it on the phone to be filled in.
     case showForm
+    /// Number everything pressable and show the numbers on the phone, for
+    /// when two controls share a name and saying it cannot choose between
+    /// them — four buttons all called "Alex" in Chrome's profile picker.
+    case showNumbers(on: Bool)
     /// Several steps run in order, with a short pause between them.
     /// "Go to a URL" is not one action: it is new tab, focus the bar, select
     /// what is there, type, Enter.
@@ -189,6 +212,7 @@ public enum Command: Codable, Sendable {
         case bundleIdentifier
         case requestId
         case optionId
+        case on
         case allowlistedPrefix
         case fullCommand
         case steps
@@ -227,26 +251,13 @@ public enum Command: Codable, Sendable {
             self = .pressKeys(spec: try container.decode(String.self, forKey: .optionId))
         case "rightClickControl":
             self = .rightClickControl(label: try container.decode(String.self, forKey: .optionId))
-        case "showHints":
-            self = .showHints
-        case "showHintsForApp":
-            self = .showHintsForApp(bundleIdentifier: try container.decode(String.self, forKey: .bundleIdentifier))
-        case "showHintsEverywhere":
-            self = .showHintsEverywhere
-        case "showHintsScoped":
-            self = .showHintsScoped(kind: try container.decode(String.self, forKey: .optionId),
-                                    region: try container.decode(String.self, forKey: .fullCommand))
         case "systemAction":
             self = .systemAction(name: try container.decode(String.self, forKey: .optionId),
                                  value: Int(try container.decode(String.self, forKey: .fullCommand)) ?? 0)
-        case "showHintBox":
-            self = .showHintBox(number: Int(try container.decode(String.self, forKey: .optionId)) ?? 0)
-        case "selectHint":
-            self = .selectHint(number: Int(try container.decode(String.self, forKey: .optionId)) ?? 0)
-        case "hideHints":
-            self = .hideHints
         case "pointerAction":
             self = .pointerAction(kind: try container.decode(String.self, forKey: .optionId))
+        case "showNumbers":
+            self = .showNumbers(on: (try? container.decode(Bool.self, forKey: .on)) ?? true)
         case "showForm":
             self = .showForm
         case "requestInput":
@@ -322,34 +333,18 @@ public enum Command: Codable, Sendable {
         case .rightClickControl(let label):
             try container.encode("rightClickControl", forKey: .type)
             try container.encode(label, forKey: .optionId)
-        case .showHints:
-            try container.encode("showHints", forKey: .type)
-        case .showHintsForApp(let bundleId):
-            try container.encode("showHintsForApp", forKey: .type)
-            try container.encode(bundleId, forKey: .bundleIdentifier)
-        case .showHintsEverywhere:
-            try container.encode("showHintsEverywhere", forKey: .type)
-        case .showHintsScoped(let kind, let region):
-            try container.encode("showHintsScoped", forKey: .type)
-            try container.encode(kind, forKey: .optionId)
-            try container.encode(region, forKey: .fullCommand)
         case .systemAction(let name, let value):
             try container.encode("systemAction", forKey: .type)
             try container.encode(name, forKey: .optionId)
             try container.encode(String(value), forKey: .fullCommand)
-        case .showHintBox(let number):
-            try container.encode("showHintBox", forKey: .type)
-            try container.encode(String(number), forKey: .optionId)
-        case .selectHint(let number):
-            try container.encode("selectHint", forKey: .type)
-            try container.encode(String(number), forKey: .optionId)
-        case .hideHints:
-            try container.encode("hideHints", forKey: .type)
         case .pointerAction(let kind):
             try container.encode("pointerAction", forKey: .type)
             try container.encode(kind, forKey: .optionId)
         case .showForm:
             try container.encode("showForm", forKey: .type)
+        case .showNumbers(let on):
+            try container.encode("showNumbers", forKey: .type)
+            try container.encode(on, forKey: .on)
         case .requestInput(let field, let secret):
             try container.encode("requestInput", forKey: .type)
             try container.encode(field, forKey: .optionId)
@@ -394,10 +389,10 @@ public extension Command {
         case .typeText, .pressKeys, .fillField: return "system.keyboard"
         case .openURL: return "system.browser"
         case .systemAction: return "system.settings"
-        case .showHints, .showHintsForApp, .showHintsEverywhere,
-             .showHintsScoped, .showHintBox, .hideHints: return "system.hints"
-        case .selectHint, .pointerAction: return "system.pointer"
+        case .pointerAction: return "system.pointer"
         case .requestInput, .showForm: return "system.keyboard"
+        // Numbering only draws on the phone; it touches nothing on the Mac.
+        case .showNumbers: return nil
         case .pressButton, .runCommand, .answerAgentPrompt: return nil
         }
     }

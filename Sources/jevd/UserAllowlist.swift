@@ -47,6 +47,13 @@ final class UserAllowlist: @unchecked Sendable {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(Array(snapshot).sorted()) else { return }
+        // Born 0600, like everything else jev keeps. This one
+        // was tightened only by the next launch's sweep, so it
+        // sat readable for the whole session it was made in.
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil,
+                                           attributes: [.posixPermissions: 0o600])
+        }
         try? data.write(to: url, options: .atomic)
     }
 }

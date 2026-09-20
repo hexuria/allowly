@@ -20,6 +20,12 @@ enum CommandCodableSelfTest {
         .showApp(bundleIdentifier: "com.apple.Finder"),
         .hideApp(bundleIdentifier: "com.apple.Mail"),
         .clickControl(label: "Submit"),
+        .showNumbers(on: true),
+        // BOTH, because the decoder defaults a missing `on` to true. With
+        // only the `true` sample, deleting the encode line leaves the round
+        // trip byte-identical and the test passes — and "show and hide sent
+        // the same message" is the exact bug this file is here to catch.
+        .showNumbers(on: false),
         .typeText(text: "hello world"),
         .clickPoint(x: 12.5, y: 34.25),
         .scroll(direction: "down", amount: 7),
@@ -28,14 +34,7 @@ enum CommandCodableSelfTest {
         .rightClickControl(label: "Sidebar item"),
         .fillField(label: "email", text: "someone@example.com"),
         .openURL(url: "https://example.com/a?b=c"),
-        .showHints,
-        .showHintsForApp(bundleIdentifier: "com.google.Chrome"),
-        .showHintsEverywhere,
-        .showHintsScoped(kind: "links", region: "sidebar"),
-        .showHintBox(number: 12),
         .systemAction(name: "volumeSet", value: 42),
-        .selectHint(number: 9),
-        .hideHints,
         .pointerAction(kind: "right"),
         .requestInput(field: "password", secret: true),
         .requestInput(field: "text", secret: false),
@@ -72,6 +71,27 @@ enum CommandCodableSelfTest {
                 let json = String(data: first, encoding: .utf8) ?? "?"
                 failures.append("codable: \(name) encodes to \(json) but will not decode (\(error))")
             }
+        }
+
+        // Two different commands must not encode to the same bytes.
+        //
+        // The round trip above cannot catch a dropped field, because it
+        // re-encodes through the same encoder: if `on` stopped being
+        // written, `.showNumbers(on: false)` would encode to
+        // `{"type":"showNumbers"}`, decode to the default `true`, and
+        // re-encode to the same bytes — identical, so it passes. That is
+        // precisely the "show and hide sent the same message" bug. Asking
+        // instead whether the encodings are DISTINCT catches a dropped
+        // field, a hardcoded constant, and a field written to the wrong key.
+        var seen: [String: String] = [:]
+        for command in samples {
+            guard let data = try? encoder.encode(command),
+                  let json = String(data: data, encoding: .utf8) else { continue }
+            let name = "\(command)"
+            if let other = seen[json], other != name {
+                failures.append("codable: \(name) and \(other) both encode to \(json)")
+            }
+            seen[json] = name
         }
         return failures
     }

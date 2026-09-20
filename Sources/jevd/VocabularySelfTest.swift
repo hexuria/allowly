@@ -23,6 +23,54 @@ enum VocabularySelfTest {
     static func run() -> [String] {
         var failures: [String] = []
 
+        // MARK: No phrase belongs to two bindings.
+        //
+        // The table is matched longest-first on each binding's FIRST
+        // phrase, and `sorted(by:)` is not documented to be stable — so
+        // a phrase claimed twice resolves to whichever binding the sort
+        // happened to put first. "search notes" was claimed by both the
+        // Notes binding and the generic search binding, and the winner
+        // decided whether the words went into Notes or into the
+        // browser's address bar.
+        var seen: Set<String> = []
+        for phrase in Phrasebook.allPhrases where !seen.insert(phrase).inserted {
+            failures.append("vocab: “\(phrase)” is claimed by two bindings")
+        }
+
+        // MARK: One number, one meaning.
+        //
+        // "volume five" and "volume 5" meant different things — 50% and
+        // 5% — decided by which spelling the recogniser happened to
+        // emit, which is not a choice anyone made. Fixed once by keying
+        // on the token's LENGTH, which can never be short for a spelled
+        // digit, so the two stayed 10x apart with the values merely
+        // swapped. Keyed on the value now.
+        func volume(_ phrase: String) -> Int? {
+            guard let parsed = Phrasebook.parse(phrase, in: finder),
+                  case .systemAction(let name, let value) = parsed.command,
+                  name == "volumeSet" else { return nil }
+            return value
+        }
+        for (phrase, want) in [("volume 5", 50), ("volume five", 50), ("volume half", 50),
+                               ("volume 50", 50), ("volume 100", 100), ("volume 0", 0),
+                               ("volume zero", 0), ("volume 10", 100), ("volume ten", 100),
+                               ("set volume to 75 percent", 75),
+                               // An explicitly stated unit is not a tenth.
+                               ("set volume to 5 percent", 5)] {
+            if volume(phrase) != want {
+                failures.append("“\(phrase)” should be \(want)%, got \(volume(phrase).map(String.init) ?? "nothing")")
+            }
+        }
+        // Out of range is CLAMPED, not refused. Refusing dropped the
+        // phrase into the fuzzy matcher, which scored "volume up"
+        // against "volume -5" inside its edit budget — so asking for a
+        // nonsense volume turned the volume up instead.
+        for (phrase, want) in [("volume 200", 100), ("volume -5", 0), ("volume 1000", 100)] {
+            if volume(phrase) != want {
+                failures.append("“\(phrase)” should clamp to \(want)%, got \(volume(phrase).map(String.init) ?? "nothing")")
+            }
+        }
+
         // MARK: Pointing. "this" and "here" must never be read as a target name.
         expect("click this", in: finder, isPointer: "click", &failures)
         expect("click here", in: finder, isPointer: "click", &failures)
@@ -82,13 +130,6 @@ enum VocabularySelfTest {
         expectForm("show form", in: finder, &failures)
         expectForm("fill the form", in: finder, &failures)
         expectForm("show the login form", in: finder, &failures)
-        // …which must still mean numbering the screen.
-        if case .showHints? = Phrasebook.parse("show numbers", in: finder)?.command {} else {
-            failures.append("“show numbers” no longer shows the numbered guides")
-        }
-        if case .showHints? = Phrasebook.parse("show boxes", in: finder)?.command {} else {
-            failures.append("“show boxes” no longer shows the numbered guides")
-        }
 
         // MARK: A verb must not swallow the sentence after it.
         expectNoMatch("copy the link and open a new tab", in: finder, &failures)
@@ -110,11 +151,32 @@ enum VocabularySelfTest {
             failures.append("“fill email with a@b.com” no longer fills a field")
         }
 
-        // MARK: Taking the numbers down again.
-        for phrase in ["hide numbers", "hide boxes", "clear boxes", "never mind"] {
-            if case .hideHints? = Phrasebook.parse(phrase, in: finder)?.command {} else {
-                failures.append("“\(phrase)” should hide the numbers, got "
-                    + (Phrasebook.parse(phrase, in: finder)?.description ?? "no match"))
+        // MARK: Numbering came back, but as a different thing.
+        //
+        // The old overlay walked the accessibility tree and drew boxes on the
+        // Mac; it was deleted with the rest of that machinery. What replaced
+        // it asks Cua for the element list and draws the badges on the PHONE,
+        // over its own screenshot. So "show numbers" resolves again — and
+        // must resolve to .showNumbers and nothing else.
+        for phrase in ["show numbers", "show guide", "numbers", "hide numbers"] {
+            guard let hit = Phrasebook.parse(phrase, in: finder) else {
+                failures.append("“\(phrase)” should ask for the numbers")
+                continue
+            }
+            if case .sequence(_, let steps) = hit.command, steps.contains(where: {
+                if case .showNumbers = $0 { return true }
+                return false
+            }) {
+                continue
+            }
+            if case .showNumbers = hit.command { continue }
+            failures.append("“\(phrase)” resolved to \(hit.description), not the numbers")
+        }
+
+        // These belonged to the deleted overlay and have no meaning now.
+        for phrase in ["show boxes", "select 3"] {
+            if let hit = Phrasebook.parse(phrase, in: finder) {
+                failures.append("“\(phrase)” should no longer match, got \(hit.description)")
             }
         }
 
@@ -124,6 +186,187 @@ enum VocabularySelfTest {
         expect("close tab", in: finder, isKeys: "cmd+w", &failures)
         expect("copy", in: finder, isKeys: "cmd+c", &failures)
         expect("select all", in: finder, isKeys: "cmd+a", &failures)
+
+        // "click skip" must not become the media key for next track.
+        //
+        // It did, on a real page with a Skip button visible. The recogniser
+        // offered both "Click skip" and "Skip"; SpeechRepair preferred the
+        // one the literal parser recognised, and the literal parser only
+        // recognises "skip" as a shortcut. The word "click" is the whole
+        // signal that a control was meant, so it is asserted here.
+        for press in ["click skip", "press skip", "tap skip", "hit skip",
+                      "click next step", "select skip"] {
+            if !JevIntent.startsWithPressVerb(press) {
+                failures.append("press verb not recognised in “\(press)”")
+            }
+        }
+        for shortcut in ["skip", "next track", "skip song", "volume up"] {
+            if JevIntent.startsWithPressVerb(shortcut) {
+                failures.append("“\(shortcut)” wrongly read as a press")
+            }
+        }
+        // The bare word still means the media key — that is not the bug.
+        //
+        // Asserted by what it DOES, not merely that it does something. The
+        // previous version only failed when parse returned nil, so "skip"
+        // could have regressed to opening a URL and this would have passed.
+        switch Phrasebook.parse("skip", in: finder)?.command {
+        case .sequence(let label, _) where label.lowercased().contains("next"):
+            break
+        case .pressKeys, .systemAction:
+            break
+        case .none:
+            failures.append("“skip” no longer parses at all")
+        case .some(let other):
+            failures.append("“skip” now means \(other) — it should still be the media key")
+        }
+
+        // The vocabulary keeps its words unless you say a verb.
+        //
+        // Letting a button on screen outrank a bare shortcut quietly took
+        // "save", "back", "find", "copy" and "play" away from the Phrasebook
+        // on any page that happened to have a button of that name. Only an
+        // explicit press should divert to the screen.
+        for bare in ["save", "copy", "paste", "undo", "back", "find",
+                     "play", "skip", "next tab", "new tab", "reload"] {
+            if JevIntent.startsWithPressVerb(bare) {
+                failures.append("bare “\(bare)” must not read as a press")
+            }
+            if Phrasebook.parse(bare, in: finder) == nil && Phrasebook.parse(bare, in: plainWeb) == nil {
+                failures.append("vocabulary lost “\(bare)”")
+            }
+        }
+
+        // A command that is right but incomplete should ask, not give up.
+        // "search" and "find" work bare — they just open the search box — so
+        // they are complete commands, not unfinished ones.
+        for phrase in ["go to tab", "set volume to", "type"] {
+            if Phrasebook.awaitingArgument(phrase, in: finder) == nil
+                && Phrasebook.awaitingArgument(phrase, in: plainWeb) == nil {
+                failures.append("“\(phrase)” should ask for its missing value")
+            }
+        }
+        // A complete command must never be turned into a question.
+        for phrase in ["next tab", "copy", "mission control", "reload", "close tab"] {
+            if Phrasebook.awaitingArgument(phrase, in: finder) != nil {
+                failures.append("“\(phrase)” is complete and must not ask")
+            }
+        }
+        // Neither should a sentence that already carries an argument.
+        if Phrasebook.awaitingArgument("go to tab 3", in: finder) != nil {
+            failures.append("“go to tab 3” already has its value")
+        }
+
+        // Nothing you dictate is ever written to disk or served over HTTP.
+        //
+        // Driven from the real Phrasebook, not from hand-written strings.
+        // The previous version only fed the redactor inputs shaped to
+        // trigger it, so it passed while "search for 4111 1111 1111 1111"
+        // wrote the card number to commands.jsonl in three fields.
+        let secret = "4111 1111 1111 1111"
+        for phrase in ["type \(secret)", "say \(secret)", "search for \(secret)",
+                       "find \(secret)", "new note \(secret)", "write \(secret)",
+                       "go to bank.example/reset?token=\(secret)"] {
+            guard let parsed = Phrasebook.parse(phrase, in: plainWeb)
+                    ?? Phrasebook.parse(phrase, in: finder) else { continue }
+            let carries = CommandJournal.carriesFreeText(parsed.command)
+            for field in [CommandJournal.redacted(phrase, carriesText: carries),
+                          CommandJournal.redacted(parsed.description, carriesText: carries)] {
+                if field.contains("4111") {
+                    failures.append("journal leaks “\(phrase)” as: \(field)")
+                }
+            }
+        }
+        // An ordinary command keeps its words.
+        for plain in ["next tab", "close tab", "mission control"] {
+            if CommandJournal.redacted(plain, carriesText: false) != plain {
+                failures.append("redactor mangled “\(plain)”")
+            }
+        }
+
+        // The three routes where nothing parsed, which is exactly where a
+        // misheard secret lands. `redacted` keeps the first word as "the
+        // verb"; here there is no verb, so the first word IS the value.
+        for bare in [secret, "hunter2", "my pin is 4321"] {
+            if CommandJournal.withheld(bare).contains(where: \.isNumber)
+                || CommandJournal.withheld(bare).contains("hunter") {
+                failures.append("unparsed route leaks “\(bare)” as: \(CommandJournal.withheld(bare))")
+            }
+        }
+        // What is around the value still survives, so the line stays useful.
+        let unparsed = CommandJournal.withheld("Did not understand “\(secret)” — no reading matched")
+        if unparsed.contains("4111") || !unparsed.hasPrefix("Did not understand") {
+            failures.append("unparsed reason came out as: \(unparsed)")
+        }
+
+        // The finishing route: "type" asked, and the answer arrives alone.
+        // Keyed on the command the two halves make TOGETHER, because the
+        // answer on its own has nothing to key on.
+        if let joined = Phrasebook.parse("type hunter2", in: plainWeb)
+                ?? Phrasebook.parse("type hunter2", in: finder) {
+            if !CommandJournal.carriesFreeText(joined.command) {
+                failures.append("a finished “type” is not recognised as carrying text")
+            }
+            let heard = CommandJournal.redacted("type hunter2",
+                                                carriesText: CommandJournal.carriesFreeText(joined.command))
+            if heard.contains("hunter") {
+                failures.append("finishing route leaks the answer as: \(heard)")
+            }
+        }
+
+        // The answer with no verb in front of it.
+        //
+        // Speech drops leading verbs constantly, and a pending "type" times
+        // out after 30 s — so the model route regularly gets the bare value
+        // and resolves the WHOLE transcript to .typeText. `redacted` then
+        // kept the first word as "the verb", which was the secret.
+        for bare in [secret, "hunter2"] {
+            let asTyped = Command.typeText(text: bare)
+            if !CommandJournal.startsWithTheValue(bare, asTyped) {
+                failures.append("“\(bare)” typed whole is not recognised as all-value")
+            }
+        }
+        // …and the ordinary case still keeps its verb, because the value
+        // does not start where the sentence does.
+        if CommandJournal.startsWithTheValue("search for \(secret)",
+                                             .typeText(text: secret)) {
+            failures.append("a real verb was mistaken for the value")
+        }
+
+        // The log file, not just the journal.
+        //
+        // Four rounds closed commands.jsonl and the fifth found the same
+        // transcript written verbatim to jev.log one function earlier, by
+        // the line that reports what speech heard — before anything has
+        // interpreted it, so there is nothing to key a redaction on.
+        // `shape` is the answer: how much was said, never what.
+        for spoken in [secret, "hunter2", "my passphrase is banana"] {
+            let line = JevLog.shape(spoken)
+            if line.contains("4111") || line.contains("hunter") || line.contains("banana") {
+                failures.append("the voice log leaks “\(spoken)” as: \(line)")
+            }
+            // Still says enough to debug with: how many words there were.
+            // An exact character count is deliberately NOT here — the
+            // length of a passphrase is a real fact about it.
+            if !line.contains("word") {
+                failures.append("the voice log says nothing useful about “\(spoken)”: \(line)")
+            }
+            if line.contains(String(spoken.count)) && spoken.count > 9 {
+                failures.append("the voice log gives away the exact length of “\(spoken)”: \(line)")
+            }
+        }
+
+        // A description is loggable only through the command-keyed path.
+        // JevLog.safe cannot see inside “Search for “…”” — it keys on a
+        // leading verb, and "Search for" is not one of them.
+        for phrase in ["search for \(secret)", "type \(secret)"] {
+            guard let parsed = Phrasebook.parse(phrase, in: plainWeb)
+                    ?? Phrasebook.parse(phrase, in: finder) else { continue }
+            let line = CommandJournal.safeDescription(parsed.description, parsed.command)
+            if line.contains("4111") {
+                failures.append("log line leaks “\(phrase)” as: \(line)")
+            }
+        }
 
         return failures
     }

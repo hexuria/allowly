@@ -75,10 +75,20 @@ final class AppCatalog: @unchecked Sendable {
         }
 
         if let exact = candidates.first(where: { $0.name.lowercased() == needle }) { return exact }
-        if let prefixed = candidates.first(where: { $0.name.lowercased().hasPrefix(needle) }) { return prefixed }
-        if let contained = candidates.first(where: { $0.name.lowercased().contains(needle) }) { return contained }
+
+        // The loose tiers refuse rather than pick, when more than one app
+        // fits. `first(where:)` handed back whichever sorted first by
+        // display name — so with both "Code" and "Code - Insiders"
+        // installed, "quit code" silently chose one of them. An alias is
+        // the answer to a genuine tie, and saying so beats guessing.
+        func only(_ matching: (Entry) -> Bool) -> Entry? {
+            let hits = candidates.filter(matching)
+            return hits.count == 1 ? hits[0] : nil
+        }
+        if let prefixed = only({ $0.name.lowercased().hasPrefix(needle) }) { return prefixed }
+        if let contained = only({ $0.name.lowercased().contains(needle) }) { return contained }
         // "google chrome" said as "chrome": try the last word of each app name.
-        if let word = candidates.first(where: { entry in
+        if let word = only({ entry in
             entry.name.lowercased().split(separator: " ").contains(Substring(needle))
         }) { return word }
 

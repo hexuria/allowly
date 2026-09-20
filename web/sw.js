@@ -1,4 +1,4 @@
-const CACHE_NAME = 'jev-v2';
+const CACHE_NAME = 'jev-v3';
 const urlsToCache = [
     '/',
     '/index.html',
@@ -56,7 +56,21 @@ self.addEventListener('fetch', (event) => {
 
     if (url.origin !== self.location.origin) return;
     if (request.method !== 'GET') return;
-    if (url.pathname.startsWith('/api/') || url.pathname === '/ws') return;
+    // Collapse repeated slashes before deciding. With the old trailing
+  // slash on baseUrl every request arrived as "//api/…", which does not
+  // start with "/api/" — so this guard fell through and the worker
+  // cached every screenshot poll: a unique cache-busted URL every 400 ms,
+  // ~20 MB a minute, until iOS evicted the origin and took the stored
+  // pairing token with it. It also meant a stale approvals list could be
+  // served from cache when the Mac was unreachable, which this file's own
+  // comment says must never happen.
+  const route = url.pathname.replace(/\/{2,}/g, '/');
+  if (route.startsWith('/api/') || route === '/ws') return;
+  // Nothing with a query string, either. The pairing link is
+  // "/?token=…", and caching that navigation put the bearer token into
+  // Cache Storage as part of the key — where `changePairing` does not
+  // reach, so an "unpaired" phone went on carrying the credential.
+  if (url.search) return;
 
     event.respondWith(
         fetch(request)
@@ -113,8 +127,21 @@ self.addEventListener('push', (event) => {
                 },
             };
         } catch (e) {
-            // If JSON parsing fails, use the text as body
-            notificationData.body = event.data.text();
+            // If JSON parsing fails, use the text as body — and if THAT
+            // throws, still show something.
+            //
+            // `text()` was called bare inside the catch, so a payload
+            // that is neither JSON nor decodable text took the whole
+            // handler down and no notification appeared at all. Silent,
+            // and on a path that had never once run: Apple refused every
+            // push jev sent until the VAPID subject was fixed, so the
+            // receiving half has no history of working.
+            try {
+                notificationData.body = event.data.text();
+            } catch (inner) {
+                // Leave the default body. A notification saying less is
+                // worth more than no notification.
+            }
         }
     }
 

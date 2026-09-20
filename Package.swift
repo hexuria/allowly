@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "JevDecide", targets: ["JevDecide"]),
         .library(name: "JevCapture", targets: ["JevCapture"]),
         .library(name: "JevServer", targets: ["JevServer"]),
+        .library(name: "JevCua", targets: ["JevCua"]),
         .executable(name: "jevd", targets: ["jevd"])
     ],
     targets: [
@@ -50,9 +51,16 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ]
         ),
+        .target(
+            name: "JevCua",
+            dependencies: ["JevCore"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
         .executableTarget(
             name: "jevd",
-            dependencies: ["JevCore", "JevAX", "JevDecide", "JevCapture", "JevServer"],
+            dependencies: ["JevCore", "JevAX", "JevDecide", "JevCapture", "JevServer", "JevCua"],
             swiftSettings: [
                 .swiftLanguageMode(.v5)
             ]

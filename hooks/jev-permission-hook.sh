@@ -27,13 +27,14 @@ set -e
 
 # Configuration
 DAEMON_HOST="127.0.0.1"
-DAEMON_PORT="8080"
-TIMEOUT_SECONDS=5
+DAEMON_PORT="8787"
+TIMEOUT_SECONDS=6
 ENDPOINT="/api/permission"
 
 # Paths
 KEYCHAIN_SERVICE="com.jev.agent"
 KEYCHAIN_KEY="daemon-pairing-token"
+TOKEN_FILE="${HOME}/Library/Application Support/jev/pairing-token"
 
 # Colors for logging (to stderr, never stdout)
 RED='\033[0;31m'
@@ -48,9 +49,25 @@ log_warn() {
     echo -e "${YELLOW}[jev-hook WARN]${NC} $1" >&2
 }
 
-# Retrieve pairing token from macOS Keychain
+# Retrieve the pairing token.
+#
+# The daemon writes it to a 0600 file, not the Keychain — see the comment on
+# KeychainManager.loadOrCreatePairingToken in Sources/jevd/main.swift, which
+# explains why (the Keychain was a coin flip before the app had a stable
+# signing identity). This hook read only the Keychain, found nothing, and
+# fell back to the interactive prompt every single time.
+#
+# The file first, the Keychain second, so this keeps working if the daemon
+# ever moves the token back.
 get_pairing_token() {
-    # Use security command to retrieve from Keychain
+    if [[ -r "$TOKEN_FILE" ]]; then
+        local from_file
+        from_file=$(tr -d '[:space:]' < "$TOKEN_FILE")
+        if [[ -n "$from_file" ]]; then
+            echo "$from_file"
+            return
+        fi
+    fi
     security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_KEY" -w 2>/dev/null || echo ""
 }
 
@@ -72,10 +89,18 @@ ask_daemon() {
 
     # POST the request to the daemon with timeout
     # curl fails (non-zero exit) on connection error, timeout, or HTTP error status
+    #
+    # The token goes in through --config, NOT -H. A curl argument is visible
+    # in `ps` to every user on the machine for as long as the request runs —
+    # up to six seconds, on every permission prompt — and this token is full
+    # remote control of the Mac. Keeping it in a 0600 Keychain-backed file
+    # and then printing it into the process table undoes the whole point.
+    # `printf` is a bash builtin, so the process substitution spawns nothing
+    # with the token in its argv either.
     local response
     if ! response=$(curl -s -m "$TIMEOUT_SECONDS" \
         -X POST \
-        -H "Authorization: Bearer $token" \
+        --config <(printf 'header = "Authorization: Bearer %s"\n' "$token") \
         -H "Content-Type: application/json" \
         -d "$request_json" \
         "http://$DAEMON_HOST:$DAEMON_PORT$ENDPOINT" 2>/dev/null); then

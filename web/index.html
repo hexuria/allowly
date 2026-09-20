@@ -2,16 +2,19 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
-    <meta name="theme-color" content="#000000">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <!-- One per scheme, so the iOS status bar matches the app instead of
+         always being black. -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#17181c" media="(prefers-color-scheme: dark)">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Jev">
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%23000' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%23000' width='192' height='192'/><text x='50%' y='50%' font-size='120' font-weight='bold' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192' rx='42'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
     <link rel="stylesheet" href="/styles.css">
-    <title>Jev Control</title>
+    <title>Jev</title>
 </head>
 <body>
     <div id="app" class="app">
@@ -21,12 +24,16 @@
             <div class="setup-content">
                 <div class="setup-header">
                     <h1>Jev</h1>
-                    <p>Paste the pairing link your Mac is showing</p>
+                    <p>Paste the pairing link from your Mac</p>
                 </div>
                 <div class="setup-form">
                     <input type="text" id="pairingUrl" placeholder="https://…/?token=…"
                            class="pairing-input" autocomplete="off" spellcheck="false" autocapitalize="off">
                     <button id="connectBtn" class="btn btn-primary">Connect</button>
+                    <p class="setup-hint"><strong>Opening the link is the easy way</strong> &mdash; Jev
+                    prints it when it starts, and one tap pairs this phone.
+                    Pasting only works for the Mac this app came from; for a
+                    different Mac, open its link instead.</p>
                 </div>
             </div>
         </div>
@@ -36,20 +43,26 @@
             <div class="header">
                 <div class="header-left">
                     <h1>Jev</h1>
-                    <div class="connection-status">
-                        <span id="connectionStatus" class="status-dot"></span>
+                    <!-- The id is on the pill, not the dot. app.js toggles
+                         .connected / .disconnected on whatever it finds here,
+                         and the stylesheet has always been written against the
+                         pill — with the id on the dot the rule could never
+                         match, so connected and disconnected rendered
+                         identically. The dot just inherits currentColor. -->
+                    <div id="connectionStatus" class="connection-status">
+                        <span class="status-dot"></span>
                         <span id="statusText">Connecting…</span>
                     </div>
                 </div>
                 <div class="header-actions">
-                    <button id="inputBtn" class="icon-btn" aria-label="Send text">
-                        <svg viewBox="0 0 24 24" fill="currentColor">
+                    <button id="inputBtn" class="icon-btn" aria-label="Type on the Mac">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                             <path d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H4V8h16z"/>
                             <path d="M6 10h2v2H6zm3 0h2v2H9zm3 0h2v2h-2zm3 0h3v2h-3zM6 13h8v2H6zm9 0h3v2h-3z"/>
                         </svg>
                     </button>
                     <button id="settingsBtn" class="icon-btn" aria-label="Settings">
-                        <svg viewBox="0 0 24 24" fill="currentColor">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                             <path d="M19.14 12.94a7.07 7.07 0 000-1.88l2.03-1.58a.5.5 0 00.12-.64l-1.92-3.32a.5.5 0 00-.6-.22l-2.39.96a7 7 0 00-1.62-.94l-.36-2.54a.5.5 0 00-.5-.42h-3.84a.5.5 0 00-.5.42l-.36 2.54c-.58.24-1.12.56-1.62.94l-2.39-.96a.5.5 0 00-.6.22L2.67 8.84a.5.5 0 00.12.64l2.03 1.58a7.07 7.07 0 000 1.88l-2.03 1.58a.5.5 0 00-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.38 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.56 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 00-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/>
                         </svg>
                     </button>
@@ -59,27 +72,35 @@
             <div class="content">
                 <!-- The Mac, live -->
                 <div id="screenPanel" class="screen-panel">
+                    <h2 class="section-heading">
+                        Your Mac
+                        <button id="fullscreenBtn" class="ghost-btn" type="button"
+                                aria-pressed="false" aria-label="Fill the screen">
+                            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                <path d="M4 9V5a1 1 0 011-1h4v2H6v3H4zm11-5h4a1 1 0 011 1v4h-2V6h-3V4zM4 15h2v3h3v2H5a1 1 0 01-1-1v-4zm16 0v4a1 1 0 01-1 1h-4v-2h3v-3h2z"/>
+                            </svg>
+                            <span>Fill screen</span>
+                        </button>
+                        <button id="numbersBtn" class="ghost-btn" type="button"
+                                aria-pressed="false" aria-label="Number what I can press">
+                            <span>Numbers</span>
+                        </button>
+                    </h2>
                     <div id="screenStage" class="screen-stage">
-                        <img id="screenImage" alt="Mac screen">
-                        <div id="hintLayer" class="hint-layer"></div>
-                        <div id="cursorMarker" class="cursor-marker hidden" aria-hidden="true">
-                            <span class="cursor-ring"></span>
-                        </div>
+                        <img id="screenImage" alt="Your Mac's screen">
+                        <!-- Numbers over the picture, for when two controls
+                             share a name. Inside the stage so it scales and
+                             clips with the image. -->
+                        <div id="numbersLayer" class="numbers-layer" aria-hidden="true"></div>
                     </div>
-                    <div id="screenStatus" class="screen-status">Connecting…</div>
-                </div>
-
-                <!-- Anything waiting on you, directly beneath it -->
-                <div id="approvalsSection">
-                    <h3 class="section-heading">Needs you</h3>
-                    <div id="approvalsList" class="approvals-list"></div>
+                    <div id="screenStatus" class="screen-status"></div>
                 </div>
 
                 <!-- Voice -->
                 <div class="ptt-section" id="voiceSection">
-                    <div id="handsFreeMainStatus" class="handsfree-status"></div>
-                    <button id="pttBtn" class="btn btn-ptt" aria-label="Hold to talk">
-                        <svg class="ptt-icon" viewBox="0 0 24 24" fill="currentColor">
+                    <h2 class="section-heading">Voice</h2>
+                    <button id="pttBtn" class="btn-ptt" aria-label="Hold to talk">
+                        <svg class="ptt-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                             <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
                             <path d="M17 11a5 5 0 01-10 0H5a7 7 0 006 6.93V21h2v-3.07A7 7 0 0019 11z"/>
                         </svg>
@@ -91,18 +112,67 @@
                             <span id="recordingTime">0:00</span>
                         </div>
                     </div>
+                    <div id="voiceLive" class="voice-live hidden" aria-hidden="true">
+                        <span class="voice-level"><i id="voiceLevelBar"></i></span>
+                        <span id="voiceLiveText">Listening…</span>
+                    </div>
                     <div id="voiceResult" class="voice-result hidden">
                         <p id="voiceTranscription" class="voice-transcription"></p>
                         <p id="voiceDecision" class="voice-decision"></p>
                     </div>
+                    <!-- What was said, kept on screen. A single line that
+                         vanished after five seconds meant you could never
+                         check whether you had been heard correctly. -->
+                    <ol id="voiceHistory" class="voice-history" aria-live="polite" aria-label="Recently heard"></ol>
                 </div>
 
                 <div id="pushBanner" class="ios-hint hidden">
                     <span id="pushBannerText"></span>
                     <button id="pushBannerAction" class="hidden">Turn on</button>
-                    <button id="pushBannerDismiss">Dismiss</button>
+                    <button id="pushBannerDismiss">Not now</button>
                 </div>
             </div>
+
+            <!-- Anything waiting on you, floating over the app the way a
+                 notification does — so the Mac screen underneath never moves,
+                 and it still reaches you in full screen. Outside .content on
+                 purpose: in the scroll flow it pushed everything down. The
+                 layer ignores pointer events; only the cards take them. -->
+            <div id="approvalsSection" class="approvals-layer">
+                <h2 class="section-heading visually-hidden">
+                    Needs you
+                    <!-- aria-live so the count is announced when it moves;
+                         app.js also sets an aria-label, because a bare "3"
+                         read on its own means nothing. -->
+                    <span id="approvalsCount" class="section-count" aria-live="polite">0</span>
+                </h2>
+                <div id="approvalsList" class="approvals-list"></div>
+            </div>
+
+            <!-- The aim point. Lives out here, not inside the screen frame:
+                 that element clips its overflow and is scaled by zoom, which
+                 pinned the marker to the picture and cut it off at the edges.
+                 Out here it can be parked anywhere, including off the
+                 screenshot and out of the way. -->
+            <div id="cursorMarker" class="cursor-marker hidden" aria-hidden="true">
+                <span class="cursor-ring"><i class="cursor-dot"></i></span>
+            </div>
+
+            <!-- Portrait full screen only: see the note in styles.css. -->
+            <p class="rotate-hint">Turn your phone sideways to fill the screen</p>
+
+            <!-- Only visible in full screen, where the header is hidden. -->
+            <button id="exitFullscreenBtn" class="exit-fullscreen" type="button"
+                    aria-label="Exit full screen">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M9 4h2v5a1 1 0 01-1 1H5V8h4V4zm6 0v4h4v2h-5a1 1 0 01-1-1V4h2zM4 14h5a1 1 0 011 1v5H8v-4H4v-2zm10 0h5v2h-4v4h-2v-5a1 1 0 011-1z"/>
+                </svg>
+                <span>Exit</span>
+            </button>
+
+            <!-- Fit the whole Mac, or fill the phone and crop the edges. -->
+            <button id="fillToggle" class="fill-toggle" type="button"
+                    aria-label="Fill the phone screen">Fill</button>
         </div>
 
         <!-- The one settings surface -->
@@ -114,18 +184,35 @@
 
                 <h3>Voice</h3>
                 <label class="setting-row">
-                    <span>Hands free — keep listening</span>
+                    <span>Keep listening for commands</span>
                     <input id="handsFree" type="checkbox">
                 </label>
-                <p class="setting-note">Starts and stops on your voice. Pauses when you leave the app; iOS will not hold the microphone in the background.</p>
+                <p class="setting-note">Starts and stops on your voice, so you do not have to hold
+                the button. Pauses when you leave the app — iOS will not hold the microphone in
+                the background.</p>
                 <div id="handsFreeStatus" class="setting-note"></div>
 
-                <h3>Screen</h3>
-                <label class="setting-row">
-                    <span>Tap the screen to control the Mac</span>
-                    <input id="tapToClick" type="checkbox">
-                </label>
-                <p class="setting-note">Tap to click, hold for right click, drag to drag, swipe to scroll. Cannot press system permission dialogs.</p>
+                <h3>Controlling the screen</h3>
+                <p class="setting-note"><strong>Drag the pointer</strong> to aim it — it stays
+                on the same spot of your Mac however far you zoom.</p>
+                <p class="setting-note"><strong>Two fingers</strong> scroll: up, down and
+                sideways. <strong>Pinch</strong> to zoom the picture. <strong>Four
+                fingers</strong> up for Mission Control, down for the desktop, left and right
+                to change space — the same as on the Mac's own trackpad.</p>
+                <p class="setting-note">Nothing is ever clicked by touching the picture. Say
+                <em>“click this”</em>, <em>“double click this”</em> or
+                <em>“right click this”</em> and it happens where the pointer is.</p>
+                <p class="setting-note">macOS privacy prompts are the exception — Apple only
+                accepts a press on those from real hardware, so they have to be answered at
+                the Mac.</p>
+
+                <p class="push-warning hidden" id="pushWarning"></p>
+
+                <h3>Notifications</h3>
+                <div class="push-setting" id="pushSetting">
+                    <p class="setting-note" id="pushSettingState"></p>
+                    <button id="pushEnable" class="policy-option hidden">Turn notifications on</button>
+                </div>
 
                 <h3>Decisions</h3>
                 <div id="policyGlobal" class="policy-global"></div>
@@ -135,7 +222,7 @@
 
                 <h3>Pairing</h3>
                 <input type="text" id="currentUrl" class="setting-input" readonly>
-                <button id="changePairingBtn" class="btn btn-secondary">Change pairing</button>
+                <button id="changePairingBtn" class="btn btn-secondary">Pair with a different Mac</button>
             </div>
         </div>
 
@@ -144,13 +231,14 @@
             <div class="sheet-scrim" data-close="inputSheet"></div>
             <div class="sheet-body">
                 <div class="sheet-grip"></div>
-                <h2>Send text</h2>
-                <p class="setting-note">Typed, not spoken — so passwords never go through speech or a model.</p>
+                <h2>Type on the Mac</h2>
+                <p class="setting-note">Typed, not spoken — so a password never goes through
+                speech or a model.</p>
                 <input id="typeField" class="setting-input" type="text" placeholder="Field name (optional, e.g. email)"
                        autocapitalize="off" autocomplete="off" spellcheck="false">
                 <input id="typeText" class="setting-input" type="text" placeholder="Text to type on the Mac"
                        autocapitalize="off" autocomplete="off" spellcheck="false">
-                <label class="setting-row"><span>Secret — hide and never log</span><input id="typeSecret" type="checkbox"></label>
+                <label class="setting-row"><span>Secret — hide it and never log it</span><input id="typeSecret" type="checkbox"></label>
                 <button id="typeSend" class="btn btn-primary">Send to Mac</button>
                 <div id="typeStatus" class="setting-note"></div>
             </div>
@@ -162,9 +250,11 @@
             <div class="sheet-body">
                 <div class="sheet-grip"></div>
                 <h2>Fill this in</h2>
-                <p class="setting-note">Read off the form on your Mac. Values go straight into the fields — passwords are never spoken, transcribed or logged.</p>
+                <p class="setting-note">Read off the form on your Mac. Each value goes straight
+                into the box it is labelled with — passwords are never spoken, transcribed or logged.</p>
+                <!-- The Spec supplies its own submit Button, so there is no
+                     static one here; two of them rendered side by side. -->
                 <div id="formFields"></div>
-                <button id="formSubmit" class="btn btn-primary">Fill on the Mac</button>
                 <div id="formStatus" class="setting-note"></div>
             </div>
         </div>
@@ -174,11 +264,11 @@
             <div class="sheet-scrim" data-close="approvalSheet"></div>
             <div class="sheet-body">
                 <div class="sheet-grip"></div>
-                <h2 id="approvalSheetTitle">Remember this?</h2>
+                <h2 id="approvalSheetTitle">Remember this choice?</h2>
                 <p class="setting-note">Applies from now on, and Jev uses it when deciding on its own.</p>
-                <button class="sheet-action allow" data-mode="always">Always allow</button>
-                <button class="sheet-action auto" data-mode="auto">Let Jev decide</button>
-                <button class="sheet-action deny" data-mode="never">Never allow</button>
+                <button class="sheet-action allow" data-mode="always">Always allow this app</button>
+                <button class="sheet-action auto" data-mode="auto">Let Jev answer the safe ones</button>
+                <button class="sheet-action deny" data-mode="never">Never allow this app</button>
                 <button class="sheet-action" data-close="approvalSheet">Cancel</button>
             </div>
         </div>
@@ -190,11 +280,18 @@
                 <div class="modal-header"><h2 id="confirmTitle">Are you sure?</h2></div>
                 <div class="modal-body"><p id="confirmMessage"></p></div>
                 <div class="modal-actions">
+                    <button id="confirmYes" class="btn btn-primary">Yes, do it</button>
                     <button id="confirmCancel" class="btn btn-secondary">Cancel</button>
-                    <button id="confirmYes" class="btn btn-primary">Yes</button>
                 </div>
             </div>
         </div>
+
+        <!-- Brief confirmations. Answering an approval used to make the card
+             vanish with nothing said, so you could not tell a sent decision
+             from a dropped tap. role=status announces it without stealing
+             focus, and it replaces the alert() calls, which block the whole
+             page on a phone. -->
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
 
     <script src="/app.js"></script>
