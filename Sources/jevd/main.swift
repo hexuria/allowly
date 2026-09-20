@@ -1124,6 +1124,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // pre-approve anything: unknown apps raise an approval on your phone,
         // and "Always allow" is what builds the list over time.
         AppCatalog.shared.refresh()
+        // …and keep it current: an app installed after launch could not be
+        // named until jev was restarted.
+        AppCatalog.shared.watch()
         let appPolicy = Policy.strictDefault()
         JevLog.write("[jev] app catalog: \(AppCatalog.shared.all.count) apps known, \(AppPolicyStore.shared.all.count) with a saved mode")
         let appExecutor = CommandExecutor(policy: appPolicy, store: appStore)

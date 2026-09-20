@@ -715,7 +715,7 @@ actor JevRuntime {
                 + (scope.context.host.map { " page=\($0)" } ?? "")
                 + " controls=\(scope.visibleLabels.count)"
                 + (scope.underPointer.map { " pointer=“\($0.prefix(30))”" } ?? "")
-                + " running=\(scope.runningApps.count)"
+                + " running=\(scope.runningApps.count) installed=\(scope.installedApps.count)"
                 + " wm=\(scope.workspaceManager.rawValue)"
                 + (scope.workspace.map { "@\($0)" } ?? ""))
             // Every route below ends here, so there is exactly one line per

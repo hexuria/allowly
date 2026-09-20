@@ -52,6 +52,10 @@ struct Scope: Sendable {
     let underPointer: String?
     /// Every app with a process, by localized name.
     let runningApps: Set<String>
+    /// Everything installed, by name — the widest ring of the global scope.
+    /// From the catalogue, which is kept current by watching the application
+    /// folders, so this costs nothing per command and is not stale.
+    let installedApps: [String]
     /// The workspaces that exist and the one in front, when a window manager
     /// can say. Empty otherwise — a closed choice over nothing offers nothing.
     let workspaces: [String]
@@ -80,6 +84,7 @@ struct Scope: Sendable {
                      monitorApps: Monitor.apps(visibleAt: point),
                      underPointer: pointed,
                      runningApps: running,
+                     installedApps: AppCatalog.shared.all.map(\.name),
                      workspaces: manager.workspaces,
                      workspace: manager.focused,
                      workspaceManager: manager.kind,
@@ -89,7 +94,8 @@ struct Scope: Sendable {
     /// For tests: nothing in front, nothing on screen.
     static let empty = Scope(context: Phrasebook.neutral, app: "", visibleLabels: [],
                              fromCursor: false, activeApp: "", monitorApps: [],
-                             underPointer: nil, runningApps: [], workspaces: [],
+                             underPointer: nil, runningApps: [], installedApps: [],
+                             workspaces: [],
                              workspace: nil, workspaceManager: .spaces, takenAt: Date())
 }
 
