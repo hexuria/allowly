@@ -32,7 +32,7 @@ actor JevRuntime {
     /// card read: You said "There are 3 things called Follow in
     /// Chrome — say which one, like number two → number two".
     private var pendingCommands: [String: (command: Command, said: String,
-                                          saidIsPrivate: Bool)] = [:]
+                                          saidIsPrivate: Bool, aim: Aim?)] = [:]
     /// Cards that only report something. Tapping one must not be mistaken for
     /// answering a dialog: the fallback in `onDecide` turns any unclaimed id
     /// into a `pressButton`, which would go looking for a button on screen
@@ -709,6 +709,7 @@ actor JevRuntime {
             // avoid blocking. See Scope.
             let scope = await Scope.current()
             let frontApp = scope.app.isEmpty ? "unknown" : scope.app
+            CommandExecutor.aim = scope.aim
             // One line per command saying what the world looked like. Without
             // it a stale-scope miss and a precedence miss are the same log.
             JevLog.write("[jev] scope: app=\(frontApp)"
@@ -738,6 +739,8 @@ actor JevRuntime {
                 CommandJournal.record(heard: heard ?? text, route: route, command: command,
                                       kind: kind, result: result, started: started,
                                       app: frontApp, verified: verified, unparsed: unparsed)
+                // Every route ends here, so the aim cannot outlive its command.
+                CommandExecutor.aim = nil
                 return result
             }
 
@@ -1137,6 +1140,9 @@ actor JevRuntime {
             let started = Date()
             let command: Command = field.map { .fillField(label: $0, text: text) }
                 ?? .typeText(text: text)
+            // Typed from the phone: no scope was resolved, so it goes where
+            // focus is, which is what someone typing expects.
+            CommandExecutor.aim = nil
             let result = await executor.execute(command, humanApproved: true)
             // If the typed value is anywhere in the reason, the reason is
             // not ours and goes back through the ordinary redaction.
@@ -2024,7 +2030,7 @@ actor JevRuntime {
             return .ok(reason: "Already waiting for your answer on that")
         }
         pendingCommands[id] = (command: parsed.command, said: text,
-                               saidIsPrivate: spokenIsPrivate)
+                               saidIsPrivate: spokenIsPrivate, aim: CommandExecutor.aim)
         await broadcast(event: "approval", request: request)
         JevLog.write("[jev] asking for approval: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
         return .ok(reason: "Needs your approval — check the Approvals tab")
@@ -2143,7 +2149,11 @@ actor JevRuntime {
             return .failed(reason: "That is not one of the choices on the card")
         }
 
+        // Re-aim at what was meant when it was said, not at what is in front
+        // by the time the card was answered.
+        CommandExecutor.aim = parked.aim
         let result = await executor.execute(command, humanApproved: true)
+        CommandExecutor.aim = nil
         // A sequence reports its own label as the reason, and that label is
         // the description — "Search for “5555 4444 3333”".
         JevLog.write("[jev] approved (\(optionId)) -> \(result.status.rawValue): \(CommandJournal.safeDescription(result.reason, command))")

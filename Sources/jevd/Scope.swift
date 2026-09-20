@@ -37,6 +37,19 @@ struct Scope: Sendable {
     let fromCursor: Bool
     /// What macOS calls the active app, kept so a disagreement is visible.
     let activeApp: String
+    /// The process owning the window the labels came from.
+    let cursorPid: Int?
+
+    /// Which app a keystroke should be aimed at before it is posted.
+    ///
+    /// A keystroke is posted to the HID tap with no target, so it lands in
+    /// whatever macOS thinks is active — and when the cursor is in Waz while
+    /// macOS says Chrome, "close tab" resolved for Waz closed a Chrome tab.
+    /// Nil when the two agree, which is the common case and costs nothing.
+    var aim: Aim? {
+        guard fromCursor, let pid = cursorPid, !app.isEmpty, app != activeApp else { return nil }
+        return Aim(pid: pid, app: app)
+    }
     /// The apps with a normal window on the display the cursor is on — the
     /// monitor level, between window and workspace. "What can we see" on a
     /// two-display Mac is this, not the frontmost window.
@@ -67,7 +80,7 @@ struct Scope: Sendable {
     /// Read the world once.
     static func current() async -> Scope {
         let point = Pointer.location()
-        let seen = await CommandExecutor.cua.context(at: point)
+        let seen = await CommandExecutor.cua.context(at: point)  // app, pid, labels, underPointer
         let context = Phrasebook.context()
         let active = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
         // Kept current by launch and exit events, not rebuilt per command.
@@ -82,6 +95,7 @@ struct Scope: Sendable {
                      visibleLabels: seen.labels,
                      fromCursor: seen.underPointer,
                      activeApp: active,
+                     cursorPid: seen.pid,
                      monitorApps: Monitor.apps(visibleAt: point),
                      underPointer: pointed,
                      runningApps: running,
@@ -94,7 +108,7 @@ struct Scope: Sendable {
 
     /// For tests: nothing in front, nothing on screen.
     static let empty = Scope(context: Phrasebook.neutral, app: "", visibleLabels: [],
-                             fromCursor: false, activeApp: "", monitorApps: [],
+                             fromCursor: false, activeApp: "", cursorPid: nil, monitorApps: [],
                              underPointer: nil, runningApps: [], installedApps: [],
                              workspaces: [],
                              workspace: nil, workspaceManager: .spaces, takenAt: Date())
@@ -129,4 +143,10 @@ enum Monitor {
               let w = dict["Width"] as? Double, let h = dict["Height"] as? Double else { return nil }
         return CGRect(x: x, y: y, width: w, height: h)
     }
+}
+
+/// Where a keystroke is going.
+struct Aim: Sendable, Equatable {
+    let pid: Int
+    let app: String
 }

@@ -177,8 +177,10 @@ public struct CuaBackend: Sendable {
     /// `frontmostContext`, so the three reads one command makes still cost
     /// one look.
     public func context(at point: CGPoint, limit: Int = 60) async
-        -> (app: String?, labels: [String], underPointer: Bool) {
-        if let fresh = await Self.cache.recent() { return (fresh.app, fresh.labels, await Self.cache.pointed()) }
+        -> (app: String?, pid: Int?, labels: [String], underPointer: Bool) {
+        if let fresh = await Self.cache.recent() {
+            return (fresh.app, await Self.cache.pid(), fresh.labels, await Self.cache.pointed())
+        }
         var target: Target?
         var pointed = false
         if let windows = try? await driver.call("list_windows"),
@@ -195,7 +197,7 @@ public struct CuaBackend: Sendable {
             pointed = true
         }
         if target == nil { target = try? await frontmostTarget() }
-        guard let target, let found = try? await elements(of: target) else { return (nil, [], false) }
+        guard let target, let found = try? await elements(of: target) else { return (nil, nil, [], false) }
         var seen = Set<String>()
         let actionable = found
             .filter { Self.clickableRoles.contains($0.role) || Self.fieldRoles.contains($0.role) }
@@ -206,8 +208,8 @@ public struct CuaBackend: Sendable {
             guard let frame = element.frame else { return nil }
             return (label: element.label, frame: frame)
         }
-        await Self.cache.store((target.appName, labels), placed: placed, pointed: pointed)
-        return (target.appName, labels, pointed)
+        await Self.cache.store((target.appName, labels), placed: placed, pointed: pointed, pid: target.pid)
+        return (target.appName, target.pid, labels, pointed)
     }
 
     /// Which window a command should act in.
@@ -686,6 +688,7 @@ public struct CuaBackend: Sendable {
         private var value: (app: String?, labels: [String])?
         private var frames: [(label: String, frame: CGRect)] = []
         private var fromPointer = false
+        private var ownerPid: Int?
         private var takenAt = Date.distantPast
         private let lifetime: TimeInterval = 2.0
 
@@ -699,14 +702,17 @@ public struct CuaBackend: Sendable {
         }
 
         func pointed() -> Bool { Date().timeIntervalSince(takenAt) < lifetime && fromPointer }
+        func pid() -> Int? { Date().timeIntervalSince(takenAt) < lifetime ? ownerPid : nil }
 
         func clear() { takenAt = .distantPast }
 
         func store(_ fresh: (app: String?, labels: [String]),
-                   placed: [(label: String, frame: CGRect)], pointed: Bool = false) {
+                   placed: [(label: String, frame: CGRect)], pointed: Bool = false,
+                   pid: Int? = nil) {
             value = fresh
             frames = placed
             fromPointer = pointed
+            ownerPid = pid
             takenAt = Date()
         }
     }

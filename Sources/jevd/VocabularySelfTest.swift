@@ -308,10 +308,32 @@ enum VocabularySelfTest {
         // because letting the screen win stole "save", "back", "find".
         func pointing(at label: String?, workspaces: [String] = ["1", "2", "3"]) -> Scope {
             Scope(context: Phrasebook.neutral, app: "App", visibleLabels: [], fromCursor: true,
-                  activeApp: "App", monitorApps: [], underPointer: label, runningApps: [],
+                  activeApp: "App", cursorPid: nil, monitorApps: [], underPointer: label, runningApps: [],
                   installedApps: [], workspaces: workspaces, workspace: "1",
                   workspaceManager: .aerospace, takenAt: Date())
         }
+        // Where a keystroke is aimed. A keystroke is posted with no target,
+        // so when the cursor's app and the active app disagree the command
+        // resolved for one would have landed in the other — "close tab" in
+        // Waz closed a Chrome tab. The aim exists only for that disagreement.
+        func scope(app: String, active: String, pid: Int?, cursor: Bool) -> Scope {
+            Scope(context: Phrasebook.neutral, app: app, visibleLabels: [], fromCursor: cursor,
+                  activeApp: active, cursorPid: pid, monitorApps: [], underPointer: nil, runningApps: [],
+                  installedApps: [], workspaces: [], workspace: nil,
+                  workspaceManager: .spaces, takenAt: Date())
+        }
+        func check(_ ok: Bool, _ what: String) { if !ok { failures.append(what) } }
+        check(scope(app: "Waz", active: "Google Chrome", pid: 42, cursor: true).aim == Aim(pid: 42, app: "Waz"),
+              "aim: cursor in Waz while Chrome is active aims at Waz")
+        check(scope(app: "Google Chrome", active: "Google Chrome", pid: 42, cursor: true).aim == nil,
+              "aim: nothing to do when the cursor's app is the active one")
+        check(scope(app: "Waz", active: "Google Chrome", pid: 42, cursor: false).aim == nil,
+              "aim: labels that did not come from under the cursor aim nowhere")
+        check(scope(app: "Waz", active: "Google Chrome", pid: nil, cursor: true).aim == nil,
+              "aim: no process to bring forward, no aim")
+        check(scope(app: "", active: "Google Chrome", pid: 42, cursor: true).aim == nil,
+              "aim: an unnamed app is not a target")
+
         let saveShortcut = VoiceCommand.Parsed(command: .pressKeys(spec: "cmd+s"), description: "Save")
         func level(_ name: String, _ text: String, pressed: Bool, onScreen: String?,
                    parsed: VoiceCommand.Parsed?, pointer: String? = nil,

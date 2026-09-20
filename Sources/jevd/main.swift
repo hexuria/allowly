@@ -251,6 +251,30 @@ final class CommandExecutor {
     /// Accessibility grant and refuses rather than guesses. See JevCua.
     static let cua = CuaBackend()
 
+    /// Set by the runtime for the length of one command: the app the
+    /// sentence was resolved against when that is not the active one. A
+    /// parked command carries its own and re-sets this when it finally runs,
+    /// so approval minutes later aims at what was meant, not at whatever is
+    /// in front by then.
+    nonisolated(unsafe) static var aim: Aim?
+
+    /// Make the aimed app active and wait for macOS to agree, so a keystroke
+    /// posted next lands there. Says so in the log either way: a keystroke
+    /// that went to the wrong window is the kind of failure nobody sees.
+    static func bring(_ aim: Aim) async {
+        guard let app = NSRunningApplication(processIdentifier: pid_t(aim.pid)) else {
+            JevLog.write("[jev] aim: \(aim.app) has no process; keystroke goes to the active app")
+            return
+        }
+        guard !app.isActive else { return }
+        app.activate()
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(30))
+            if app.isActive { break }
+        }
+        JevLog.write("[jev] aim: \(app.isActive ? "brought" : "could not bring") \(aim.app) forward")
+    }
+
     /// - Parameter answeredCard: a PERSON tapped an option on a card for
     ///   this exact request. Deliberately separate from `humanApproved`,
     ///   which also covers "the model decided this was routine" — that is a
@@ -288,6 +312,7 @@ final class CommandExecutor {
                                         inWindow: inWindow)
 
         case .typeText(let text):
+            if let aim = Self.aim { await Self.bring(aim) }
             return await Self.cua.type(text)
 
         case .clickPoint(let x, let y):
@@ -309,6 +334,7 @@ final class CommandExecutor {
                 : pressed
 
         case .pressKeys(let spec):
+            if let aim = Self.aim { await Self.bring(aim) }
             return Keystrokes.press(spec)
 
         case .rightClickControl(let label, let nth, let outOf, let inWindow):
@@ -316,6 +342,7 @@ final class CommandExecutor {
                                         nth: nth, outOf: outOf, inWindow: inWindow)
 
         case .fillField(let label, let text):
+            if let aim = Self.aim { await Self.bring(aim) }
             return await Self.cua.fill(field: label, with: text)
 
         case .systemAction(let name, let value):
@@ -469,6 +496,7 @@ final class CommandExecutor {
                 : .failed(reason: "The browser refused \(url)")
 
         case .sequence(let label, let steps):
+            if let aim = Self.aim { await Self.bring(aim) }
             // Whether every step actually landed, not just whether each
             // was delivered. The sequence used to return a bare `.ok`,
             // which would have reported a swallowed press inside it as
