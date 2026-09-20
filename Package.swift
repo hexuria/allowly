@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "JevCapture", targets: ["JevCapture"]),
         .library(name: "JevServer", targets: ["JevServer"]),
         .library(name: "JevCua", targets: ["JevCua"]),
+        .library(name: "JevWeb", targets: ["JevWeb"]),
         .executable(name: "jevd", targets: ["jevd"])
     ],
     targets: [
@@ -58,9 +59,22 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ]
         ),
+        .target(
+            name: "JevWeb",
+            dependencies: ["JevCore"],
+            resources: [
+                // Vendored byte-identical from jev-ultrafast; see
+                // THIRD-PARTY-NOTICES.md. Copied rather than processed so the
+                // bytes on disk are the bytes that run in the page.
+                .copy("Resources/snapshot.js")
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
         .executableTarget(
             name: "jevd",
-            dependencies: ["JevCore", "JevAX", "JevDecide", "JevCapture", "JevServer", "JevCua"],
+            dependencies: ["JevCore", "JevAX", "JevDecide", "JevCapture", "JevServer", "JevCua", "JevWeb"],
             swiftSettings: [
                 .swiftLanguageMode(.v5)
             ]

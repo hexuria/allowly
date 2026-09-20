@@ -7,6 +7,7 @@ import JevCapture
 import JevServer
 import JevCua
 import JevDecide
+import JevWeb
 
 #if canImport(Speech)
 @preconcurrency import Speech
@@ -393,6 +394,9 @@ final class CommandExecutor {
                 ? "Asked your phone for the \(field) — it will not be spoken or logged"
                 : "Asked your phone for the \(field)")
 
+        case .webTask(let goal, let startURL):
+            return await executeWebTask(goal: goal, startURL: startURL)
+
         case .openURL(let url):
             guard let target = URL(string: url) else {
                 return .failed(reason: "“\(url)” is not a usable address")
@@ -549,6 +553,62 @@ final class CommandExecutor {
             }
         }
         return .failed(reason: "\(name) did not quit — it is probably asking what to do with unsaved work")
+    }
+
+    /// Carry out a goal in the browser the person is already signed into.
+    ///
+    /// Today this opens a tab and reads the page. Deciding and clicking is the
+    /// next slice, and until it lands this deliberately cannot act: `JevWeb`
+    /// contains no `Input.*` call at all, so "it looked but did not touch" is
+    /// true by construction rather than by intention.
+    private func executeWebTask(goal: String, startURL: String?) async -> ExecutionResult {
+        let lookup = await ChromeDiscovery.lookup()
+        guard case .found(let endpoint) = lookup else {
+            // Names the next action rather than the fault. The four states need
+            // four different sentences — telling someone to restart Chrome when
+            // a consent prompt is waiting costs them every open tab.
+            return .failed(reason: ChromeDiscovery.explain(lookup))
+        }
+
+        // The start is resolved here, from what was said and what is already
+        // open — never by a model. BrowserContext reads the frontmost tab
+        // through Apple Events, which jev already has consent for.
+        let start: WebStart.Start = startURL.map { .url($0) }
+            ?? WebStart.resolve(goal: goal, currentHost: BrowserContext.currentHost())
+
+        let session = WebSession(endpoint: endpoint)
+        do {
+            try await session.open()
+            switch start {
+            case .url(let url):
+                try await session.navigate(to: url)
+            case .currentTab:
+                // A tab of our own starts blank, so "the page you are on" means
+                // going to it rather than borrowing the tab itself.
+                guard let host = BrowserContext.currentHost() else {
+                    await session.closeTab()
+                    return .failed(reason: WebStart.cannotStart)
+                }
+                try await session.navigate(to: "https://\(host)/")
+            case .unknown:
+                await session.closeTab()
+                return .failed(reason: WebStart.cannotStart)
+            }
+
+            let seen = try await session.observe()
+            // The tab is left open on purpose: it is the evidence of what
+            // happened, and the person should be able to look at it.
+            await session.detach()
+
+            let what = seen.title.isEmpty ? seen.url : seen.title
+            return .ok(reason: "Opened \(what) — \(seen.actionCount) things I can act on. "
+                             + "Deciding and clicking is not built yet.")
+        } catch {
+            await session.detach()
+            // Never echoes the page or the endpoint path: one is whatever they
+            // were looking at, the other is a credential.
+            return .failed(reason: "Could not read the page (\(error))")
+        }
     }
 
     private func executeAppLaunch(bundleId: String, humanApproved: Bool = false) -> ExecutionResult {
@@ -938,6 +998,10 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         testFailures.append(contentsOf: CommandCodableSelfTest.run())
         testFailures.append(contentsOf: CuaSelfTest.run())
         testFailures.append(contentsOf: HIDBridgeSelfTest.run())
+        // The browser backend never reaches a browser at launch; what it
+        // checks is the vendored table builder and the endpoint parser,
+        // both of which decide what a model is allowed to see.
+        testFailures.append(contentsOf: WebSelfTest.run())
         JevLog.write("[jev] self-tests: \(testFailures.isEmpty ? "pass" : "FAIL \(testFailures)")")
         if !testFailures.isEmpty {
             printOnboardingWarning("Self-tests failed:")

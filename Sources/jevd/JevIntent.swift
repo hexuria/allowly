@@ -30,7 +30,7 @@ enum JevIntent {
 
     private static let operations = [
         "open_app", "quit_app", "toggle_app", "click_control", "type_text", "scroll",
-        "known_capability", "unknown",
+        "known_capability", "web_task", "unknown",
     ]
 
     /// - Parameter controls: the labels of what is actually on screen, read by
@@ -50,7 +50,7 @@ enum JevIntent {
 
         var questions: [String: JevAPI.Question] = [
             "operation": .choice(
-                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front.",
+                instructions: "The user spoke a command to a Mac assistant. Which single operation are they asking for? 'toggle_app' means show it if hidden, hide it if in front. 'web_task' means carrying out a goal on a website — searching a site, playing something, opening a result — as opposed to 'type_text', which types the words themselves wherever the cursor already is.",
                 labels: operations
             ),
             "safe": .noul(
@@ -152,6 +152,12 @@ enum JevIntent {
         if let capability = answers.choice("capability"),
            capability.choice != "none",
            capability.confidence >= 0.5,
+           // ...but not over a web task. "play blinding lights on youtube"
+           // matches the "play" capability, which is the F8 media key — a
+           // single keystroke that cannot carry out a goal on a website. The
+           // capability is more specific about the verb and completely wrong
+           // about the intent.
+           operation.choice != "web_task",
            let parsed = Phrasebook.build(canonical: capability.choice),
            // A pointer press never outranks a named control; and when the
            // words were a press, nothing else does either.
@@ -207,6 +213,26 @@ enum JevIntent {
                 command: .scroll(direction: direction.choice, amount: 5),
                 description: "Scroll \(direction.choice)",
                 confidence: min(operation.confidence, direction.confidence),
+                safety: safety
+            ))
+
+        case "web_task":
+            // A floor, matching the one JevDecider uses. Measured: "new tab"
+            // classifies as web_task at 0.31 — wrong, though harmless in
+            // practice because the Phrasebook claims those words long before
+            // this resolver runs. Relying on that ordering would be relying on
+            // something several files away, so the weak answer is refused here
+            // too. Strong ones measure 1.00.
+            guard operation.confidence >= 0.6 else {
+                return .failure(IntentError("Jev did not recognise that as an action"))
+            }
+            // The goal is the sentence. The starting page is resolved later,
+            // by jev, from a site named in those words or the page already
+            // open — never from anything a model produced.
+            return .success(Resolution(
+                command: .webTask(goal: transcript),
+                description: "Carry out “\(transcript)” in your browser",
+                confidence: operation.confidence,
                 safety: safety
             ))
 

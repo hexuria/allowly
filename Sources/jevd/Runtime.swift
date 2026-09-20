@@ -1642,6 +1642,18 @@ actor JevRuntime {
                                          spokenIsPrivate: spokenIsPrivate)
         }
 
+        // A web task never goes to the decision model, whatever the policy
+        // says. Unknown bundle ids inherit the global mode, which defaults to
+        // .auto — so without this, "order me another pack of coffee filters"
+        // would be classified as routine and a sixty-action agent would run
+        // loose on a signed-in shop with no card ever shown. Everything else
+        // jev auto-runs is a single reversible act; this is a loop.
+        if case .webTask = parsed.command,
+           AppPolicyStore.shared.effectiveMode(for: bundleId) != .always {
+            return await requestApproval(for: parsed, spokenAs: text,
+                                         spokenIsPrivate: spokenIsPrivate)
+        }
+
         switch AppPolicyStore.shared.effectiveMode(for: bundleId) {
         case .always:
             let result = await executor.execute(parsed.command)
@@ -1868,6 +1880,8 @@ actor JevRuntime {
             "system.workspace": "workspace switching",
             "system.pointer": "clicking on screen",
             "system.keyboard": "typing",
+            "system.browser": "opening a page",
+            "system.webtask": "acting in your browser",
         ]
         let appName = parsed.command.bundleIdentifier.flatMap { bundleId in
             friendly[bundleId] ?? AppCatalog.shared.all.first { $0.bundleIdentifier == bundleId }?.name
