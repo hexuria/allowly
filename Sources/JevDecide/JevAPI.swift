@@ -67,6 +67,16 @@ public enum JevAPI {
         /// of those.
         case describedChoice(instructions: String, options: [String: [String: String]])
 
+        /// The labels a choice was offered over, so a reply can be checked
+        /// against exactly what was sent rather than what was hoped for.
+        public var offeredLabels: Set<String>? {
+            switch self {
+            case .choice(_, let labels): return Set(labels)
+            case .describedChoice(_, let options): return Set(options.keys)
+            case .noul: return nil
+            }
+        }
+
         var json: [String: Any] {
             switch self {
             case .choice(let instructions, let labels):
@@ -85,13 +95,78 @@ public enum JevAPI {
         public let choice: String
         public let confidence: Double
         public let probabilities: [String: Double]
+
+        public init(choice: String, confidence: Double, probabilities: [String: Double]) {
+            self.choice = choice
+            self.confidence = confidence
+            self.probabilities = probabilities
+        }
+
+        /// Whether this reply is a real choice over the options that were sent.
+        ///
+        /// Six checks, each with a way of being wrong that does not look
+        /// wrong: a choice outside the offered set, a distribution over
+        /// different keys than were offered, probabilities that do not sum to
+        /// one, a value outside 0…1, a non-finite number, or an argmax that
+        /// disagrees with the stated choice. Any of them means the answer did
+        /// not describe a choice over the list we sent, and acting on it
+        /// would be acting on nothing.
+        ///
+        /// Lived in the browser loop first; the sentence resolver — the code
+        /// that decides whether to open a URL or turn a signed-in shop loose
+        /// to an agent — applied none of it.
+        public func isSound(offered: Set<String>) -> Bool {
+            guard offered.contains(choice) else { return false }
+            guard Set(probabilities.keys) == offered else { return false }
+            let numbers = Array(probabilities.values) + [confidence]
+            guard numbers.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { return false }
+            guard abs(probabilities.values.reduce(0, +) - 1) < 0.02 else { return false }
+            guard let highest = probabilities.values.max(),
+                  let chosen = probabilities[choice],
+                  chosen >= highest - 1e-6 else { return false }
+            return true
+        }
+
+        /// How decisively the choice beat the next best: 1.0 is a tie.
+        ///
+        /// Measured against the runner-up rather than a flat probability,
+        /// because a flat floor breaks at both ends. One element out of
+        /// sixty at p=0.3 is a strong answer that a 0.6 floor rejects; and
+        /// "click free shipping to philippines" was refused at
+        /// operation=0.57 while the same reply carried the right control at
+        /// 0.78 — a floor on one scalar threw away the distribution it was
+        /// cut from. Nil when there is nothing to compare against.
+        public var runnerUpMargin: Double? {
+            guard probabilities.count > 1, let chosen = probabilities[choice] else { return nil }
+            let runnerUp = probabilities.filter { $0.key != choice }.values.max() ?? 0
+            guard runnerUp > 0 else { return chosen > 0 ? 1000 : nil }
+            return chosen / runnerUp
+        }
+
+        /// Twice the runner-up: a low bar that still refuses a toss-up, and
+        /// one that means the same thing over two options or two hundred.
+        public static let decisiveMargin = 2.0
+        public var isDecisive: Bool { (runnerUpMargin ?? 0) >= Self.decisiveMargin }
     }
 
     public struct Answers: Sendable {
         public let choices: [String: ChoiceAnswer]
         public let nouls: [String: Double]
 
+        public init(choices: [String: ChoiceAnswer], nouls: [String: Double]) {
+            self.choices = choices
+            self.nouls = nouls
+        }
+
         public func choice(_ name: String) -> ChoiceAnswer? { choices[name] }
+
+        /// The answer to a question, only if it is a sound choice over what
+        /// that question offered. An unsound reply reads as no answer at all —
+        /// which is what it is.
+        public func soundChoice(_ name: String, offered: Set<String>?) -> ChoiceAnswer? {
+            guard let answer = choices[name], let offered, answer.isSound(offered: offered) else { return nil }
+            return answer
+        }
         public func noul(_ name: String) -> Double? { nouls[name] }
     }
 

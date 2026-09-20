@@ -126,8 +126,18 @@ enum JevIntent {
         let summary = answers.choices.map { "\($0.key)=\($0.value.choice)@\(String(format: "%.2f", $0.value.confidence))" }.sorted().joined(separator: " ")
         JevLog.write("[jev] intent answers: \(summary)")
 
-        guard let operation = answers.choice("operation") else {
-            return .failure(IntentError("Jev returned no operation"))
+        // Every answer is checked against exactly what its question offered
+        // before it is believed. An unsound reply — a choice outside the set,
+        // a distribution over different keys, numbers that do not sum to one
+        // — is read as no answer, which is what it is. The browser loop has
+        // done this since it was written; this resolver did not, and it is
+        // the code that decides whether to open a URL or hand a signed-in
+        // shop to an agent.
+        func sound(_ name: String) -> JevAPI.ChoiceAnswer? {
+            answers.soundChoice(name, offered: questions[name]?.offeredLabels)
+        }
+        guard let operation = sound("operation") else {
+            return .failure(IntentError("Jev returned no usable operation"))
         }
         let safety = answers.noul("safe") ?? 0
         let addressed = answers.noul("addressed_to_the_mac") ?? 1
@@ -151,8 +161,11 @@ enum JevIntent {
         // The rule that covers both: if the person used a pressing verb and we
         // can name a control they can see, that is what they meant. A global
         // shortcut is the fallback for when they did not point at anything.
-        let namedControl = answers.choice("control").flatMap {
-            $0.choice != "none" && $0.confidence >= 0.5 ? $0 : nil
+        // Decisive, not merely above a number. A flat 0.5 rejected the
+        // correct control among sixty candidates and accepted a coin flip
+        // between two; the runner-up margin means the same thing at any size.
+        let namedControl = sound("control").flatMap {
+            $0.choice != "none" && $0.isDecisive ? $0 : nil
         }
         let spokenAsAPress = Self.startsWithPressVerb(transcript)
         let preferNamedControl = namedControl != nil
@@ -160,9 +173,9 @@ enum JevIntent {
 
         // A confident capability match wins over the coarser operation label:
         // it is more specific and it carries its own steps.
-        if let capability = answers.choice("capability"),
+        if let capability = sound("capability"),
            capability.choice != "none",
-           capability.confidence >= 0.5,
+           capability.isDecisive,
            // ...but not over a web task. "play blinding lights on youtube"
            // matches the "play" capability, which is the F8 media key — a
            // single keystroke that cannot carry out a goal on a website. The
@@ -192,12 +205,16 @@ enum JevIntent {
         // `operation=web_task@0.57`. The web-task floor then refused the
         // whole thing while the correct answer sat in the same reply.
         //
-        // The rule is narrow on purpose. It needs a pressing verb, so "go to
-        // youtube and search hello" is untouched; and the control must have
-        // been named with more conviction than the operation, so a confident
-        // web_task still wins over a vague guess at a button.
-        if spokenAsAPress, let control = namedControl,
-           control.confidence >= operation.confidence {
+        //
+        // Generalised since: a control the model named decisively beats an
+        // operation it could not decide on, whether or not a press verb was
+        // said. "click free shipping to philippines" was refused at
+        // operation=web_task@0.57 with control=Free Shipping Zone@0.78 in the
+        // same reply — the right answer, thrown away with the weak one. A
+        // decisive operation still wins, so "go to youtube and search hello"
+        // at 1.00 is not stolen by whatever button happens to be on screen.
+        if let control = namedControl,
+           spokenAsAPress || !operation.isDecisive {
             return .success(Resolution(
                 command: .clickControl(label: control.choice),
                 description: "Click “\(control.choice)” in \(frontmost)",
@@ -208,7 +225,7 @@ enum JevIntent {
 
         switch operation.choice {
         case "open_app", "quit_app", "toggle_app":
-            guard let appAnswer = answers.choice("app"), appAnswer.choice != "none",
+            guard let appAnswer = sound("app"), appAnswer.choice != "none",
                   let entry = AppCatalog.shared.resolve(spokenName: appAnswer.choice) else {
                 return .failure(IntentError("Jev could not tell which app you meant"))
             }
@@ -241,7 +258,7 @@ enum JevIntent {
             ))
 
         case "scroll":
-            let direction = answers.choice("scroll_direction")
+            let direction = sound("scroll_direction")
             guard let direction, direction.choice != "none" else {
                 return .failure(IntentError("Jev could not tell which way to scroll"))
             }
@@ -253,7 +270,7 @@ enum JevIntent {
             ))
 
         case "fill_detail":
-            guard let detail = answers.choice("detail"), detail.choice != "none" else {
+            guard let detail = sound("detail"), detail.choice != "none" else {
                 return .failure(IntentError("Jev could not tell which detail you meant"))
             }
             // The NAME travels; the value is fetched by the executor at the
@@ -285,9 +302,14 @@ enum JevIntent {
             // this resolver runs. Relying on that ordering would be relying on
             // something several files away, so the weak answer is refused here
             // too. Strong ones measure 1.00.
-            guard operation.confidence >= 0.6 else {
-                return .failure(IntentError("Jev did not recognise that as an action"))
-            }
+            // No floor here any more. One sat at 0.6 inside an outer gate of
+            // 0.55 (Runtime.swift, the intent route), so a web task the outer
+            // gate would merely have ASKED about was refused outright — with
+            // the correct control sitting in the same reply. An undecided
+            // operation is now handled above by preferring a decisive control;
+            // what reaches here is either decisive or the best there is, and a
+            // web task is forced to a card regardless unless the policy says
+            // always, so the person is the gate, not a number.
             // The goal is the sentence. The starting page is resolved later,
             // by jev, from a site named in those words or the page already
             // open — never from anything a model produced.

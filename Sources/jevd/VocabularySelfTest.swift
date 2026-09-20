@@ -185,6 +185,70 @@ enum VocabularySelfTest {
             failures.append("hint: an empty phrase takes a slot and biases nothing")
         }
 
+        // MARK: A reply is believed only if it is a real choice over what was sent.
+        //
+        // The browser loop checked this since it was written. The sentence
+        // resolver — the code that decides whether to open a URL or hand a
+        // signed-in shop to an agent — applied none of it, and read one scalar
+        // off a distribution it never looked at. "click free shipping to
+        // philippines" died at operation=0.57 with the right control at 0.78
+        // in the same reply.
+        typealias Answer = JevAPI.ChoiceAnswer
+        let offered: Set<String> = ["a", "b", "c"]
+        func answer(_ c: String, _ p: [String: Double], conf: Double = 0.9) -> Answer {
+            Answer(choice: c, confidence: conf, probabilities: p)
+        }
+        func soundness(_ name: String, _ a: Answer, _ expected: Bool) {
+            if a.isSound(offered: offered) != expected { failures.append("sound: \(name)") }
+        }
+        soundness("a real choice is sound", answer("a", ["a": 0.7, "b": 0.2, "c": 0.1]), true)
+        soundness("a choice outside the set is not", answer("z", ["a": 0.7, "b": 0.2, "c": 0.1]), false)
+        soundness("a distribution over other keys is not", answer("a", ["a": 0.5, "z": 0.5]), false)
+        soundness("not summing to one is not", answer("a", ["a": 0.5, "b": 0.1, "c": 0.1]), false)
+        soundness("an argmax disagreeing with the choice is not",
+                  answer("a", ["a": 0.2, "b": 0.7, "c": 0.1]), false)
+        soundness("a non-finite number is not", answer("a", ["a": .nan, "b": 0.5, "c": 0.5]), false)
+
+        // Decisive means "beat the runner-up by twice", at any size.
+        func decisive(_ name: String, _ a: Answer, _ expected: Bool) {
+            if a.isDecisive != expected { failures.append("decisive: \(name)") }
+        }
+        decisive("a clear lead is decisive", answer("a", ["a": 0.7, "b": 0.2, "c": 0.1]), true)
+        decisive("a toss-up is not", answer("a", ["a": 0.5, "b": 0.45, "c": 0.05]), false)
+        decisive("one of sixty at 0.3 is decisive", Answer(
+            choice: "1", confidence: 0.3,
+            probabilities: Dictionary(uniqueKeysWithValues: (1...60).map {
+                (String($0), $0 == 1 ? 0.3 : 0.7 / 59) })), true)
+        decisive("98 to 2 is decisive", answer("a", ["a": 0.98, "b": 0.02]), true)
+        decisive("a single option has no margin", answer("a", ["a": 1.0]), false)
+
+        // The offered set is recovered from the question, so a reply is
+        // checked against what was actually sent.
+        if JevAPI.Question.choice(instructions: "", labels: ["x", "y"]).offeredLabels != ["x", "y"] {
+            failures.append("offered: a choice question does not report its labels")
+        }
+        if JevAPI.Question.describedChoice(instructions: "", options: ["1": [:], "2": [:]])
+            .offeredLabels != ["1", "2"] {
+            failures.append("offered: a described choice does not report its keys")
+        }
+        if JevAPI.Question.noul(instructions: "").offeredLabels != nil {
+            failures.append("offered: a yes/no question claims labels")
+        }
+
+        // An unsound reply is no answer — and the resolver must treat it so
+        // rather than believe it or crash on it.
+        let replies = JevAPI.Answers(
+            choices: ["q": answer("z", ["a": 0.7, "b": 0.2, "c": 0.1])], nouls: [:])
+        if replies.soundChoice("q", offered: offered) != nil {
+            failures.append("sound: an unsound reply was believed")
+        }
+        if replies.soundChoice("missing", offered: offered) != nil {
+            failures.append("sound: a missing reply was invented")
+        }
+        if replies.soundChoice("q", offered: nil as Set<String>?) != nil {
+            failures.append("sound: a reply to a question with no options was believed")
+        }
+
         // MARK: Saying "click X" means clicking X.
         //
         // Measured on a real Amazon page: "click free shipping to philippines"

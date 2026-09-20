@@ -35,10 +35,7 @@ public enum WebChoice {
     /// as decisive as it gets, reported as a large finite number so callers
     /// never have to reason about infinity.
     static func strength(choice: String, probabilities: [String: Double]) -> Double? {
-        guard probabilities.count > 1, let chosen = probabilities[choice] else { return nil }
-        let runnerUp = probabilities.filter { $0.key != choice }.values.max() ?? 0
-        guard runnerUp > 0 else { return chosen > 0 ? 1000 : nil }
-        return chosen / runnerUp
+        JevAPI.ChoiceAnswer(choice: choice, confidence: 0, probabilities: probabilities).runnerUpMargin
     }
 
     public enum Refusal: Error, Sendable, Equatable {
@@ -62,17 +59,8 @@ public enum WebChoice {
     public static func isSound(choice: String, confidence: Double,
                                probabilities: [String: Double],
                                offered: Set<String>) -> Bool {
-        guard offered.contains(choice) else { return false }
-        guard Set(probabilities.keys) == offered else { return false }
-
-        let numbers = Array(probabilities.values) + [confidence]
-        guard numbers.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { return false }
-        guard abs(numbers.dropLast().reduce(0, +) - 1) < 0.02 else { return false }
-
-        guard let highest = probabilities.values.max(),
-              let chosen = probabilities[choice],
-              chosen >= highest - 1e-6 else { return false }
-        return true
+        JevAPI.ChoiceAnswer(choice: choice, confidence: confidence, probabilities: probabilities)
+            .isSound(offered: offered)
     }
 
     /// Standing rules, sent with every decision.
