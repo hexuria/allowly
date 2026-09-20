@@ -138,6 +138,26 @@ enum VocabularySelfTest {
         transcript("an error body is nothing heard", #"{"error":{"code":403}}"#, nil)
         transcript("malformed JSON is nothing heard", "not json", nil)
 
+        // MARK: Gemini answers; Apple keeps listening.
+        //
+        // Gemini returns one reading. Three of the cheapest rescues in
+        // SpeechRepair only work with more than one, so Gemini alone silently
+        // turned them off. Apple's readings ride along as the alternatives.
+        let gemini = Heard(best: "close tab", alternatives: [], confidence: 1.0)
+        let builtIn = Heard(best: "close thab", alternatives: ["close tab", "closed app", ""],
+                            confidence: 0.6)
+        let both = FallbackTranscriber.merged(preferred: gemini, secondary: builtIn)
+        if both.best != "close tab" { failures.append("merge: Gemini's reading is not the answer") }
+        if both.alternatives != ["close thab", "closed app"] {
+            failures.append("merge: Apple's readings are not the alternatives (\(both.alternatives))")
+        }
+        if both.confidence != 1.0 { failures.append("merge: confidence is not Gemini's") }
+        // Nothing lost when Apple heard only one thing, nothing invented
+        // when it heard nothing.
+        let quiet = FallbackTranscriber.merged(
+            preferred: gemini, secondary: Heard(best: "", alternatives: [], confidence: 0))
+        if quiet.alternatives != [] { failures.append("merge: silence became an alternative") }
+
         // MARK: What the recogniser is told to expect.
         //
         // Measured, on a Mac already listening in en-PH: "press cmd 1" came

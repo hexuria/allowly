@@ -218,13 +218,24 @@ struct GeminiTranscriber: Transcriber {
     }
 }
 
-/// Use one transcriber, fall back to another.
+/// Use one transcriber, fall back to another — and keep the other's ear.
 ///
-/// The fallback is the point of the whole arrangement: Gemini is opt-in, and a
-/// Mac with no key configured behaves exactly as it did before. It also covers
-/// the cases that are not about configuration at all — a plane, a dead
-/// network, an expired key — because a voice assistant that stops working
-/// when the internet does is worse than one that occasionally mishears.
+/// The fallback is the point of the whole arrangement: Gemini is opt-in, and
+/// a Mac with no key configured behaves exactly as it did before. It also
+/// covers the cases that are not about configuration at all — a plane, a
+/// dead network, an expired key — because a voice assistant that stops
+/// working when the internet does is worse than one that occasionally
+/// mishears.
+///
+/// The two run TOGETHER when both are available, not one after the other.
+/// Gemini returns one reading; Apple returns several. Three of jev's cheapest
+/// rescues live in `SpeechRepair` and only work with more than one reading —
+/// a reading that names a control on screen, a lower-ranked reading that
+/// parses when the top one does not, and the no-op when all readings mean
+/// the same thing. Switching to Gemini alone silently turned all three off.
+/// So Gemini's reading is the answer, and Apple's readings ride along as the
+/// alternatives. Apple is local and free; running it in parallel costs the
+/// slower of the two, not the sum.
 struct FallbackTranscriber: Transcriber {
     let preferred: Transcriber
     let fallback: Transcriber
@@ -235,15 +246,34 @@ struct FallbackTranscriber: Transcriber {
     func transcribe(audioURL: URL) async -> Result<Heard, TranscriptionError> {
         guard preferredIsConfigured() else { return await fallback.transcribe(audioURL: audioURL) }
 
-        let result = await preferred.transcribe(audioURL: audioURL)
-        if case .success = result { return result }
+        async let first = preferred.transcribe(audioURL: audioURL)
+        async let second = fallback.transcribe(audioURL: audioURL)
+        let (fromPreferred, fromFallback) = await (first, second)
 
-        // Say which one spoke, once, and why the other one is being tried.
-        // Without this a quietly-degrading key looks like a quietly-degrading
-        // recogniser.
-        if case .failure(let why) = result {
+        switch (fromPreferred, fromFallback) {
+        case (.success(let main), .success(let ear)):
+            return .success(Self.merged(preferred: main, secondary: ear))
+        case (.success(let main), .failure):
+            return .success(main)
+        case (.failure(let why), .success(let ear)):
+            // Say which one spoke, once, and why. Without this a quietly
+            // degrading key looks like a quietly degrading recogniser.
             JevLog.write("[jev] voice: Gemini did not answer (\(why)); using the built-in recogniser")
+            return .success(ear)
+        case (.failure, .failure(let why)):
+            return .failure(why)
         }
-        return await fallback.transcribe(audioURL: audioURL)
+    }
+
+    /// Pure: the preferred reading, with the other recogniser's readings as
+    /// alternatives. The preferred best is never repeated among them, and
+    /// nothing is dropped from what the second ear heard.
+    static func merged(preferred: Heard, secondary: Heard) -> Heard {
+        var seen: Set<String> = [preferred.best]
+        let extra = ([secondary.best] + secondary.alternatives)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        return Heard(best: preferred.best,
+                     alternatives: preferred.alternatives + extra,
+                     confidence: preferred.confidence)
     }
 }
