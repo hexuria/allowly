@@ -252,20 +252,39 @@ final class CommandExecutor {
     static let cua = CuaBackend()
 
     /// Make the aimed app active and wait for macOS to agree, so a keystroke
-    /// posted next lands there. Says so in the log either way: a keystroke
-    /// that went to the wrong window is the kind of failure nobody sees.
-    static func bring(_ aim: Aim) async {
+    /// posted next lands there.
+    ///
+    /// Returns whether it worked, and the caller refuses when it did not.
+    /// Logging it and typing anyway was the same harm the aim exists to
+    /// prevent — a keystroke in a window nobody meant, which is the kind of
+    /// failure nobody sees until something is already gone. Either doubt goes
+    /// to the person, the way it does everywhere else in jev.
+    ///
+    /// Six hundred milliseconds, not three: an app that has been swapped out
+    /// takes longer to come forward than one that is warm, and refusing a
+    /// command because a cold app was slow is its own wrong answer.
+    static func bring(_ aim: Aim) async -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid_t(aim.pid)) else {
-            JevLog.write("[jev] aim: \(aim.app) has no process; keystroke goes to the active app")
-            return
+            JevLog.write("[jev] aim: \(aim.app) is gone")
+            return false
         }
-        guard !app.isActive else { return }
+        guard !app.isActive else { return true }
         app.activate()
-        for _ in 0..<10 {
+        for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(30))
-            if app.isActive { break }
+            if app.isActive {
+                JevLog.write("[jev] aim: brought \(aim.app) forward")
+                return true
+            }
         }
-        JevLog.write("[jev] aim: \(app.isActive ? "brought" : "could not bring") \(aim.app) forward")
+        JevLog.write("[jev] aim: could not bring \(aim.app) forward; refusing rather than typing elsewhere")
+        return false
+    }
+
+    /// Said to the person, not to the log: the command was understood, and
+    /// deliberately not carried out.
+    static func missedAim(_ aim: Aim) -> ExecutionResult {
+        .failed(reason: "Could not bring \(aim.app) forward, so I did not type anywhere else")
     }
 
     /// - Parameter answeredCard: a PERSON tapped an option on a card for
@@ -314,7 +333,7 @@ final class CommandExecutor {
                                         inWindow: inWindow)
 
         case .typeText(let text):
-            if let aim { await Self.bring(aim) }
+            if let aim, await !Self.bring(aim) { return Self.missedAim(aim) }
             return await Self.cua.type(text)
 
         case .clickPoint(let x, let y):
@@ -336,7 +355,7 @@ final class CommandExecutor {
                 : pressed
 
         case .pressKeys(let spec):
-            if let aim { await Self.bring(aim) }
+            if let aim, await !Self.bring(aim) { return Self.missedAim(aim) }
             return Keystrokes.press(spec)
 
         case .rightClickControl(let label, let nth, let outOf, let inWindow):
@@ -344,7 +363,7 @@ final class CommandExecutor {
                                         nth: nth, outOf: outOf, inWindow: inWindow)
 
         case .fillField(let label, let text):
-            if let aim { await Self.bring(aim) }
+            if let aim, await !Self.bring(aim) { return Self.missedAim(aim) }
             return await Self.cua.fill(field: label, with: text)
 
         case .systemAction(let name, let value):
@@ -498,7 +517,7 @@ final class CommandExecutor {
                 : .failed(reason: "The browser refused \(url)")
 
         case .sequence(let label, let steps):
-            if let aim { await Self.bring(aim) }
+            if let aim, await !Self.bring(aim) { return Self.missedAim(aim) }
             // Whether every step actually landed, not just whether each
             // was delivered. The sequence used to return a bare `.ok`,
             // which would have reported a swallowed press inside it as

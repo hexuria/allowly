@@ -707,6 +707,10 @@ actor JevRuntime {
             // against this same reading, so none of them re-reads the screen
             // mid-sentence and none of them has to be handed an empty scope to
             // avoid blocking. See Scope.
+            // What was actually spoken, kept whole. `text` below is the
+            // sentence an address has been taken off the front of, and the
+            // journal's one job is to say what was said.
+            let said = text
             let (scope, text) = await Self.addressed(Scope.current(), said: text)
             let frontApp = scope.app.isEmpty ? "unknown" : scope.app
             // One line per command saying what the world looked like. Without
@@ -735,7 +739,7 @@ actor JevRuntime {
                          /// Nothing understood this. See CommandJournal.
                          unparsed: Bool = false,
                          verified: String? = nil) -> ExecutionResult {
-                CommandJournal.record(heard: heard ?? text, route: route, command: command,
+                CommandJournal.record(heard: heard ?? said, route: route, command: command,
                                       kind: kind, result: result, started: started,
                                       app: frontApp, verified: verified, unparsed: unparsed)
                 return result
