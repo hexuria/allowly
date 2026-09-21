@@ -223,6 +223,11 @@ actor JevRuntime {
         watcher.start()
         // The watcher's focus and launch events now feed the scope instead
         // of being dropped when the window is not a dialog.
+        // A password box the watcher cannot see. Focus is the only signal,
+        // and until now it went to the log and nowhere else.
+        ScopeStore.onPrivilegedPrompt = { [weak self] name in
+            Task { await self?.noticePrivilegedPrompt(from: name) }
+        }
         Task { await ScopeStore.shared.start() }
         JevLog.write("[allowly] Watching for dialogs.")
 
@@ -479,6 +484,44 @@ actor JevRuntime {
         case .askHuman:
             await escalate(request, note: decision.reason)
         }
+    }
+
+    /// Put a keychain or login prompt on the phone.
+    ///
+    /// Informational by construction — `handoffOnly`, the same as a TCC sheet
+    /// — because Accessibility cannot reach into `_securityagent` to find the
+    /// buttons, so there is nothing honest to offer beyond Dismiss. What it
+    /// gives you is the thing that was missing: knowing, wherever you are.
+    ///
+    /// With a board attached the box IS answerable, just not by naming its
+    /// buttons: the picture shows it, a tap is a real click, and the Secret
+    /// sheet types a real password. The card says which of those two worlds
+    /// you are in rather than making you guess.
+    private func noticePrivilegedPrompt(from appName: String) async {
+        let hasBoard = HIDBridge.isAttached()
+        let request = ApprovalRequest(
+            id: UUID().uuidString,
+            kind: .tccConsent,
+            title: "Your Mac is asking for a password",
+            bodyText: hasBoard
+                ? "\(appName) wants a keychain or login password. Accessibility cannot read "
+                    + "this box, so there are no buttons to tap here — but the board is plugged "
+                    + "in: find it in the picture, tap the field, use Send text to type it, and "
+                    + "tap Allow."
+                : "\(appName) wants a keychain or login password. Nothing remote can answer "
+                    + "this one without the USB board, so it has to be done at the Mac.",
+            options: [ApprovalOption(id: "dismiss", label: "Dismiss", riskLevel: .low)],
+            originatingApp: ApplicationInfo(name: appName, bundleIdentifier: "system.securityagent"),
+            timestamp: Date(),
+            screenshotReference: nil,
+            handoffOnly: true
+        )
+        // `escalate` deduplicates, which matters here: a password box takes
+        // and loses focus repeatedly while it is up — measured, five times in
+        // twelve seconds — and each of those is the same one prompt.
+        await escalate(request, note: hasBoard
+            ? "A password prompt. Answer it through the picture."
+            : "A password prompt. Only a press at the Mac itself answers it.")
     }
 
     /// Park the request and get it in front of the human.

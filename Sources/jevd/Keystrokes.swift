@@ -11,7 +11,9 @@ import JevCore
 enum Keystrokes {
     /// Virtual key codes are positional, not alphabetical, so they have to be
     /// spelled out rather than computed.
-    private static let keyCodes: [String: CGKeyCode] = [
+    /// Not private: the launch assertion proves every one of these can also
+    /// be sent through the board, and it cannot do that without reading them.
+    static let keyCodes: [String: CGKeyCode] = [
         "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
         "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
         "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
@@ -82,6 +84,24 @@ enum Keystrokes {
                 return .failed(reason: "Unknown modifier “\(modifier)”")
             }
             flags.insert(flag)
+        }
+
+        // Real hardware first, exactly as `Pointer.perform` does it. This is
+        // the only path that reaches a password field: secure input discards
+        // software keystrokes and cannot discard a keyboard.
+        if HIDBridge.isAttached() {
+            guard let modifier = HIDKeycodes.modifier(from: flags) else {
+                return .failed(reason: "The board has no fn key, so “\(spec)” cannot be sent through it")
+            }
+            if let usage = HIDKeycodes.usage[keyCode],
+               HIDBridge.key(modifier: Int(modifier), codes: [Int(usage)]) {
+                return .ok(reason: "Pressed \(spec)")
+            }
+        }
+
+        // Nothing typed is better than a lie about typing.
+        if SecureInput.isOn {
+            return .failed(reason: SecureInput.explanation)
         }
 
         guard let source = CGEventSource(stateID: .combinedSessionState),

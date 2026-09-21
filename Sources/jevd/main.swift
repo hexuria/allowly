@@ -290,6 +290,27 @@ final class CommandExecutor {
         return false
     }
 
+    /// Type through the board when one is attached, and through Cua when not.
+    ///
+    /// The board is the only path into a password field: secure input discards
+    /// software keystrokes and cannot discard a keyboard. When there is no
+    /// board and secure input is on, this refuses — because the alternative is
+    /// reporting success about keystrokes macOS threw away.
+    static func typeAnywhere(_ text: String) async -> ExecutionResult {
+        if HIDBridge.isAttached() {
+            SecureInput.warnIfLayoutIsNotUS { JevLog.write($0) }
+            if HIDBridge.type(text) {
+                // Never the text itself. This is the path a password takes.
+                return .ok(reason: "Typed \(text.count) characters")
+            }
+            JevLog.write("[allowly] the board could not type that; falling back")
+        }
+        if SecureInput.isOn {
+            return .failed(reason: SecureInput.explanation)
+        }
+        return await Self.cua.type(text)
+    }
+
     /// Said to the person, not to the log: the command was understood, and
     /// deliberately not carried out.
     static func missedAim(_ aim: Aim) -> ExecutionResult {
@@ -343,7 +364,7 @@ final class CommandExecutor {
 
         case .typeText(let text):
             if let aim, await !Self.bring(aim) { return Self.missedAim(aim) }
-            return await Self.cua.type(text)
+            return await Self.typeAnywhere(text)
 
         case .clickPoint(let x, let y):
             return await Self.cua.click(normalisedX: x, y: y)
@@ -504,7 +525,7 @@ final class CommandExecutor {
             guard let value = PersonalDetails.value(for: name), !value.isEmpty else {
                 return .failed(reason: "Nothing saved for \(canonical) — add it from the menu bar")
             }
-            let typed = await Self.cua.type(value)
+            let typed = await Self.typeAnywhere(value)
             // Reports the NAME. The reason string reaches the phone, the log
             // and the journal, so it must never carry what was typed.
             return typed.status == .ok

@@ -70,6 +70,10 @@ fi
 echo "   $RESULT"
 
 echo
+echo "== the keystrokes, decoded back into text =="
+python3 scripts/decode-keystrokes.py "$REPORTS" "Hunter2!" || exit 1
+
+echo
 echo "== what the board actually received =="
 if [ ! -s "$REPORTS" ]; then
   echo "   NOTHING — jev never reached the board" >&2

@@ -438,6 +438,27 @@ enum HIDBridge {
         return send(Wire.key(modifier: modifier, codes: codes))
     }
 
+    /// Type text as a real keyboard would, one character at a time.
+    ///
+    /// One key per report rather than packing six, because the firmware
+    /// releases everything between reports and two of the same letter in a row
+    /// need a release between them or the second is lost.
+    ///
+    /// Refuses the whole string if any character has no key, rather than
+    /// typing an approximation of it. A password typed nearly right is worse
+    /// than one not typed at all: it looks like it worked.
+    static func type(_ text: String) -> Bool {
+        var plan: [(UInt8, UInt8)] = []
+        for character in text {
+            guard let key = HIDKeycodes.character(character) else { return false }
+            plan.append((key.shift ? HIDKeycodes.shift : 0, key.usage))
+        }
+        for (modifier, usage) in plan {
+            guard key(modifier: Int(modifier), codes: [Int(usage)]) else { return false }
+        }
+        return true
+    }
+
     enum Button: Int {
         case left = 1
         case right = 2
