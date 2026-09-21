@@ -251,13 +251,6 @@ final class CommandExecutor {
     /// Accessibility grant and refuses rather than guesses. See JevCua.
     static let cua = CuaBackend()
 
-    /// Set by the runtime for the length of one command: the app the
-    /// sentence was resolved against when that is not the active one. A
-    /// parked command carries its own and re-sets this when it finally runs,
-    /// so approval minutes later aims at what was meant, not at whatever is
-    /// in front by then.
-    nonisolated(unsafe) static var aim: Aim?
-
     /// Make the aimed app active and wait for macOS to agree, so a keystroke
     /// posted next lands there. Says so in the log either way: a keystroke
     /// that went to the wrong window is the kind of failure nobody sees.
@@ -282,9 +275,18 @@ final class CommandExecutor {
     ///   the list of buttons jev must never press on its own. Not
     ///   propagated into a sequence's steps, so a sequence can never carry
     ///   a person's tap into a button press they did not see.
+    /// - Parameter aim: the app this command was resolved against, when that
+    ///   is not the one in front. Passed rather than held: it was briefly a
+    ///   process-global set for the length of a command, which is wrong twice
+    ///   over on an actor that suspends. Two commands overlapping at an
+    ///   `await` clobber each other's aim — and the very bug this exists to
+    ///   fix, a keystroke landing in the wrong app, is what that produces. It
+    ///   also outlived any path that returned without clearing it. A
+    ///   parameter cannot be stale and cannot be shared.
     func execute(_ command: Command,
                  humanApproved: Bool = false,
-                 answeredCard: Bool = false) async -> ExecutionResult {
+                 answeredCard: Bool = false,
+                 aim: Aim? = nil) async -> ExecutionResult {
         switch command {
         case .launchApp(let bundleId):
             return executeAppLaunch(bundleId: bundleId, humanApproved: humanApproved)
@@ -312,7 +314,7 @@ final class CommandExecutor {
                                         inWindow: inWindow)
 
         case .typeText(let text):
-            if let aim = Self.aim { await Self.bring(aim) }
+            if let aim { await Self.bring(aim) }
             return await Self.cua.type(text)
 
         case .clickPoint(let x, let y):
@@ -334,7 +336,7 @@ final class CommandExecutor {
                 : pressed
 
         case .pressKeys(let spec):
-            if let aim = Self.aim { await Self.bring(aim) }
+            if let aim { await Self.bring(aim) }
             return Keystrokes.press(spec)
 
         case .rightClickControl(let label, let nth, let outOf, let inWindow):
@@ -342,7 +344,7 @@ final class CommandExecutor {
                                         nth: nth, outOf: outOf, inWindow: inWindow)
 
         case .fillField(let label, let text):
-            if let aim = Self.aim { await Self.bring(aim) }
+            if let aim { await Self.bring(aim) }
             return await Self.cua.fill(field: label, with: text)
 
         case .systemAction(let name, let value):
@@ -496,7 +498,7 @@ final class CommandExecutor {
                 : .failed(reason: "The browser refused \(url)")
 
         case .sequence(let label, let steps):
-            if let aim = Self.aim { await Self.bring(aim) }
+            if let aim { await Self.bring(aim) }
             // Whether every step actually landed, not just whether each
             // was delivered. The sequence used to return a bare `.ok`,
             // which would have reported a swallowed press inside it as
