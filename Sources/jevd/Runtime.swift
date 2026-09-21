@@ -738,10 +738,12 @@ actor JevRuntime {
                          heard: String? = nil,
                          /// Nothing understood this. See CommandJournal.
                          unparsed: Bool = false,
-                         verified: String? = nil) -> ExecutionResult {
+                         verified: String? = nil,
+                         judged: CommandJournal.Judgement? = nil) -> ExecutionResult {
                 CommandJournal.record(heard: heard ?? said, route: route, command: command,
                                       kind: kind, result: result, started: started,
-                                      app: frontApp, verified: verified, unparsed: unparsed)
+                                      app: frontApp, verified: verified, unparsed: unparsed,
+                                      judged: judged)
                 return result
             }
 
@@ -1042,7 +1044,16 @@ actor JevRuntime {
                     CommandJournal.record(heard: text, route: "model/asked",
                                           command: parsed.description, kind: parsed.command,
                                           result: asked, started: started,
-                                          app: frontApp, verified: "pending-your-answer")
+                                          app: frontApp, verified: "pending-your-answer",
+                                          judged: CommandJournal.Judgement(
+                                            confidence: resolution.confidence,
+                                            routine: resolution.verdict.routine,
+                                            destructive: resolution.verdict.destructive,
+                                            // The whole point of the line: a
+                                            // card at 0.54 and a card at 0.98
+                                            // are different problems.
+                                            asked: resolution.verdict.looksDestructive
+                                                ? "hard-to-undo" : "half-heard"))
                     return asked
                 }
 
@@ -1050,7 +1061,11 @@ actor JevRuntime {
                 return journal("model", parsed.description,
                                await self.dispatch(parsed, spokenAs: text, verdict: resolution.verdict,
                                                    in: scope),
-                               kind: parsed.command)
+                               kind: parsed.command,
+                               judged: CommandJournal.Judgement(
+                                confidence: resolution.confidence,
+                                routine: resolution.verdict.routine,
+                                destructive: resolution.verdict.destructive))
             }
         }
 

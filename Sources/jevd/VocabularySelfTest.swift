@@ -393,6 +393,14 @@ enum VocabularySelfTest {
         check(fromChrome.addressing("in google chrome, close tab", running: procs, context: neutral)?.scope.aim == nil,
               "addressing: the app already in front needs no aim")
 
+        // The numbers the journal keeps, so a floor can be argued with.
+        check(CommandJournal.Judgement.round(0.5432) == 0.54,
+              "journal: a confidence is kept to two places")
+        check(CommandJournal.Judgement.round(0.999) == 1.0,
+              "journal: rounding goes up as well as down")
+        check(CommandJournal.Judgement.round(nil) == nil,
+              "journal: a route with no model records no numbers")
+
         // What the card says, and above all what it does NOT say. A card
         // raised because jev half-caught the sentence must not blame a
         // permission the person has already granted.

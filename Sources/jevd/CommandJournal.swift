@@ -32,6 +32,34 @@ enum CommandJournal {
         let app: String
         /// Where the effect could be checked, what the check said.
         let verified: String?
+        /// What Jev's numbers were, when a model produced them.
+        ///
+        /// These went to the log and nowhere else, and the log rotates. So
+        /// the confidence floor that decides whether a command runs or waits
+        /// for you could never be checked against what it actually did —
+        /// measured tonight, on a journal of 85 real commands, and the answer
+        /// was "no data". A floor tuned on remembered examples is a floor
+        /// nobody can argue with. Numbers, not words: there is nothing here
+        /// anyone said, so nothing to redact.
+        let confidence: Double?
+        let routine: Double?
+        let destructive: Double?
+        /// Which of the six reasons put a card in front of you.
+        let asked: String?
+    }
+
+    /// The numbers behind one decision, for the journal.
+    struct Judgement: Sendable, Equatable {
+        var confidence: Double?
+        var routine: Double?
+        var destructive: Double?
+        var asked: String?
+
+        /// Rounded to two places. A journal is read by a person and diffed by
+        /// a script; seventeen digits of Double help neither.
+        static func round(_ value: Double?) -> Double? {
+            value.map { (($0 * 100).rounded()) / 100 }
+        }
     }
 
     /// What was said, minus anything that should not be on disk.
@@ -183,7 +211,9 @@ enum CommandJournal {
                        /// command finished — a verification that runs after
                        /// the answer has already gone must not report its own
                        /// wait as the command's latency.
-                       tookMs: Int? = nil) {
+                       tookMs: Int? = nil,
+                       /// What the model said, when one was asked.
+                       judged: Judgement? = nil) {
         let carries = Self.carriesFreeText(kind)
         // Keep nothing when there is no verb to keep — either because
         // nothing parsed this, or because the first word turned out to be
@@ -212,7 +242,11 @@ enum CommandJournal {
             reason: reasonIsOurs ? result.reason : clean(result.reason),
             ms: tookMs ?? Int(Date().timeIntervalSince(started) * 1000),
             app: app,
-            verified: verified)
+            verified: verified,
+            confidence: Judgement.round(judged?.confidence),
+            routine: Judgement.round(judged?.routine),
+            destructive: Judgement.round(judged?.destructive),
+            asked: judged?.asked)
 
         guard let data = try? JSONEncoder().encode(entry),
               var line = String(data: data, encoding: .utf8) else { return }
