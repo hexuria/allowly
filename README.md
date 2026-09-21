@@ -81,6 +81,9 @@ notifications when something needs you. Add it to the home screen.
 
 Real screens, not mock-ups.
 
+<details>
+<summary>Show screenshots</summary>
+
 | | |
 |---|---|
 | <img src="docs/screenshots/06-normal.png" width="240"> | **The normal view.** Live picture of your Mac on top, one button at the bottom. Drag to move the pointer, pinch to zoom, two fingers to scroll. Hold the button and talk. |
@@ -91,6 +94,8 @@ Real screens, not mock-ups.
 | <img src="docs/screenshots/05-numbers.png" width="240"> | **Numbers.** Four buttons all called "Alex"? Say "show numbers", then say "6". |
 | <img src="docs/screenshots/07-settings.png" width="240"> | **Settings.** Hands-free listening, gestures, and who answers what. |
 | <img src="docs/screenshots/08-send-text.png" width="240"> | **Typing.** For things you shouldn't say out loud. Mark it *Secret* and it stays out of the log. |
+
+</details>
 
 ---
 
