@@ -15,8 +15,7 @@ final class PushStore: @unchecked Sendable {
     private var vapid: VAPID?
 
     private static var directory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev", isDirectory: true)
+        Allowly.supportDirectory
     }
 
     private static var subscriptionsURL: URL {
@@ -40,7 +39,7 @@ final class PushStore: @unchecked Sendable {
         let snapshot = subscriptions
         lock.unlock()
         save(snapshot)
-        JevLog.write("[jev] push subscription registered (\(snapshot.count) device(s))")
+        JevLog.write("[allowly] push subscription registered (\(snapshot.count) device(s))")
     }
 
     var all: [PushSubscription] {
@@ -62,9 +61,9 @@ final class PushStore: @unchecked Sendable {
             // sent, and this line used to return in silence: no log, no
             // `lastFailure`, no banner. A corrupt key file put the
             // daemon here permanently and nothing anywhere said so.
-            JevLog.write("[jev] NOTHING IS REACHING YOUR PHONE — jev has no push signing key, "
+            JevLog.write("[allowly] NOTHING IS REACHING YOUR PHONE — jev has no push signing key, "
                 + "so no notification can be sent. Restarting jev regenerates one.")
-            noteFailure("jev has no push signing key")
+            noteFailure("allowly has no push signing key")
             return
         }
         let sender = PushSender(vapid: identity, subscriberEmail: VAPIDSubject.configured)
@@ -77,21 +76,21 @@ final class PushStore: @unchecked Sendable {
             } catch let error as PushError {
                 if case .subscriptionExpired = error {
                     drop(subscription)
-                    JevLog.write("[jev] push subscription expired, removed")
+                    JevLog.write("[allowly] push subscription expired, removed")
                     // NOT `noteFailure(nil)`. An expired subscription is
                     // not evidence that the others are fine, and clearing
                     // here meant two paired phones where one is stale hid
                     // the other's 403 — decided by the order a dictionary
                     // happened to iterate in.
                 } else {
-                    JevLog.write("[jev] push failed: \(error.description)")
+                    JevLog.write("[allowly] push failed: \(error.description)")
                     noteFailure(error.description)
                 }
             } catch {
                 // URLSession errors dump a page of NSError detail; the code and
                 // message are the only useful part.
                 let nsError = error as NSError
-                JevLog.write("[jev] push failed: \(nsError.localizedDescription) (\(nsError.code))")
+                JevLog.write("[allowly] push failed: \(nsError.localizedDescription) (\(nsError.code))")
                 noteFailure(nsError.localizedDescription)
             }
         }
@@ -126,9 +125,9 @@ final class PushStore: @unchecked Sendable {
         // reject every notification from now until someone changes
         // something, so say so in words rather than leaving a status code.
         if let reason, reason.contains("403") {
-            JevLog.write("[jev] NOTHING IS REACHING YOUR PHONE — the push service refused jev's "
+            JevLog.write("[allowly] NOTHING IS REACHING YOUR PHONE — the push service refused Allowly's "
                 + "signing identity (\(VAPIDSubject.configured)). Notifications will keep failing "
-                + "until JEV_VAPID_SUBJECT is set to a contact it accepts.")
+                + "until ALLOWLY_VAPID_SUBJECT is set to a contact it accepts.")
         }
     }
 

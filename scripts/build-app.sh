@@ -3,11 +3,11 @@ set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
-APP_DIR="${BUILD_DIR}/Jev.app"
+APP_DIR="${BUILD_DIR}/Allowly.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-RELEASE_BINARY="${PROJECT_DIR}/.build/release/jevd"
+RELEASE_BINARY="${PROJECT_DIR}/.build/release/allowlyd"
 
 # Local settings, never committed. See .env.example for the shape.
 #
@@ -40,7 +40,7 @@ fi
 # silently invalidated by the next rebuild, while still appearing enabled in
 # System Settings. A Developer ID signature gives a fixed designated
 # requirement (identifier + team), so the grant survives rebuilds.
-# Override with JEV_SIGN_IDENTITY=... if you want a different certificate.
+# Override with ALLOWLY_SIGN_IDENTITY=... if you want a different certificate.
 #
 # The TEAM is pinned, because `head -1` is not a choice. On a machine with
 # two Developer ID certificates it silently picks whichever the keychain
@@ -51,11 +51,10 @@ fi
 #
 # `APPLE_TEAM_ID` is the name the rest of the Apple world uses — notarytool,
 # CI examples and most .env files — so one value can serve every tool that
-# needs it. `JEV_TEAM_ID` still works, because the other knobs in this
-# project are namespaced that way and somebody may have it set.
-APPLE_TEAM_ID="${APPLE_TEAM_ID:-${JEV_TEAM_ID:-}}"
-SIGN_IDENTITY="${JEV_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
-  | grep "Developer ID Application" | grep "(${APPLE_TEAM_ID})" | head -1 | sed -E 's/.*"(.*)"/\1/')}"
+# needs it. `ALLOWLY_TEAM_ID` and `JEV_TEAM_ID` still work.
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-${ALLOWLY_TEAM_ID:-${JEV_TEAM_ID:-}}}"
+SIGN_IDENTITY="${ALLOWLY_SIGN_IDENTITY:-${JEV_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep "Developer ID Application" | grep "(${APPLE_TEAM_ID})" | head -1 | sed -E 's/.*"(.*)"/\1/')}}"
 
 # Stop, rather than quietly ad-hoc signing a machine that HAS a real
 # certificate. Falling through here was worse than `head -1`: a developer
@@ -89,14 +88,14 @@ if [ -z "${SIGN_IDENTITY}" ]; then
     echo ""
     echo "Pick deliberately, then build again:"
     echo "  APPLE_TEAM_ID=YOURTEAMID make app   # sign as your own team"
-    echo "  JEV_SIGN_IDENTITY=\"Developer ID Application: ...\" make app"
+    echo "  ALLOWLY_SIGN_IDENTITY=\"Developer ID Application: ...\" make app"
     echo ""
     security find-identity -v -p codesigning | grep "Developer ID Application" || true
     exit 1
   fi
 fi
 
-echo "Building Jev.app..."
+echo "Building Allowly.app..."
 
 # Compile first. This script used to only copy whatever binary happened to be
 # in .build, so editing a source file and running it shipped the previous
@@ -112,8 +111,8 @@ if [ ! -f "${RELEASE_BINARY}" ]; then
     exit 1
 fi
 
-cp "${RELEASE_BINARY}" "${MACOS_DIR}/jevd"
-chmod +x "${MACOS_DIR}/jevd"
+cp "${RELEASE_BINARY}" "${MACOS_DIR}/allowlyd"
+chmod +x "${MACOS_DIR}/allowlyd"
 
 if [ -d "${PROJECT_DIR}/web" ]; then
     # Remove first: `cp -r src dst` copies INTO dst when it already exists,
@@ -145,13 +144,13 @@ cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>jevd</string>
+	<string>allowlyd</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.jev.agent</string>
+	<string>dev.goldcoders.allowly</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Jev</string>
+	<string>Allowly</string>
 	<key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>CFBundlePackageType</key>
@@ -165,14 +164,14 @@ cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Jev records voice commands to send to your Mac.</string>
+	<string>Allowly records voice commands to send to your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Jev transcribes voice commands locally on your Mac.</string>
+	<string>Allowly transcribes voice commands locally on your Mac.</string>
 </dict>
 </plist>
 EOF
 
-echo "Signing Jev.app..."
+echo "Signing Allowly.app..."
 
 if [ -n "${SIGN_IDENTITY}" ]; then
   echo "Signing with: ${SIGN_IDENTITY}"
@@ -185,16 +184,16 @@ fi
 
 echo ""
 echo "============================================"
-echo "Jev.app built successfully at:"
+echo "Allowly.app built successfully at:"
 echo "${APP_DIR}"
 echo ""
-echo "IMPORTANT: Before running Jev, grant permissions in System Settings:"
-echo "  • Accessibility → Jev (required to interact with dialogs)"
-echo "  • Screen Recording → Jev (required to capture screenshots)"
+echo "IMPORTANT: Before running Allowly, grant permissions in System Settings:"
+echo "  • Accessibility → Allowly (required to interact with dialogs)"
+echo "  • Screen Recording → Allowly (required to capture screenshots)"
 echo ""
 echo "⚠️  Screen Recording consent is bound to this exact binary, so macOS"
 echo "   may ask for it again after ANY rebuild — not only after a change of"
 echo "   signing identity, which is the case that wipes the grant outright."
 echo "   macOS also re-asks on its own schedule for apps that capture the"
-echo "   screen continuously, which Jev does. Neither is a bug."
+echo "   screen continuously, which Allowly does. Neither is a bug."
 echo "============================================"

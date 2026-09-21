@@ -30,8 +30,8 @@ python3 scripts/test-firmware.py || exit 1
 
 echo
 echo "== 2/2  jev against that firmware, over a pseudo-terminal =="
-if [ ! -x .build/debug/jevd ]; then
-  echo "no .build/debug/jevd — run 'swift build' first" >&2
+if [ ! -x .build/debug/allowlyd ]; then
+  echo "no .build/debug/allowlyd — run 'swift build' first" >&2
   exit 1
 fi
 
@@ -48,13 +48,13 @@ PORT=$(cat "$PORTFILE")
 if [ -z "$PORT" ]; then echo "the fake board never named a port" >&2; exit 1; fi
 echo "   fake board on $PORT"
 
-LOG="$HOME/Library/Application Support/jev/jev.log"
+LOG="$HOME/Library/Application Support/allowly/allowly.log"
 BEFORE=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 
 # jevd runs its self-tests at launch; with JEV_HID_PORT set they include the
 # end-to-end block. It is a menu-bar app, so we start it, let it get through
 # startup, and stop it.
-JEV_HID_PORT="$PORT" .build/debug/jevd > /dev/null 2>&1 &
+ALLOWLY_HID_PORT="$PORT" .build/debug/allowlyd > /dev/null 2>&1 &
 DAEMON_PID=$!
 for _ in $(seq 1 60); do
   sleep 0.5
@@ -64,7 +64,7 @@ RESULT=$(tail -n +$((BEFORE + 1)) "$LOG" 2>/dev/null | grep "self-tests" | tail 
 kill "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null; DAEMON_PID=""
 
 if [ -z "$RESULT" ]; then
-  echo "   jevd never reported its self-tests" >&2
+  echo "   allowlyd never reported its self-tests" >&2
   exit 1
 fi
 echo "   $RESULT"

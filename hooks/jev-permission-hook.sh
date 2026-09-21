@@ -32,9 +32,11 @@ TIMEOUT_SECONDS=6
 ENDPOINT="/api/permission"
 
 # Paths
-KEYCHAIN_SERVICE="com.jev.agent"
+KEYCHAIN_SERVICE="dev.goldcoders.allowly"
+LEGACY_KEYCHAIN_SERVICE="com.jev.agent"
 KEYCHAIN_KEY="daemon-pairing-token"
-TOKEN_FILE="${HOME}/Library/Application Support/jev/pairing-token"
+TOKEN_FILE="${HOME}/Library/Application Support/allowly/pairing-token"
+LEGACY_TOKEN_FILE="${HOME}/Library/Application Support/jev/pairing-token"
 
 # Colors for logging (to stderr, never stdout)
 RED='\033[0;31m'
@@ -60,15 +62,19 @@ log_warn() {
 # The file first, the Keychain second, so this keeps working if the daemon
 # ever moves the token back.
 get_pairing_token() {
-    if [[ -r "$TOKEN_FILE" ]]; then
-        local from_file
-        from_file=$(tr -d '[:space:]' < "$TOKEN_FILE")
-        if [[ -n "$from_file" ]]; then
-            echo "$from_file"
-            return
+    local from_file
+    for path in "$TOKEN_FILE" "$LEGACY_TOKEN_FILE"; do
+        if [[ -r "$path" ]]; then
+            from_file=$(tr -d '[:space:]' < "$path")
+            if [[ -n "$from_file" ]]; then
+                echo "$from_file"
+                return
+            fi
         fi
-    fi
-    security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_KEY" -w 2>/dev/null || echo ""
+    done
+    security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_KEY" -w 2>/dev/null \
+        || security find-generic-password -s "$LEGACY_KEYCHAIN_SERVICE" -a "$KEYCHAIN_KEY" -w 2>/dev/null \
+        || echo ""
 }
 
 # Read stdin (permission request from Claude Code)
@@ -124,7 +130,7 @@ fallback_response() {
     cat <<EOF
 {
   "allow": false,
-  "reason": "jev daemon not available; falling back to interactive prompt"
+  "reason": "allowly daemon not available; falling back to interactive prompt"
 }
 EOF
 }

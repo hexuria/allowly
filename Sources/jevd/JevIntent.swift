@@ -141,7 +141,7 @@ enum JevIntent {
             state["other_possible_readings"] = alternatives
         }
 
-        JevLog.write("[jev] intent asking: frontmost=\(frontmost) controls=\(controls.count) \(controls.prefix(6).joined(separator: " | "))")
+        JevLog.write("[allowly] intent asking: frontmost=\(frontmost) controls=\(controls.count) \(controls.prefix(6).joined(separator: " | "))")
         let result = await JevAPI.ask(state: state, questions: questions, apiKey: apiKey)
         guard case .success(let answers) = result else {
             if case .failure(let error) = result { return .failure(IntentError("\(error)")) }
@@ -149,7 +149,7 @@ enum JevIntent {
         }
 
         let summary = answers.choices.map { "\($0.key)=\($0.value.choice)@\(String(format: "%.2f", $0.value.confidence))" }.sorted().joined(separator: " ")
-        JevLog.write("[jev] intent answers: \(summary)")
+        JevLog.write("[allowly] intent answers: \(summary)")
 
         // Every answer is checked against exactly what its question offered
         // before it is believed. An unsound reply — a choice outside the set,

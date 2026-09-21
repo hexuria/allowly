@@ -1,4 +1,5 @@
 import Foundation
+import JevCore
 
 /// Apps the user has said "always allow" to, remembered across restarts.
 ///
@@ -11,8 +12,7 @@ final class UserAllowlist: @unchecked Sendable {
     private var identifiers: Set<String> = []
 
     private static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/allowlist.json")
+        Allowly.supportDirectory.appendingPathComponent("allowlist.json")
     }
 
     init() { load() }
@@ -28,7 +28,7 @@ final class UserAllowlist: @unchecked Sendable {
         let snapshot = identifiers
         lock.unlock()
         save(snapshot)
-        JevLog.write("[jev] always-allow added: \(bundleIdentifier)")
+        JevLog.write("[allowly] always-allow added: \(bundleIdentifier)")
     }
 
     var all: Set<String> {

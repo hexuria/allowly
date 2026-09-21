@@ -1,6 +1,6 @@
-# jev Architecture
+# Allowly Architecture
 
-jev detects dialog boxes on your Mac and asks for human approval when you're away. Only the human decides; no auto-clicks.
+Allowly detects dialog boxes on your Mac and asks for human approval when you're away. Only the human decides; no auto-clicks.
 
 ## Components
 
@@ -12,7 +12,7 @@ jev detects dialog boxes on your Mac and asks for human approval when you're awa
 
 **JevServer** — HTTP server bound to loopback only (127.0.0.1:8080). Routes: `/api/pending` (list dialogs), `/api/decide` (receive approval), `/api/command` (execute), `/api/screenshot`, `/api/tap`, `/api/type`, `/api/policy`, `/api/vapid-key` and `/api/subscribe` (web push). Serves the PWA.
 
-**jevd** — Menu bar app. Runs JevAX, JevServer, and the Claude Code hook. One-time onboarding grants Accessibility and Screen Recording.
+**allowlyd** — Menu bar app (`Allowly.app`, bundle id `dev.goldcoders.allowly`). Runs JevAX, JevServer, and the Claude Code hook. One-time onboarding grants Accessibility and Screen Recording.
 
 **web/** — PWA. Displays pending dialogs with screenshot + buttons. Phone user taps approve/deny or speaks a voice command. Paired-device only; must be added to Home Screen for iOS Web Push.
 

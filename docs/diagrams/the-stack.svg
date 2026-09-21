@@ -36,7 +36,7 @@
 
   <rect x="478" y="58" width="186" height="76" rx="11" fill="#F5F3EF" stroke="#DEDAD2" stroke-width="2"/>
   <text x="571" y="86" text-anchor="middle" class="lab" font-size="13">the daemon</text>
-  <text x="571" y="106" text-anchor="middle" class="mono" font-size="12" fill="#5E6670">jevd · 127.0.0.1:8787</text>
+  <text x="571" y="106" text-anchor="middle" class="mono" font-size="12" fill="#5E6670">allowlyd · 127.0.0.1:8787</text>
 
   <rect x="278" y="148" width="386" height="72" rx="11" fill="#F7ECD4" stroke="#B8862B" stroke-width="2.5"/>
   <text x="471" y="176" text-anchor="middle" class="lab" font-size="13">the device</text>

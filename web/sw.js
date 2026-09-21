@@ -1,4 +1,4 @@
-const CACHE_NAME = 'jev-v3';
+const CACHE_NAME = 'allowly-v1';
 const urlsToCache = [
     '/',
     '/index.html',
@@ -91,11 +91,11 @@ self.addEventListener('fetch', (event) => {
 // Push event - receive push notifications from server
 self.addEventListener('push', (event) => {
     let notificationData = {
-        title: 'Jev Notification',
+        title: 'Allowly Notification',
         body: 'New approval pending',
         icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect fill="%23000" width="192" height="192"/><text x="50%" y="50%" font-size="120" font-weight="bold" fill="%23fff" text-anchor="middle" dominant-baseline="central">J</text></svg>',
         badge: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect fill="%23000" width="96" height="96"/><text x="50%" y="50%" font-size="60" font-weight="bold" fill="%23fff" text-anchor="middle" dominant-baseline="central">!</text></svg>',
-        tag: 'jev-approval',
+        tag: 'allowly-approval',
         requireInteraction: true,
         data: {
             approvalId: null,

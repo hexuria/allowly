@@ -34,7 +34,7 @@ cat <<'NOTE'
 Two things this does not fix:
 
   * A LaunchAgent starts at LOGIN, not at boot. After an unattended restart
-    the Mac waits at the login window and jev is not running. Automatic login
+    the Mac waits at the login window and Allowly is not running. Automatic login
     (System Settings > Users & Groups) is the only cure, and it means physical
     access to the machine is access to your account.
   * The display is a separate setting and is left alone.

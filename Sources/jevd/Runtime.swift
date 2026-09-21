@@ -91,20 +91,20 @@ actor JevRuntime {
     // MARK: - Lifecycle
 
     func start(port: UInt16 = 8787) async {
-        JevLog.write("[jev] runtime.start entered")
+        JevLog.write("[allowly] runtime.start entered")
 
         // Keychain access can put a system dialog on screen. Doing it here, off
         // the main thread and after the run loop is up, keeps it from wedging
         // launch the way it does when called before NSApplication.run().
         let token = KeychainManager.loadOrCreatePairingToken()
-        JevLog.write("[jev] pairing token ready")
+        JevLog.write("[allowly] pairing token ready")
 
         let server = HTTPServer(
             config: HTTPServer.Config(bearerToken: token, webRootPath: Self.webRoot())
         )
         self.server = server
         registerRoutes(on: server)
-        JevLog.write("[jev] routes registered")
+        JevLog.write("[allowly] routes registered")
 
         do {
             try await server.start(on: port)
@@ -115,23 +115,23 @@ actor JevRuntime {
             // regardless, and it is the line someone reads when pairing
             // is not working.
             let host = await server.boundAddress() ?? "an address it did not report"
-            JevLog.write("[jev] Server listening on \(host):\(port)"
+            JevLog.write("[allowly] Server listening on \(host):\(port)"
                 + (host == "127.0.0.1" ? " (tailscale serve fronts it)" : ""))
             // Print the link outright. Reconstructing it by hand from a token
             // file is how the last pairing broke.
             // The same URL the menu bar hands out — an https MagicDNS origin
             // when serve is up. The old line hardcoded http://<ip>:<port>,
             // which is not a secure context and so cannot do voice or push.
-            JevLog.write("[jev] Pair your phone — the full link with its token is in the menu bar: "
+            JevLog.write("[allowly] Pair your phone — the full link with its token is in the menu bar: "
                 + Tailnet.loggableURL(token: token, localPort: port))
         } catch {
-            JevLog.write("[jev] Server failed to start: \(error)")
+            JevLog.write("[allowly] Server failed to start: \(error)")
         }
 
         if await pipeline.usesRemoteDecider {
-            JevLog.write("[jev] Decider: Jev (TYPESAFE_API_KEY present)")
+            JevLog.write("[allowly] Decider: Jev (TYPESAFE_API_KEY present)")
         } else {
-            JevLog.write("[jev] Decider: local policy only (no TYPESAFE_API_KEY). Anything policy cannot settle goes to your phone.")
+            JevLog.write("[allowly] Decider: local policy only (no TYPESAFE_API_KEY). Anything policy cannot settle goes to your phone.")
         }
 
         // Speech recognition is its own TCC permission. Without asking, every
@@ -149,7 +149,7 @@ actor JevRuntime {
         if Bundle.main.object(forInfoDictionaryKey: "NSSpeechRecognitionUsageDescription") != nil {
             Transcription.requestSpeechAuthorization()
         } else {
-            JevLog.write("[jev] no NSSpeechRecognitionUsageDescription in this binary — "
+            JevLog.write("[allowly] no NSSpeechRecognitionUsageDescription in this binary — "
                 + "skipping the speech permission (voice will not transcribe). Run the app bundle for that.")
         }
 
@@ -169,16 +169,16 @@ actor JevRuntime {
         }
 
         guard AccessibilityPermission.isTrusted() else {
-            JevLog.write("[jev] Accessibility is not granted, so no dialogs can be seen or pressed.")
+            JevLog.write("[allowly] Accessibility is not granted, so no dialogs can be seen or pressed.")
             // Ask macOS to show the real prompt rather than only logging. This
             // also registers the app under its current code signature, which a
             // stale entry left over from an earlier signing identity does not.
             _ = AccessibilityPermission.requestTrust()
-            JevLog.write("[jev] Requested Accessibility. Approve it, then relaunch Jev.")
+            JevLog.write("[allowly] Requested Accessibility. Approve it, then relaunch Jev.")
             return
         }
 
-        DialogWatcher.log = { JevLog.write("[jev] \($0)") }
+        DialogWatcher.log = { JevLog.write("[allowly] \($0)") }
         CommandExecutor.onInputRequested = { [weak self] field, secret in
             guard let self, self.hasConnectedPhone else { return false }
             Task { await self.broadcastInputRequest(field: field, secret: secret) }
@@ -224,7 +224,7 @@ actor JevRuntime {
         // The watcher's focus and launch events now feed the scope instead
         // of being dropped when the window is not a dialog.
         Task { await ScopeStore.shared.start() }
-        JevLog.write("[jev] Watching for dialogs.")
+        JevLog.write("[allowly] Watching for dialogs.")
 
     }
 
@@ -309,7 +309,7 @@ actor JevRuntime {
         // "Leave site?" on the Mac, with one log line and no card.
         // `decidePermission` already gets this right.
         if AppPolicyStore.shared.mode(for: bundleId) == .never, !request.handoffOnly {
-            JevLog.write("[jev] ignoring dialog from \(request.originatingApp.name) — set to never")
+            JevLog.write("[allowly] ignoring dialog from \(request.originatingApp.name) — set to never")
             return
         }
 
@@ -346,13 +346,13 @@ actor JevRuntime {
         }
 
         let decision = await pipeline.decide(request: request, dialogText: request.bodyText)
-        JevLog.write("[jev] dialog “\(request.title)” from \(request.originatingApp.name): "
+        JevLog.write("[allowly] dialog “\(request.title)” from \(request.originatingApp.name): "
             + "\(decision.value) by \(decision.source) — \(decision.reason)")
 
         switch decision.value {
         case .allow:
             guard let optionId = decision.chosenOptionId else {
-                await escalate(request, note: "jev could not work out which button to press — your call.")
+                await escalate(request, note: "allowly could not work out which button to press — your call.")
                 return
             }
             if let blocked = await refuseToAutoPress(request, optionId: optionId,
@@ -484,10 +484,10 @@ actor JevRuntime {
     /// Park the request and get it in front of the human.
     private func escalate(_ request: ApprovalRequest, note: String) async {
         guard await store.addDeduplicated(request) else {
-            JevLog.write("[jev] duplicate approval suppressed: \(request.title)")
+            JevLog.write("[allowly] duplicate approval suppressed: \(request.title)")
             return
         }
-        JevLog.write("[jev] Needs you: \(request.originatingApp.name) — \(request.title) (\(note))")
+        JevLog.write("[allowly] Needs you: \(request.originatingApp.name) — \(request.title) (\(note))")
         await broadcast(event: "approval", request: request)
 
         // The phone is usually asleep in a pocket when this fires; the open
@@ -537,14 +537,14 @@ actor JevRuntime {
             case .fresh:
                 break
             case .replayed:
-                JevLog.write("[jev] rejected a replayed decision")
+                JevLog.write("[allowly] rejected a replayed decision")
                 return .failed(reason: "That answer was already used — tap it again")
             case .stale:
                 // Distinguish the two. Telling someone their answer was
                 // "already used" when the truth is that the card sat there
                 // too long sends them looking for a second tap they never
                 // made.
-                JevLog.write("[jev] rejected a stale decision")
+                JevLog.write("[allowly] rejected a stale decision")
                 return .failed(reason: "That answer took too long to arrive — tap it again")
             }
 
@@ -661,7 +661,7 @@ actor JevRuntime {
                 _ = await store.resolve(id: requestId)
                 DialogRegistry.shared.discard(id: requestId)
                 await self.broadcastResolved(id: requestId)
-                JevLog.write("[jev] withdrew “\(request.title)” — its dialog is gone")
+                JevLog.write("[allowly] withdrew “\(request.title)” — its dialog is gone")
                 return .failed(reason: "That dialog closed on the Mac, so this card is gone too.")
             }
             return result
@@ -729,7 +729,7 @@ actor JevRuntime {
             let frontApp = scope.app.isEmpty ? "unknown" : scope.app
             // One line per command saying what the world looked like. Without
             // it a stale-scope miss and a precedence miss are the same log.
-            JevLog.write("[jev] scope: app=\(frontApp)"
+            JevLog.write("[allowly] scope: app=\(frontApp)"
                 + (scope.fromCursor && scope.activeApp != scope.app && !scope.activeApp.isEmpty
                     ? " (macOS says \(scope.activeApp))" : "")
                 + " monitor=\(scope.monitorApps.prefix(4).joined(separator: "|"))"
@@ -824,7 +824,7 @@ actor JevRuntime {
                 // command missed `.rightClickControl`, which carries a
                 // label rather than "free text". Keying on the parse
                 // missed the case where nothing parsed at all.
-                JevLog.write("[jev] finishing “\(pending)” with <not recorded> (\(JevLog.shape(text)))")
+                JevLog.write("[allowly] finishing “\(pending)” with <not recorded> (\(JevLog.shape(text)))")
                 if let parsed {
                     // `unparsed: true` unconditionally, because on THIS
                     // route the answer is always a value the person
@@ -861,7 +861,7 @@ actor JevRuntime {
                 // <value>)`. The route that armed this redacted it; the
                 // answer has to as well, or it reaches jev.log and
                 // commands.jsonl in full.
-                JevLog.write("[jev] picking \(choice.nth) of \(choice.count) controls"
+                JevLog.write("[allowly] picking \(choice.nth) of \(choice.count) controls"
                     + (choice.saidIsPrivate ? "" : " called “\(choice.label)”"))
                 // The same verb that asked the question.
                 let command: Command = choice.rightClick
@@ -892,7 +892,7 @@ actor JevRuntime {
                                            onScreen: onScreen,
                                            parsed: VoiceCommand.parse(text, in: scope.context))
             if let chosen, chosen.level != .global {
-                JevLog.write("[jev] \(chosen.route): \(chosen.parsed.description)")
+                JevLog.write("[allowly] \(chosen.route): \(chosen.parsed.description)")
                 return journal(chosen.route, chosen.parsed.description,
                                await self.dispatch(chosen.parsed, spokenAs: text, in: scope),
                                kind: chosen.parsed.command)
@@ -987,7 +987,7 @@ actor JevRuntime {
             // button and nothing else claimed. Same answer as above, not a
             // second look.
             if !pressed, let onScreen {
-                JevLog.write("[jev] on screen: “\(onScreen)” — nothing else claims that word")
+                JevLog.write("[allowly] on screen: “\(onScreen)” — nothing else claims that word")
                 return journal("screen/bare", "clickControl(\(onScreen))", await self.dispatch(
                     VoiceCommand.Parsed(command: .clickControl(label: onScreen),
                                         description: "Click “\(onScreen)”"),
@@ -1023,7 +1023,7 @@ actor JevRuntime {
                                            workspaces: scope.workspaces,
                                            apiKey: apiKey) {
             case .failure(let error):
-                JevLog.write("[jev] intent: \(error.description)")
+                JevLog.write("[allowly] intent: \(error.description)")
 
                 // Fail closed. This used to hand the transcript to JevPlan,
                 // which guessed a two-to-four step Phrasebook sequence out of
@@ -1035,7 +1035,7 @@ actor JevRuntime {
                                unparsed: true)
 
             case .success(let resolution):
-                JevLog.write("[jev] intent: \(resolution.description) confidence=\(String(format: "%.2f", resolution.confidence)) routine=\(String(format: "%.2f", resolution.verdict.routine)) destructive=\(String(format: "%.2f", resolution.verdict.destructive))")
+                JevLog.write("[allowly] intent: \(resolution.description) confidence=\(String(format: "%.2f", resolution.confidence)) routine=\(String(format: "%.2f", resolution.verdict.routine)) destructive=\(String(format: "%.2f", resolution.verdict.destructive))")
 
                 // A guess is not a mandate. Anything Jev is unsure of, or calls
                 // hard to undo, goes to you rather than straight to the machine.
@@ -1090,13 +1090,13 @@ actor JevRuntime {
         server.onVoiceUpload { audio in
             let ext = Transcription.fileExtension(forFirstBytesOf: audio)
             let head = audio.prefix(12).map { String(format: "%02x", $0) }.joined(separator: " ")
-            JevLog.write("[jev] voice: \(audio.count) bytes, sniffed .\(ext), head=\(head)")
+            JevLog.write("[allowly] voice: \(audio.count) bytes, sniffed .\(ext), head=\(head)")
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("jev-voice-\(UUID().uuidString).\(ext)")
             do {
                 try audio.write(to: tmp)
             } catch {
-                JevLog.write("[jev] voice: could not write temp audio: \(error)")
+                JevLog.write("[allowly] voice: could not write temp audio: \(error)")
                 return nil
             }
             defer { try? FileManager.default.removeItem(at: tmp) }
@@ -1107,10 +1107,10 @@ actor JevRuntime {
             var transcoded: URL?
             if !Transcription.isNativelyReadable(ext) {
                 guard let wav = Transcription.transcodeToWav(tmp) else {
-                    JevLog.write("[jev] voice: cannot transcode .\(ext) and Apple Speech cannot read it")
+                    JevLog.write("[allowly] voice: cannot transcode .\(ext) and Apple Speech cannot read it")
                     return nil
                 }
-                JevLog.write("[jev] voice: transcoded .\(ext) to wav")
+                JevLog.write("[allowly] voice: transcoded .\(ext) to wav")
                 audioURL = wav
                 transcoded = wav
             }
@@ -1132,7 +1132,7 @@ actor JevRuntime {
                 // secret is exactly the one nothing will understand. What
                 // jev DID understand gets logged further down, once it
                 // knows, and the journal carries the rest.
-                JevLog.write("[jev] voice: heard \(JevLog.shape(heard.best))"
+                JevLog.write("[allowly] voice: heard \(JevLog.shape(heard.best))"
                     + (heard.alternatives.isEmpty ? "" : ", \(heard.alternatives.count) other readings"))
                 // What is on screen decides which reading is real. A spoken
                 // "click skip" was being rewritten to "skip" and firing the
@@ -1157,11 +1157,11 @@ actor JevRuntime {
                     let offered = ([heard.best] + heard.alternatives)
                         .map { JevLog.safe($0) }
                         .joined(separator: " | ")
-                    JevLog.write("[jev] voice: nothing parsed; readings were: \(offered)")
+                    JevLog.write("[allowly] voice: nothing parsed; readings were: \(offered)")
                 }
                 return chosen
             case .failure(let error):
-                JevLog.write("[jev] voice: transcription failed: \(error)")
+                JevLog.write("[allowly] voice: transcription failed: \(error)")
                 return nil
             }
         }
@@ -1206,7 +1206,7 @@ actor JevRuntime {
             // cannot be trusted to mark it either: Chrome reports an
             // unlabelled <input type="password"> as a plain text field, so
             // `looksSecret` says false for exactly the boxes that matter.
-            JevLog.write("[jev] typed \(JevLog.shape(text))"
+            JevLog.write("[allowly] typed \(JevLog.shape(text))"
                 + (field.map { " into \($0)" } ?? "") + " -> \(result.status.rawValue)")
             // And a journal line, which this route never wrote — the
             // contract says exactly one per command, and typed text was
@@ -1272,7 +1272,7 @@ actor JevRuntime {
         // the allowlist already refuses is ever sent to a model, and no model
         // answer can widen what policy permits.
         server.onPermission { [weak self] body in
-            guard let self else { return #"{"allow":false,"reason":"jev is shutting down"}"# }
+            guard let self else { return #"{"allow":false,"reason":"allowly is shutting down"}"# }
             return await self.decidePermission(body)
         }
 
@@ -1330,7 +1330,7 @@ actor JevRuntime {
                 // Say why, in the one vocabulary. Returning [] made a broken
                 // driver look like an empty screen, which is the least useful
                 // thing it could say.
-                JevLog.write("[jev] numbers: \(error)")
+                JevLog.write("[allowly] numbers: \(error)")
                 let payload: [String: Any] = ["error": "\(error)"]
                 let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
                 return String(data: data, encoding: .utf8) ?? "{}"
@@ -1617,7 +1617,7 @@ actor JevRuntime {
         where request.kind == .appDialog || request.kind == .tccConsent {
             if DialogRegistry.shared.isLive(id: request.id) {
                 if await store.hold(id: request.id) {
-                    JevLog.write("[jev] holding “\(request.title)” — its dialog is still on screen")
+                    JevLog.write("[allowly] holding “\(request.title)” — its dialog is still on screen")
                 }
             } else {
                 await store.release(id: request.id)
@@ -1637,7 +1637,7 @@ actor JevRuntime {
             // five minutes later the number went to jev.log in full.
             let parked = pendingCommands.removeValue(forKey: stale.id)
             await broadcastResolved(id: stale.id)
-            JevLog.write("[jev] withdrew “\(CommandJournal.safeDescription(stale.title, parked?.command))”"
+            JevLog.write("[allowly] withdrew “\(CommandJournal.safeDescription(stale.title, parked?.command))”"
                 + " — nobody answered it in time")
         }
         for request in await store.getAllPending() {
@@ -1646,7 +1646,7 @@ actor JevRuntime {
             _ = await store.resolve(id: request.id)
             DialogRegistry.shared.discard(id: request.id)
             await broadcastResolved(id: request.id)
-            JevLog.write("[jev] withdrew “\(request.title)” — its dialog left the screen")
+            JevLog.write("[allowly] withdrew “\(request.title)” — its dialog left the screen")
         }
     }
 
@@ -1753,7 +1753,7 @@ actor JevRuntime {
         guard let addressed = scope.addressing(text, running: Scope.runningProcesses(), context: {
             Phrasebook.context(for: NSRunningApplication(processIdentifier: pid_t($0.pid)), host: nil)
         }) else { return (scope, text) }
-        JevLog.write("[jev] addressed to \(addressed.scope.app)"
+        JevLog.write("[allowly] addressed to \(addressed.scope.app)"
             + (addressed.scope.aim == nil ? "" : " (not in front; will be brought forward)"))
         return (addressed.scope, addressed.rest)
     }
@@ -1831,7 +1831,7 @@ actor JevRuntime {
            let old = bucket, AppPolicyStore.shared.mode(for: old) == .always {
             // Said once per command rather than kept quiet: this is a grant
             // the person made that jev is deliberately no longer honouring.
-            JevLog.write("[jev] policy: “\(old)” was set to always, which no longer covers every app — "
+            JevLog.write("[allowly] policy: “\(old)” was set to always, which no longer covers every app — "
                 + "asking for \(bundleId) on its own")
         }
 
@@ -1855,7 +1855,7 @@ actor JevRuntime {
             return result
 
         case .never:
-            JevLog.write("[jev] refused (never): \(CommandJournal.safeDescription(parsed.description, parsed.command))")
+            JevLog.write("[allowly] refused (never): \(CommandJournal.safeDescription(parsed.description, parsed.command))")
             return .failed(reason: "\(parsed.description) is set to never allow")
 
         case .auto:
@@ -1916,7 +1916,7 @@ actor JevRuntime {
 
         let result = await JevAPI.ask(state: state, questions: questions, apiKey: apiKey)
         guard case .success(let answers) = result else {
-            JevLog.write("[jev] auto: Jev unavailable, asking you")
+            JevLog.write("[allowly] auto: Jev unavailable, asking you")
             return await requestApproval(for: parsed, spokenAs: text,
                                          spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim,
                                          reason: .cannotJudge)
@@ -1964,7 +1964,7 @@ actor JevRuntime {
 
         guard let data = body.data(using: .utf8),
               let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return reply(false, "jev could not read the request")
+            return reply(false, "allowly could not read the request")
         }
 
         // Claude Code names the tool in `name` and what it is acting on in
@@ -1984,16 +1984,16 @@ actor JevRuntime {
         // unredacted, and a log is exactly where a token pasted into a
         // command goes to be forgotten about. The card still shows the
         // whole thing; the card is on their phone, not in a file.
-        JevLog.write("[jev] permission asked: \(tool) (\(JevLog.shape(detail)))")
+        JevLog.write("[allowly] permission asked: \(tool) (\(JevLog.shape(detail)))")
 
         // 1. Policy. An explicit choice you already made needs no model and
         //    no phone.
         switch AppPolicyStore.shared.mode(for: bundleId) {
         case .always:
-            JevLog.write("[jev] permission allowed by policy")
+            JevLog.write("[allowly] permission allowed by policy")
             return reply(true, "You always allow Claude Code")
         case .never:
-            JevLog.write("[jev] permission denied by policy")
+            JevLog.write("[allowly] permission denied by policy")
             return reply(false, "You never allow Claude Code")
         default:
             break
@@ -2044,14 +2044,14 @@ actor JevRuntime {
 
         switch answer {
         case "once":
-            JevLog.write("[jev] permission allowed from the phone")
+            JevLog.write("[allowly] permission allowed from the phone")
             return reply(true, "You allowed it from your phone")
         case "always":
             AppPolicyStore.shared.set(.always, for: bundleId)
-            JevLog.write("[jev] permission allowed, and remembered")
+            JevLog.write("[allowly] permission allowed, and remembered")
             return reply(true, "You allowed Claude Code from now on")
         case "deny":
-            JevLog.write("[jev] permission denied from the phone")
+            JevLog.write("[allowly] permission denied from the phone")
             return reply(false, "You denied it from your phone")
         default:
             // Nobody answered in time. Fail closed, and TAKE THE CARD DOWN.
@@ -2064,7 +2064,7 @@ actor JevRuntime {
             // that was never involved.
             _ = await store.resolve(id: id)
             await broadcastResolved(id: id)
-            JevLog.write("[jev] permission unanswered in 4s — withdrew the card, answer on the Mac")
+            JevLog.write("[allowly] permission unanswered in 4s — withdrew the card, answer on the Mac")
             return reply(false, "No answer from your phone in time — asking on the Mac instead")
         }
     }
@@ -2109,21 +2109,21 @@ actor JevRuntime {
             let heard = "You said “\(said)”."
             switch self {
             case .notAllowed:
-                return "\(heard)\njev can do this, but \(appName) has not been allowed yet."
+                return "\(heard)\nallowly can do this, but \(appName) has not been allowed yet."
             case .halfHeard(let confidence):
-                return "\(heard)\njev is only \(Int((confidence * 100).rounded()))% sure that means "
+                return "\(heard)\nallowly is only \(Int((confidence * 100).rounded()))% sure that means "
                     + "“\(description)”, so it would rather ask than guess. This is not a permission "
                     + "setting — allowing \(appName) will not stop it."
             case .hardToUndo:
-                return "\(heard)\njev understood this, and thinks it may be hard to undo."
+                return "\(heard)\nallowly understood this, and thinks it may be hard to undo."
             case .browserTask:
-                return "\(heard)\nA browser task clicks its own way through a page, so jev asks every "
+                return "\(heard)\nA browser task clicks its own way through a page, so allowly asks every "
                     + "time no matter what is allowed."
             case .cannotJudge:
-                return "\(heard)\njev could not reach the decider to judge this, so it is asking you "
+                return "\(heard)\nallowly could not reach the decider to judge this, so it is asking you "
                     + "instead."
             case .notRoutine:
-                return "\(heard)\njev did not think this was routine enough to do on its own."
+                return "\(heard)\nallowly did not think this was routine enough to do on its own."
             }
         }
     }
@@ -2177,13 +2177,13 @@ actor JevRuntime {
         // dedup guard, a suppressed duplicate left a command sitting under
         // an id that no card would ever carry, for the life of the process.
         guard await store.addDeduplicated(request) else {
-            JevLog.write("[jev] duplicate approval suppressed: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
+            JevLog.write("[allowly] duplicate approval suppressed: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
             return .ok(reason: "Already waiting for your answer on that")
         }
         pendingCommands[id] = (command: parsed.command, said: text,
                                saidIsPrivate: spokenIsPrivate, aim: aim, key: key)
         await broadcast(event: "approval", request: request)
-        JevLog.write("[jev] asking for approval: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
+        JevLog.write("[allowly] asking for approval: \(CommandJournal.safeDescription(parsed.description, parsed.command))")
         return .ok(reason: "Needs your approval — check the Approvals tab")
     }
 
@@ -2224,12 +2224,12 @@ actor JevRuntime {
         // never shown — the store drops a same-title card within two minutes,
         // and clicking the same button twice in one task is exactly that.
         guard await store.addDeduplicated(request) else {
-            JevLog.write("[jev] web consent not asked: an identical card is already up")
+            JevLog.write("[allowly] web consent not asked: an identical card is already up")
             return .noAnswer
         }
         awaitedWebConsent.insert(id)
         await broadcast(event: "approval", request: request)
-        JevLog.write("[jev] asking before clicking in the browser")
+        JevLog.write("[allowly] asking before clicking in the browser")
 
         var answer = ""
         for _ in 0..<Self.webConsentPolls {
@@ -2249,9 +2249,9 @@ actor JevRuntime {
         await broadcastResolved(id: id)
 
         switch answer {
-        case "yes": JevLog.write("[jev] you allowed it"); return .yes
-        case "no": JevLog.write("[jev] you stopped it"); return .no
-        default: JevLog.write("[jev] nobody answered; the task stopped"); return .noAnswer
+        case "yes": JevLog.write("[allowly] you allowed it"); return .yes
+        case "no": JevLog.write("[allowly] you stopped it"); return .no
+        default: JevLog.write("[allowly] nobody answered; the task stopped"); return .noAnswer
         }
     }
 
@@ -2280,7 +2280,7 @@ actor JevRuntime {
 
         switch optionId {
         case "deny":
-            JevLog.write("[jev] approval denied for \(id)")
+            JevLog.write("[allowly] approval denied for \(id)")
             return .ok(reason: "Denied")
         case "never":
             if let bundleId { AppPolicyStore.shared.set(.never, for: bundleId) }
@@ -2297,7 +2297,7 @@ actor JevRuntime {
             // a typo, an older client, a replayed body with the id
             // changed — executed a parked command as though the person
             // had approved it. The card only ever offers these.
-            JevLog.write("[jev] approval for \(id) named an unknown option “\(optionId)”")
+            JevLog.write("[allowly] approval for \(id) named an unknown option “\(optionId)”")
             return .failed(reason: "That is not one of the choices on the card")
         }
 
@@ -2306,7 +2306,7 @@ actor JevRuntime {
         let result = await executor.execute(command, humanApproved: true, aim: parked.aim)
         // A sequence reports its own label as the reason, and that label is
         // the description — "Search for “5555 4444 3333”".
-        JevLog.write("[jev] approved (\(optionId)) -> \(result.status.rawValue): \(CommandJournal.safeDescription(result.reason, command))")
+        JevLog.write("[allowly] approved (\(optionId)) -> \(result.status.rawValue): \(CommandJournal.safeDescription(result.reason, command))")
         // The card path runs the command HERE, not through `dispatch`,
         // so the ambiguity had to be recorded here too. Without this
         // line the refusal asked "which one?" on every Mac whose
@@ -2426,7 +2426,7 @@ actor JevRuntime {
         let payload: [String: Any] = ["type": "spec", "spec": spec]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
-        JevLog.write("[jev] sending a \(fields.count)-field form to the phone as a spec")
+        JevLog.write("[allowly] sending a \(fields.count)-field form to the phone as a spec")
         for socket in pruneSockets() { await socket.send(text: json) }
     }
 
@@ -2469,7 +2469,7 @@ actor JevRuntime {
         guard await store.addDeduplicated(request) else { return }
         webReports.insert(id)
         await broadcast(event: "approval", request: request)
-        JevLog.write("[jev] web task ended: \(title)\(picture == nil ? "" : " (with a picture)")")
+        JevLog.write("[allowly] web task ended: \(title)\(picture == nil ? "" : " (with a picture)")")
     }
 
     /// Ask the phone to open its text sheet, aimed at a named field.
@@ -2519,8 +2519,7 @@ actor JevRuntime {
               var text = String(data: data, encoding: .utf8) else { return }
         text += "\n"
 
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev", isDirectory: true)
+        let dir = Allowly.supportDirectory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("audit.jsonl")
 

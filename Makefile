@@ -4,7 +4,7 @@ build:
 	swift build -c release
 
 run:
-	swift run jevd
+	swift run allowlyd
 
 app: build
 	bash scripts/build-app.sh

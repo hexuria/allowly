@@ -313,8 +313,8 @@ public actor HTTPServer {
         // context on the phone (and therefore microphone, service worker and
         // Web Push work at all). Binding the tailnet address directly means
         // serve cannot reach us, and the phone is stuck on plain HTTP.
-        // Set JEV_BIND_TAILNET=1 to go back to listening on the tailnet directly.
-        if ProcessInfo.processInfo.environment["JEV_BIND_TAILNET"] != "1" {
+        // Set ALLOWLY_BIND_TAILNET=1 (or JEV_BIND_TAILNET=1) to listen on the tailnet directly.
+        if Allowly.environment("ALLOWLY_BIND_TAILNET", "JEV_BIND_TAILNET") != "1" {
             return ("127.0.0.1", BindAddressType.loopback)
         }
 

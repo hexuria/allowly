@@ -1,4 +1,5 @@
 import Foundation
+import JevCore
 
 /// The TypeSafe System One HTTP API, as it actually is.
 ///
@@ -30,9 +31,7 @@ public enum JevAPI {
     /// else — anything that is not a local address is ignored and the direct
     /// endpoint is used.
     public static var endpoint: URL {
-        guard let raw = ProcessInfo.processInfo.environment["JEV_DECIDE_BASE_URL"]?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty,
+        guard let raw = Allowly.environment("ALLOWLY_DECIDE_BASE_URL", "JEV_DECIDE_BASE_URL"),
               let url = URL(string: raw.hasSuffix("/") ? raw + "v1/systemone"
                                                        : raw + "/v1/systemone"),
               isLoopback(url)
@@ -249,8 +248,7 @@ public enum JevAPI {
            !fromEnv.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return fromEnv.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/typesafe-api-key")
+        let url = Allowly.supportDirectory.appendingPathComponent("typesafe-api-key")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

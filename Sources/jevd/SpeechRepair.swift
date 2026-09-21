@@ -46,7 +46,7 @@ enum SpeechRepair {
             if named != heard.best {
                 // The chosen reading is safe to name: it matches a
                 // control that is on screen. The raw one is not.
-                JevLog.write("[jev] heard \(JevLog.shape(heard.best)), using “\(JevLog.safe(named))” — it names something on screen")
+                JevLog.write("[allowly] heard \(JevLog.shape(heard.best)), using “\(JevLog.safe(named))” — it names something on screen")
             }
             return named
         }
@@ -71,7 +71,7 @@ enum SpeechRepair {
             // The top reading is not a command but a lower one is: the
             // recogniser simply ranked them wrong.
             if let rescued = parsed.first(where: { $0.action != nil }) {
-                JevLog.write("[jev] heard \(JevLog.shape(heard.best)), using \(Self.loggable(rescued.text, rescued.command)) instead")
+                JevLog.write("[allowly] heard \(JevLog.shape(heard.best)), using \(Self.loggable(rescued.text, rescued.command)) instead")
                 return rescued.text
             }
             return heard.best
@@ -113,7 +113,7 @@ enum SpeechRepair {
         if choice.choice != heard.best {
             // The model can pick ANY candidate, including one nothing
             // parsed — so this reading has not necessarily been interpreted.
-            JevLog.write("[jev] heard \(JevLog.shape(heard.best)), Jev says \(Self.loggable(choice.choice, VoiceCommand.parse(choice.choice)?.command)) "
+            JevLog.write("[allowly] heard \(JevLog.shape(heard.best)), Jev says \(Self.loggable(choice.choice, VoiceCommand.parse(choice.choice)?.command)) "
                 + "(\(String(format: "%.2f", choice.confidence)))")
         }
         return choice.choice
