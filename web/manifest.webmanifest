@@ -1,7 +1,7 @@
 {
-  "name": "Jev",
-  "short_name": "Jev",
-  "description": "Answer your Mac's prompts from your phone",
+  "name": "Allowly",
+  "short_name": "Allowly",
+  "description": "Mac remote control from your phone. Answer dialogs, click Allow, over Tailscale.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -10,13 +10,13 @@
   "theme_color": "#0c0d10",
   "icons": [
     {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192' rx='42'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>",
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192' rx='42'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>A</text></svg>",
       "sizes": "192x192",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='104' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>",
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='104' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>A</text></svg>",
       "sizes": "192x192",
       "type": "image/svg+xml",
       "purpose": "maskable"

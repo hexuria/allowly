@@ -1,4 +1,5 @@
 import Foundation
+import JevCore
 
 /// The one place a web task generates text rather than choosing from a list.
 ///
@@ -33,7 +34,7 @@ public enum WebTextModel {
     /// and a web task's page context should not leave the machine by accident
     /// because an environment variable was mistyped.
     public static var baseURL: URL {
-        if let raw = ProcessInfo.processInfo.environment["JEV_WEB_TEXT_BASE_URL"],
+        if let raw = Allowly.environment("ALLOWLY_WEB_TEXT_BASE_URL", "JEV_WEB_TEXT_BASE_URL"),
            let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
            url.scheme != nil {
             return url
@@ -46,21 +47,19 @@ public enum WebTextModel {
     /// rung, because which model writes into a form field is a decision worth
     /// being able to point at.
     public static var model: String {
-        let fromEnv = ProcessInfo.processInfo.environment["JEV_WEB_TEXT_MODEL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (fromEnv?.isEmpty == false ? fromEnv! : "openai/gpt-5.6-luna")
+        return Allowly.environment("ALLOWLY_WEB_TEXT_MODEL", "JEV_WEB_TEXT_MODEL")
+            ?? "openai/gpt-5.6-luna"
     }
 
     /// The gateway key. Same shape as `JevAPI.loadAPIKey`, and for the same
     /// reason: `open` does not inherit a shell environment, so the file is the
     /// path that actually works when Jev.app is launched normally.
     public static func loadAPIKey() -> String? {
-        if let fromEnv = ProcessInfo.processInfo.environment["JEV_OAG_API_KEY"],
+        if let fromEnv = Allowly.environment("ALLOWLY_OAG_API_KEY", "JEV_OAG_API_KEY"),
            !fromEnv.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return fromEnv.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/oag-api-key")
+        let url = Allowly.supportDirectory.appendingPathComponent("oag-api-key")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

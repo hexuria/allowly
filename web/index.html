@@ -9,12 +9,12 @@
     <meta name="theme-color" content="#17181c" media="(prefers-color-scheme: dark)">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Jev">
+    <meta name="apple-mobile-web-app-title" content="Allowly">
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192' rx='42'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>J</text></svg>">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192' rx='42'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>A</text></svg>">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a63d8' width='192' height='192'/><text x='50%' y='52%' font-family='-apple-system,BlinkMacSystemFont,sans-serif' font-size='116' font-weight='700' fill='%23fff' text-anchor='middle' dominant-baseline='central'>A</text></svg>">
     <link rel="stylesheet" href="/styles.css">
-    <title>Jev</title>
+    <title>Allowly</title>
 </head>
 <body>
     <div id="app" class="app">
@@ -23,14 +23,14 @@
         <div id="setupScreen" class="screen screen-setup">
             <div class="setup-content">
                 <div class="setup-header">
-                    <h1>Jev</h1>
+                    <h1>Allowly</h1>
                     <p>Paste the pairing link from your Mac</p>
                 </div>
                 <div class="setup-form">
                     <input type="text" id="pairingUrl" placeholder="https://…/?token=…"
                            class="pairing-input" autocomplete="off" spellcheck="false" autocapitalize="off">
                     <button id="connectBtn" class="btn btn-primary">Connect</button>
-                    <p class="setup-hint"><strong>Opening the link is the easy way</strong> &mdash; Jev
+                    <p class="setup-hint"><strong>Opening the link is the easy way</strong> &mdash; Allowly
                     prints it when it starts, and one tap pairs this phone.
                     Pasting only works for the Mac this app came from; for a
                     different Mac, open its link instead.</p>
@@ -42,7 +42,7 @@
         <div id="mainScreen" class="screen screen-main hidden">
             <div class="header">
                 <div class="header-left">
-                    <h1>Jev</h1>
+                    <h1>Allowly</h1>
                     <!-- The id is on the pill, not the dot. app.js toggles
                          .connected / .disconnected on whatever it finds here,
                          and the stylesheet has always been written against the
@@ -265,9 +265,9 @@
             <div class="sheet-body">
                 <div class="sheet-grip"></div>
                 <h2 id="approvalSheetTitle">Remember this choice?</h2>
-                <p class="setting-note">Applies from now on, and Jev uses it when deciding on its own.</p>
+                <p class="setting-note">Applies from now on, and Allowly uses it when deciding on its own.</p>
                 <button class="sheet-action allow" data-mode="always">Always allow this app</button>
-                <button class="sheet-action auto" data-mode="auto">Let Jev answer the safe ones</button>
+                <button class="sheet-action auto" data-mode="auto">Let Allowly answer the safe ones</button>
                 <button class="sheet-action deny" data-mode="never">Never allow this app</button>
                 <button class="sheet-action" data-close="approvalSheet">Cancel</button>
             </div>

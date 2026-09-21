@@ -31,7 +31,7 @@ public actor DecisionPipeline: Decider {
 
     /// Build the pipeline for the running environment.
     ///
-    /// With no TYPESAFE_API_KEY present this selects MockDecider, so jev is fully
+    /// With no TYPESAFE_API_KEY present this selects MockDecider, so Allowly is fully
     /// usable with no credentials: policy auto-handles what it can and everything
     /// else goes to the phone.
     public static func standard(

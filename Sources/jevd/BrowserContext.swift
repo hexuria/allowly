@@ -50,7 +50,7 @@ enum BrowserContext {
             // Worth one line: a nil here means page-level scoping is silently
             // off, almost always because the Automation permission for this
             // browser has not been granted yet.
-            JevLog.write("[jev] page: \(host ?? "no address from \(name) — grant Automation for it")")
+            JevLog.write("[allowly] page: \(host ?? "no address from \(name) — grant Automation for it")")
         }
         return host
     }

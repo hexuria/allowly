@@ -1,4 +1,5 @@
 import Foundation
+import JevCore
 
 /// What jev should do the next time you ask for a given app.
 enum AppMode: String, Codable, Sendable, CaseIterable {
@@ -25,7 +26,7 @@ enum GlobalMode: String, Codable, Sendable, CaseIterable {
         switch self {
         case .ask: return "Ask me about anything I have not already decided"
         case .allowAll: return "Allow everything except what I have blocked"
-        case .auto: return "Let Jev decide anything I have not already decided"
+        case .auto: return "Let Allowly decide anything I have not already decided"
         case .denyAll: return "Block everything except what I have allowed"
         }
     }
@@ -46,13 +47,11 @@ final class AppPolicyStore: @unchecked Sendable {
     private var global: GlobalMode = .auto
 
     private static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/app-modes.json")
+        Allowly.supportDirectory.appendingPathComponent("app-modes.json")
     }
 
     private static var legacyAllowlistURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/allowlist.json")
+        Allowly.supportDirectory.appendingPathComponent("allowlist.json")
     }
 
     init() { load() }
@@ -74,7 +73,7 @@ final class AppPolicyStore: @unchecked Sendable {
         let snapshot = (modes, global)
         lock.unlock()
         save(snapshot.0, global: snapshot.1)
-        JevLog.write("[jev] default policy -> \(mode.rawValue)")
+        JevLog.write("[allowly] default policy -> \(mode.rawValue)")
     }
 
     /// What to do about an app, taking the global default into account.
@@ -117,7 +116,7 @@ final class AppPolicyStore: @unchecked Sendable {
         let snapshot = (modes, global)
         lock.unlock()
         save(snapshot.0, global: snapshot.1)
-        JevLog.write("[jev] forgot \(bundleIdentifier)")
+        JevLog.write("[allowly] forgot \(bundleIdentifier)")
     }
 
     func set(_ mode: AppMode, for bundleIdentifier: String) {
@@ -126,7 +125,7 @@ final class AppPolicyStore: @unchecked Sendable {
         let snapshot = (modes, global)
         lock.unlock()
         save(snapshot.0, global: snapshot.1)
-        JevLog.write("[jev] \(bundleIdentifier) -> \(mode.rawValue)")
+        JevLog.write("[allowly] \(bundleIdentifier) -> \(mode.rawValue)")
     }
 
     /// Forget every saved choice. The escape hatch for a "never" you regret.
@@ -136,7 +135,7 @@ final class AppPolicyStore: @unchecked Sendable {
         global = .auto
         lock.unlock()
         save([:], global: .auto)
-        JevLog.write("[jev] saved permissions cleared")
+        JevLog.write("[allowly] saved permissions cleared")
     }
 
     var all: [String: AppMode] {

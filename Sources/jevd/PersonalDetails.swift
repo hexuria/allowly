@@ -79,7 +79,7 @@ enum PersonalDetails {
         // The name, never the value. This line exists so there is a record
         // that something was set, which a support question needs, and no
         // record of what.
-        JevLog.write("[jev] saved a detail: \(canonicalName(name))")
+        JevLog.write("[allowly] saved a detail: \(canonicalName(name))")
     }
 
     /// The value, for typing and for nothing else.
@@ -97,7 +97,7 @@ enum PersonalDetails {
     static func forget(name: String) {
         guard field(named: name) != nil else { return }
         try? KeychainManager.shared.store(key: storageKey(for: name), value: "")
-        JevLog.write("[jev] forgot a detail: \(canonicalName(name))")
+        JevLog.write("[allowly] forgot a detail: \(canonicalName(name))")
     }
 
     /// The names that actually have something behind them.

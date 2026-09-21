@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "jev",
+    name: "allowly",
     platforms: [
         .macOS(.v14)
     ],
@@ -14,7 +14,7 @@ let package = Package(
         .library(name: "JevServer", targets: ["JevServer"]),
         .library(name: "JevCua", targets: ["JevCua"]),
         .library(name: "JevWeb", targets: ["JevWeb"]),
-        .executable(name: "jevd", targets: ["jevd"])
+        .executable(name: "allowlyd", targets: ["jevd"])
     ],
     targets: [
         .target(

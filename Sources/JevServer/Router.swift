@@ -210,7 +210,7 @@ actor Router {
             // The Claude Code hook. It gives up after 6 seconds, so whatever
             // happens here must answer well inside that.
             let json = await (permissionHandler?(request.body)
-                ?? #"{"allow":false,"reason":"jev has no permission handler"}"#)
+                ?? #"{"allow":false,"reason":"allowly has no permission handler"}"#)
             completion(HTTPResponse(status: 200,
                                     headers: ["content-type": "application/json",
                                               "cache-control": "no-store"],

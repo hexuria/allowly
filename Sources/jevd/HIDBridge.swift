@@ -52,12 +52,10 @@ enum HIDBridge {
     /// the REAL firmware behind it, and hands back a path that looks nothing
     /// like `cu.usbmodem`. Everything below this line then behaves exactly as
     /// it will with a board on the end of a cable.
-    static let portOverrideVariable = "JEV_HID_PORT"
+    static let portOverrideVariable = "ALLOWLY_HID_PORT"
 
     static var portOverride: String? {
-        let value = ProcessInfo.processInfo.environment[portOverrideVariable]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (value?.isEmpty == false) ? value : nil
+        Allowly.environment("ALLOWLY_HID_PORT", "JEV_HID_PORT")
     }
 
     /// Serial ports that could be the board. CircuitPython presents its CDC
@@ -121,7 +119,7 @@ enum HIDBridge {
             if handshake(on: opened) {
                 handle = opened
                 devicePath = path
-                JevLog.write("[jev] HID bridge attached on \(path)")
+                JevLog.write("[allowly] HID bridge attached on \(path)")
                 return opened
             }
             try? opened.close()
@@ -223,7 +221,7 @@ enum HIDBridge {
     /// looks like from here.
     private static func dropLocked(_ reason: String) {
         if let path = devicePath {
-            JevLog.write("[jev] HID bridge detached from \(path): \(reason)")
+            JevLog.write("[allowly] HID bridge detached from \(path): \(reason)")
         }
         try? handle?.close()
         handle = nil
@@ -273,7 +271,7 @@ enum HIDBridge {
         case .ok:
             return true
         case .refused:
-            JevLog.write("[jev] HID bridge refused: \(command.prefix(12))")
+            JevLog.write("[allowly] HID bridge refused: \(command.prefix(12))")
             return false
         case .silent:
             dropLocked("no acknowledgement")

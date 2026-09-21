@@ -70,11 +70,11 @@ enum Transcription {
         #if canImport(Speech)
         let current = SFSpeechRecognizer.authorizationStatus()
         guard current == .notDetermined else {
-            JevLog.write("[jev] speech recognition authorization: \(current.rawValue == 3 ? "granted" : String(describing: current))")
+            JevLog.write("[allowly] speech recognition authorization: \(current.rawValue == 3 ? "granted" : String(describing: current))")
             return
         }
         SFSpeechRecognizer.requestAuthorization { status in
-            JevLog.write("[jev] speech recognition authorization now: \(String(describing: status))")
+            JevLog.write("[allowly] speech recognition authorization now: \(String(describing: status))")
         }
         #endif
     }
@@ -106,7 +106,7 @@ enum Transcription {
     static func transcodeToWav(_ source: URL) -> URL? {
         let candidates = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]
         guard let ffmpeg = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            JevLog.write("[jev] voice: no ffmpeg found; cannot transcode \(source.pathExtension)")
+            JevLog.write("[allowly] voice: no ffmpeg found; cannot transcode \(source.pathExtension)")
             return nil
         }
 
@@ -127,7 +127,7 @@ enum Transcription {
         do {
             try process.run()
         } catch {
-            JevLog.write("[jev] voice: could not run ffmpeg: \(error)")
+            JevLog.write("[allowly] voice: could not run ffmpeg: \(error)")
             return nil
         }
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
@@ -136,7 +136,7 @@ enum Transcription {
         guard process.terminationStatus == 0,
               FileManager.default.fileExists(atPath: output.path) else {
             let message = String(data: errData, encoding: .utf8) ?? "unknown"
-            JevLog.write("[jev] voice: ffmpeg failed: \(message.prefix(200))")
+            JevLog.write("[allowly] voice: ffmpeg failed: \(message.prefix(200))")
             return nil
         }
         return output

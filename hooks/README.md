@@ -1,6 +1,6 @@
-# jev Claude Code Integration
+# Allowly Claude Code Integration
 
-This directory contains the integration hook for Claude Code's PermissionRequest mechanism, allowing the jev daemon to approve or deny permission requests made by Claude Code.
+This directory contains the integration hook for Claude Code's PermissionRequest mechanism, allowing the Allowly daemon to approve or deny permission requests made by Claude Code.
 
 ## Installation
 
@@ -9,7 +9,7 @@ This directory contains the integration hook for Claude Code's PermissionRequest
 The hook script `jev-permission-hook.sh` is installed as part of the jev build and is located at:
 
 ```
-/path/to/jev/hooks/jev-permission-hook.sh
+/path/to/allowly/hooks/jev-permission-hook.sh
 ```
 
 ### 2. Register the hook in Claude Code
@@ -21,7 +21,7 @@ Edit `~/.claude/settings.json` and add the following under the `"hooks"` key:
   "hooks": {
     "permissionRequest": {
       "command": "bash",
-      "args": ["/path/to/jev/hooks/jev-permission-hook.sh"]
+      "args": ["/path/to/allowly/hooks/jev-permission-hook.sh"]
     }
   }
 }
@@ -29,11 +29,11 @@ Edit `~/.claude/settings.json` and add the following under the `"hooks"` key:
 
 (Replace the path with the actual location of the hook on your system.)
 
-### 3. Pair your phone and start the jev daemon
+### 3. Pair your phone and start the Allowly daemon
 
-The hook requires the jev daemon (`jevd`) to be running on your Mac with an active pairing token. The daemon writes the token to a 0600 file at `~/Library/Application Support/jev/pairing-token`, and the hook reads that first, falling back to the Keychain:
+The hook requires the Allowly daemon (`allowlyd`) to be running on your Mac with an active pairing token. The daemon writes the token to a 0600 file at `~/Library/Application Support/allowly/pairing-token`, and the hook reads that first, falling back to the Keychain:
 
-- **Service:** `com.jev.agent`
+- **Service:** `dev.goldcoders.allowly`
 - **Account:** `daemon-pairing-token`
 
 See [SETUP.md](../docs/SETUP.md) for the pairing workflow.
@@ -43,19 +43,19 @@ See [SETUP.md](../docs/SETUP.md) for the pairing workflow.
 When Claude Code needs a permission decision (e.g., to run a bash command or read a file):
 
 1. **Hook receives request** — Claude Code invokes the hook with a JSON permission request on stdin.
-2. **Token lookup** — The hook reads the pairing token from `~/Library/Application Support/jev/pairing-token`, and falls back to the Keychain if that file is unreadable.
+2. **Token lookup** — The hook reads the pairing token from `~/Library/Application Support/allowly/pairing-token`, and falls back to the Keychain if that file is unreadable.
 3. **POST to daemon** — The hook sends the permission request to `http://127.0.0.1:8787/api/permission` with the token as an `Authorization` header.
-4. **Wait for decision** — The daemon evaluates the request against the jev Policy and returns a decision (allow, deny, or ask human).
+4. **Wait for decision** — The daemon evaluates the request against the Allowly Policy and returns a decision (allow, deny, or ask human).
 5. **Return response** — The hook emits the decision back to Claude Code.
 6. **Claude Code acts** — If denied, Claude Code will fail the operation. If allowed, it proceeds. If "ask human," Claude Code shows an interactive prompt.
 
-## Behavior When jev Daemon Is Not Running
+## Behavior When Allowly Daemon Is Not Running
 
 If the daemon is not running or does not respond within 6 seconds:
 
-- The hook **emits a deny response** with reason `"jev daemon not available; falling back to interactive prompt"`.
+- The hook **emits a deny response** with reason `"allowly daemon not available; falling back to interactive prompt"`.
 - Claude Code treats this as a **deny decision** and will **show an interactive prompt** instead of silently allowing or blocking.
-- This is the **fail-closed** design: when jev is unavailable, the user is always asked, never auto-granted.
+- This is the **fail-closed** design: when Allowly is unavailable, the user is always asked, never auto-granted.
 
 ## Pairing Token Storage
 
@@ -63,18 +63,18 @@ The daemon pairing token is stored in a 0600 file, with the Keychain as a fallba
 
 ```bash
 # To view the token (returns the pairing token)
-security find-generic-password -s com.jev.agent -a daemon-pairing-token -w
+security find-generic-password -s dev.goldcoders.allowly -a daemon-pairing-token -w
 
 # To manually add a token (rare — normally done during pairing)
-security add-generic-password -s com.jev.agent -a daemon-pairing-token -w "your-token-here"
+security add-generic-password -s dev.goldcoders.allowly -a daemon-pairing-token -w "your-token-here"
 
 # To delete the token (during unpair or reset)
-security delete-generic-password -s com.jev.agent -a daemon-pairing-token
+security delete-generic-password -s dev.goldcoders.allowly -a daemon-pairing-token
 ```
 
 ## Troubleshooting
 
-### Hook shows "jev daemon not available" but daemon is running
+### Hook shows "allowly daemon not available" but daemon is running
 
 - **Check the daemon is listening on loopback:** Run `lsof -i :8787` and verify the daemon is bound to `127.0.0.1`.
 - **Check the pairing token:** Run the command above to verify the token is in the Keychain. If empty, re-run the pairing flow.
@@ -89,7 +89,7 @@ security delete-generic-password -s com.jev.agent -a daemon-pairing-token
 
 - Verify the path in `~/.claude/settings.json` is correct.
 - Restart Claude Code after updating settings.json.
-- Check that the hook is executable: `ls -l /path/to/jev/hooks/jev-permission-hook.sh` should show `-rwx...`.
+- Check that the hook is executable: `ls -l /path/to/allowly/hooks/jev-permission-hook.sh` should show `-rwx...`.
 
 ### Daemon returns "invalid token" or "unauthorized"
 
@@ -102,7 +102,7 @@ security delete-generic-password -s com.jev.agent -a daemon-pairing-token
 The daemon writes the pairing token to a `0600` file:
 
 ```
-~/Library/Application Support/jev/pairing-token
+~/Library/Application Support/allowly/pairing-token
 ```
 
 **not** the Keychain — see the comment on `KeychainManager.loadOrCreatePairingToken`

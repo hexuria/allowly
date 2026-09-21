@@ -1,16 +1,16 @@
 import Foundation
+import JevCore
 
 /// A menu bar app has no console, so `print` goes nowhere once it is launched
 /// normally. Everything worth knowing goes here instead:
-///   tail -f ~/Library/Application\ Support/jev/jev.log
+///   tail -f ~/Library/Application\ Support/allowly/allowly.log
 enum JevLog {
-    private static let queue = DispatchQueue(label: "com.jev.log")
+    private static let queue = DispatchQueue(label: "dev.goldcoders.allowly.log")
 
     static let fileURL: URL = {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev", isDirectory: true)
+        let dir = Allowly.supportDirectory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("jev.log")
+        let url = Allowly.logFile
         // 0600, like the token file next to it. This was 0644 while the
         // pairing token it used to print was 0600 — so the log handed the
         // credential to any process running as this user, and undid the
@@ -75,7 +75,7 @@ enum JevLog {
             let current = (try? fm.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)??.intValue
             guard current != 0o600 else { continue }
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
-            write("[jev] tightened \(name) to owner-only")
+            write("[allowly] tightened \(name) to owner-only")
         }
     }
 
@@ -140,12 +140,12 @@ enum JevLog {
                 .attributesOfItem(atPath: fileURL.path),
               let size = attributes[.size] as? Int, size > sizeCeiling else { return }
         let previous = fileURL.deletingLastPathComponent()
-            .appendingPathComponent("jev.log.1")
+            .appendingPathComponent("allowly.log.1")
         try? FileManager.default.removeItem(at: previous)
         try? FileManager.default.moveItem(at: fileURL, to: previous)
         FileManager.default.createFile(
             atPath: fileURL.path,
-            contents: Data("\(ISO8601DateFormatter().string(from: Date())) [jev] log rotated\n".utf8),
+            contents: Data("\(ISO8601DateFormatter().string(from: Date())) [allowly] log rotated\n".utf8),
             attributes: [.posixPermissions: 0o600])
     }
 

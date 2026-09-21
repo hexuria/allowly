@@ -1,4 +1,5 @@
 import Foundation
+import JevCore
 
 /// Spoken names for apps whose real names do not survive a microphone.
 ///
@@ -12,8 +13,7 @@ final class Aliases: @unchecked Sendable {
     private var map: [String: String] = [:]   // spoken name -> bundle id
 
     private static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/aliases.json")
+        Allowly.supportDirectory.appendingPathComponent("aliases.json")
     }
 
     init() { load() }
@@ -31,7 +31,7 @@ final class Aliases: @unchecked Sendable {
         let snapshot = map
         lock.unlock()
         save(snapshot)
-        JevLog.write("[jev] alias “\(spoken)” -> \(bundleId)")
+        JevLog.write("[allowly] alias “\(spoken)” -> \(bundleId)")
     }
 
     var all: [String: String] {

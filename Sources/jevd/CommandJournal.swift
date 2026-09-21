@@ -175,8 +175,7 @@ enum CommandJournal {
     private static let limit = 400
 
     static var path: String {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev", isDirectory: true)
+        let dir = Allowly.supportDirectory
         // Do not rely on something else having made it. It only worked
         // because JevLog happens to create the same directory first.
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -268,7 +267,7 @@ enum CommandJournal {
             // "Exactly one journal line per command" is a contract, and a
             // silent drop breaks it invisibly — which is the failure mode
             // the journal exists to make impossible. Say so in the log.
-            JevLog.write("[jev] journal: could not append to \(path)")
+            JevLog.write("[allowly] journal: could not append to \(path)")
         }
         trimLocked()
     }

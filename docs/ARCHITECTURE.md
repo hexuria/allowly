@@ -1,6 +1,6 @@
-# jev Architecture
+# Allowly Architecture
 
-jev detects dialog boxes on your Mac and asks for human approval when you're away. Only the human decides; no auto-clicks.
+Allowly detects dialog boxes on your Mac and asks for human approval when you're away. Only the human decides; no auto-clicks.
 
 ## Components
 
@@ -12,7 +12,7 @@ jev detects dialog boxes on your Mac and asks for human approval when you're awa
 
 **JevServer** — HTTP server bound to loopback only (127.0.0.1:8080). Routes: `/api/pending` (list dialogs), `/api/decide` (receive approval), `/api/command` (execute), `/api/screenshot`, `/api/tap`, `/api/type`, `/api/policy`, `/api/vapid-key` and `/api/subscribe` (web push). Serves the PWA.
 
-**jevd** — Menu bar app. Runs JevAX, JevServer, and the Claude Code hook. One-time onboarding grants Accessibility and Screen Recording.
+**allowlyd** — Menu bar app (`Allowly.app`, bundle id `dev.goldcoders.allowly`). Runs JevAX, JevServer, and the Claude Code hook. One-time onboarding grants Accessibility and Screen Recording.
 
 **web/** — PWA. Displays pending dialogs with screenshot + buttons. Phone user taps approve/deny or speaks a voice command. Paired-device only; must be added to Home Screen for iOS Web Push.
 
@@ -27,7 +27,7 @@ jev detects dialog boxes on your Mac and asks for human approval when you're awa
 7. Policy re-evaluates (dangerous buttons escalate to human, unknown apps deny)
 8. JevAX executes via AXPress or launches app
 
-**TCC consent sheets** (cert trust, location, microphone, Full Disk Access) are detected but cannot be clicked. Every click carries a source tag, and the sheet honours only events tagged as coming from real hardware; anything posted through `CGEvent` is tagged synthetic and discarded. That applies to remote-control software too, including Apple's Screen Sharing — `AppleVNCServer` is pre-granted `kTCCServicePostEvent` so it never has to ask for Accessibility, but it holds no HID entitlement, so its events are synthetic like everyone else's. jev therefore marks these `handoffOnly`, surfaces what is being asked, and never reports having pressed one. The only way to produce an accepted event is genuine hardware: a USB HID bridge. See https://claude.ai/artifact/HXvBXAsWSYbgaPUfELMzoL.
+**TCC consent sheets** (cert trust, location, microphone, Full Disk Access) honour only events tagged as coming from real hardware. Anything posted through `CGEvent` is tagged synthetic and discarded, including Apple's Screen Sharing. Without a USB board, Allowly marks these `handoffOnly`, surfaces what is being asked, and does not claim to have pressed one. With a USB HID bridge plugged in, the click is hardware and the sheet accepts it.
 
 ## Trust Boundaries
 

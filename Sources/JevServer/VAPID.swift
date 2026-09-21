@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import JevCore
 
 /// VAPID (RFC 8292) key management and JWT generation.
 /// Handles P-256 keypair generation/persistence and ES256 signed token creation.
@@ -141,7 +142,7 @@ public enum VAPIDSubject {
     /// real contact — a `mailto:` you read or an `https://` page about
     /// your deployment — if you would rather a push service could
     /// reach you about it.
-    public static let fallback = "mailto:jev@example.com"
+    public static let fallback = "mailto:allowly@example.com"
 
     /// Env first, then a file, then the fallback.
     ///
@@ -153,9 +154,7 @@ public enum VAPIDSubject {
     /// at all, and the log line that names it would have been telling
     /// people to do something that could not work.
     public static var configured: String {
-        if let fromEnv = ProcessInfo.processInfo.environment["JEV_VAPID_SUBJECT"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !fromEnv.isEmpty {
+        if let fromEnv = Allowly.environment("ALLOWLY_VAPID_SUBJECT", "JEV_VAPID_SUBJECT") {
             return isAcceptable(fromEnv) ? fromEnv : fallback
         }
         if let text = try? String(contentsOf: fileURL, encoding: .utf8) {
@@ -165,10 +164,9 @@ public enum VAPIDSubject {
         return fallback
     }
 
-    /// `~/Library/Application Support/jev/vapid-subject`
+    /// `~/Library/Application Support/allowly/vapid-subject`
     public static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/vapid-subject")
+        Allowly.supportDirectory.appendingPathComponent("vapid-subject")
     }
 
     /// Would a push service take this as a contact?

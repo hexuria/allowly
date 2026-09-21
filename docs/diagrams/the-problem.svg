@@ -7,7 +7,7 @@
   <rect width="700" height="300" fill="#FFFFFF"/>
 
   <rect x="16" y="28" width="150" height="54" rx="12" fill="#FAE3DC" stroke="#C4482B" stroke-width="2"/>
-  <text x="91" y="52" text-anchor="middle" class="lab" font-size="14">jev</text>
+  <text x="91" y="52" text-anchor="middle" class="lab" font-size="14">allowly</text>
   <text x="91" y="70" text-anchor="middle" class="m" font-size="12">CGEvent click</text>
   <path d="M170 55 L 330 55" stroke="#C4482B" stroke-width="3" stroke-dasharray="7 5" fill="none"/>
   <text x="250" y="42" text-anchor="middle" font-size="12" fill="#C4482B">stamped SYNTHETIC</text>

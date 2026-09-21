@@ -63,7 +63,7 @@ actor ScopeStore {
         // The one thing a stale snapshot must not survive.
         await CommandExecutor.cua.invalidateSnapshot()
         if let name = NSRunningApplication(processIdentifier: pid)?.localizedName {
-            JevLog.write("[jev] focus: \(name)")
+            JevLog.write("[allowly] focus: \(name)")
         }
     }
 

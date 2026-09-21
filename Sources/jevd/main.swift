@@ -18,7 +18,8 @@ import JevWeb
 /// Thread-safe keychain wrapper for storing secrets.
 final class KeychainManager {
     static let shared = KeychainManager()
-    private let serviceName = "com.jev.agent"
+    private let serviceName = Allowly.bundleIdentifier
+    private let legacyServiceName = Allowly.legacyBundleIdentifier
 
     func store(key: String, value: String) throws {
         let query: [String: Any] = [
@@ -37,9 +38,14 @@ final class KeychainManager {
     }
 
     func retrieve(key: String) -> String? {
+        retrieve(key: key, service: serviceName)
+            ?? retrieve(key: key, service: legacyServiceName)
+    }
+
+    private func retrieve(key: String, service: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecReturnData as String: true
         ]
@@ -63,13 +69,13 @@ final class KeychainManager {
     /// already on the phone. One file, one token, same answer every launch.
     ///
     /// The tradeoff is real: the token sits in a 0600 file readable by your user
-    /// account. Move it to the Keychain once Jev.app has a stable signing
+    /// account. Move it to the Keychain once Allowly.app has a stable signing
     /// identity, at which point the Keychain stops being a coin flip.
     static func loadOrCreatePairingToken() -> String {
         if let existing = try? String(contentsOf: tokenFileURL, encoding: .utf8) {
             let trimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                JevLog.write("[jev] pairing token loaded")
+                JevLog.write("[allowly] pairing token loaded")
                 return trimmed
             }
         }
@@ -81,7 +87,7 @@ final class KeychainManager {
         // install, since the loader prefers whatever file already
         // exists. A guessable bearer token is full remote control.
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            JevLog.writeNow("[jev] FATAL: the system would not provide random bytes for a pairing token")
+            JevLog.writeNow("[allowly] FATAL: the system would not provide random bytes for a pairing token")
             fatalError("Refusing to start with a predictable pairing token")
         }
         let token = Data(bytes).base64EncodedString()
@@ -96,13 +102,12 @@ final class KeychainManager {
         FileManager.default.createFile(atPath: tokenFileURL.path,
                                        contents: Data(token.utf8),
                                        attributes: [.posixPermissions: 0o600])
-        JevLog.write("[jev] pairing token created")
+        JevLog.write("[allowly] pairing token created")
         return token
     }
 
     static var tokenFileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/pairing-token")
+        Allowly.supportDirectory.appendingPathComponent("pairing-token")
     }
 
     /// Run a Keychain call off-thread and give up after two seconds, so a prompt
@@ -129,17 +134,21 @@ final class KeychainManager {
     /// single line, on a binary whose Keychain access had not been granted.
     /// Anything on a startup path or a command path uses this.
     func retrieveWithTimeout(key: String) -> String? {
-        Self.keychainWithTimeout { [serviceName] in
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: serviceName,
-                kSecAttrAccount as String: key,
-                kSecReturnData as String: true,
-            ]
-            var result: AnyObject?
-            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-                  let data = result as? Data else { return nil }
-            return String(data: data, encoding: .utf8)
+        Self.keychainWithTimeout { [serviceName, legacyServiceName] in
+            for service in [serviceName, legacyServiceName] {
+                let query: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: service,
+                    kSecAttrAccount as String: key,
+                    kSecReturnData as String: true,
+                ]
+                var result: AnyObject?
+                if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+                   let data = result as? Data {
+                    return String(data: data, encoding: .utf8)
+                }
+            }
+            return nil
         } ?? nil
     }
 
@@ -265,7 +274,7 @@ final class CommandExecutor {
     /// command because a cold app was slow is its own wrong answer.
     static func bring(_ aim: Aim) async -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid_t(aim.pid)) else {
-            JevLog.write("[jev] aim: \(aim.app) is gone")
+            JevLog.write("[allowly] aim: \(aim.app) is gone")
             return false
         }
         guard !app.isActive else { return true }
@@ -273,11 +282,11 @@ final class CommandExecutor {
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(30))
             if app.isActive {
-                JevLog.write("[jev] aim: brought \(aim.app) forward")
+                JevLog.write("[allowly] aim: brought \(aim.app) forward")
                 return true
             }
         }
-        JevLog.write("[jev] aim: could not bring \(aim.app) forward; refusing rather than typing elsewhere")
+        JevLog.write("[allowly] aim: could not bring \(aim.app) forward; refusing rather than typing elsewhere")
         return false
     }
 
@@ -462,7 +471,7 @@ final class CommandExecutor {
                 apiKey: JevAPI.loadAPIKey())
             // Labels only. A field's contents never reach the log, which is
             // the whole reason forms are filled from the phone.
-            JevLog.write("[jev] form: " + named.map {
+            JevLog.write("[allowly] form: " + named.map {
                 "\($0.label)\($0.secret ? " (secret)" : "")"
             }.joined(separator: ", "))
             guard show(named) else {
@@ -490,7 +499,7 @@ final class CommandExecutor {
             // this point has ever held it.
             let canonical = PersonalDetails.canonicalName(name)
             guard PersonalDetails.field(named: name) != nil else {
-                return .failed(reason: "jev has no detail called \(canonical)")
+                return .failed(reason: "allowly has no detail called \(canonical)")
             }
             guard let value = PersonalDetails.value(for: name), !value.isEmpty else {
                 return .failed(reason: "Nothing saved for \(canonical) — add it from the menu bar")
@@ -739,7 +748,7 @@ final class CommandExecutor {
                 let label = progress.target
                     .replacingOccurrences(of: "\n", with: " ")
                     .replacingOccurrences(of: "\r", with: " ")
-                JevLog.write("[jev] web step \(progress.step)"
+                JevLog.write("[allowly] web step \(progress.step)"
                            + "\(progress.isRetry ? " (retry)" : ""): "
                            + "\(progress.operation) \(label.prefix(40))")
                 // A web task changes nothing on the Mac's screen, so without
@@ -767,7 +776,7 @@ final class CommandExecutor {
                 // where it stopped, so the picture goes with it. Informational
                 // — the task is already over, and nothing here resumes it.
                 let picture = await session.screenshot()
-                _ = Self.onWebReport?("jev stopped in your browser",
+                _ = Self.onWebReport?("allowly stopped in your browser",
                                       "\(why).\n\nOn: \(title)\nAfter \(steps) step"
                                       + "\(steps == 1 ? "" : "s"). The tab is still open.",
                                       picture)
@@ -776,7 +785,7 @@ final class CommandExecutor {
 
             case .stuck(let steps, _, let title):
                 let picture = await session.screenshot()
-                _ = Self.onWebReport?("jev could not finish that",
+                _ = Self.onWebReport?("allowly could not finish that",
                                       "Nothing on the page moved it forward.\n\nOn: \(title)\n"
                                       + "After \(steps) step\(steps == 1 ? "" : "s"). "
                                       + "The tab is still open.",
@@ -794,7 +803,7 @@ final class CommandExecutor {
 
             case .exhausted(let steps, _, let title):
                 let picture = await session.screenshot()
-                _ = Self.onWebReport?("jev ran out of steps",
+                _ = Self.onWebReport?("allowly ran out of steps",
                                       "Stopped after \(steps) steps without finishing.\n\n"
                                       + "On: \(title). The tab is still open.",
                                       picture)
@@ -1053,7 +1062,7 @@ final class SpeechRecognizer: NSObject, Transcriber, SFSpeechRecognizerDelegate 
         if builtFor != wanted || recognizer == nil {
             recognizer = SFSpeechRecognizer(locale: Locale(identifier: wanted))
             builtFor = wanted
-            JevLog.write("[jev] listening in \(wanted)")
+            JevLog.write("[allowly] listening in \(wanted)")
         }
         return recognizer
     }
@@ -1162,7 +1171,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func startUp() {
         guard !didStart else { return }
         didStart = true
-        JevLog.write("[jev] starting up")
+        JevLog.write("[allowly] starting up")
         // Initialize components
         let appStore = ApprovalStore()
 
@@ -1177,7 +1186,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // named until jev was restarted.
         AppCatalog.shared.watch()
         let appPolicy = Policy.strictDefault()
-        JevLog.write("[jev] app catalog: \(AppCatalog.shared.all.count) apps known, \(AppPolicyStore.shared.all.count) with a saved mode")
+        JevLog.write("[allowly] app catalog: \(AppCatalog.shared.all.count) apps known, \(AppPolicyStore.shared.all.count) with a saved mode")
         let appExecutor = CommandExecutor(policy: appPolicy, store: appStore)
 
         store = appStore
@@ -1213,9 +1222,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let rate = asked == 0 ? "no lookups yet"
             : "\(Int((Double(cacheStats.hits) / Double(asked) * 100).rounded()))% hit rate "
               + "over \(asked) lookups"
-        JevLog.write("[jev] decisions cached: \(cacheStats.entries)"
+        JevLog.write("[allowly] decisions cached: \(cacheStats.entries)"
             + (cacheStats.disabled ? " (CACHING OFF — see the line above)" : "")
-            + " (\(rate); clear with `jevd --clear-decisions`)")
+            + " (\(rate); clear with `allowlyd --clear-decisions`)")
         testFailures.append(contentsOf: SelfTest.checkHeadings(DialogWatcher.heading))
         testFailures.append(contentsOf: SelfTest.checkWidgetNoise { DialogSerialiser.isWidgetNoise($0, appName: $1) })
         testFailures.append(contentsOf: SelfTest.checkButtonChoice(DialogSerialiser.chooseButton))
@@ -1239,7 +1248,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // both of which decide what a model is allowed to see.
         testFailures.append(contentsOf: WebSelfTest.run())
         testFailures.append(contentsOf: runBlocking { await WebSelfTest.runAsync() })
-        JevLog.write("[jev] self-tests: \(testFailures.isEmpty ? "pass" : "FAIL \(testFailures)")")
+        JevLog.write("[allowly] self-tests: \(testFailures.isEmpty ? "pass" : "FAIL \(testFailures)")")
         if !testFailures.isEmpty {
             printOnboardingWarning("Self-tests failed:")
             for failure in testFailures {
@@ -1251,10 +1260,10 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Check onboarding
         checkOnboarding()
 
-        JevLog.write("[jev] onboarding checked; building menu bar")
+        JevLog.write("[allowly] onboarding checked; building menu bar")
         // Set up menu bar
         setupMenuBar()
-        JevLog.write("[jev] menu bar ready; starting runtime")
+        JevLog.write("[allowly] menu bar ready; starting runtime")
 
         // Start the actual product: server on the tailnet, dialog watcher, decider.
         let jevRuntime = JevRuntime(
@@ -1263,7 +1272,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             executor: appExecutor
         )
         runtime = jevRuntime
-        JevLog.write("[jev] runtime constructed; scheduling start")
+        JevLog.write("[allowly] runtime constructed; scheduling start")
         Task { await jevRuntime.start() }
     }
 
@@ -1310,8 +1319,8 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let statusItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "rectangle.on.rectangle.angled", accessibilityDescription: "Jev")
-            button.title = "Jev"
+            button.image = NSImage(systemSymbolName: "rectangle.on.rectangle.angled", accessibilityDescription: "Allowly")
+            button.title = "Allowly"
         }
 
         let menu = NSMenu()
@@ -1464,12 +1473,12 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showPairingDialog() {
         // Read the live values once. Every one of these shells out, so calling
         // them repeatedly while building the view is wasteful.
-        JevLog.write("[jev] pairing dialog opening")
+        JevLog.write("[allowly] pairing dialog opening")
         let token = KeychainManager.loadOrCreatePairingToken()
         let device = Tailnet.displayName()
         let serveActive = Tailnet.serveIsActive()
         let pairingURL = Tailnet.pairingURL(token: token, localPort: 8787)
-        JevLog.write("[jev] pairing dialog: device=\(device) serve=\(serveActive) "
+        JevLog.write("[allowly] pairing dialog: device=\(device) serve=\(serveActive) "
             + "url=\(Tailnet.loggableURL(token: token, localPort: 8787))")
 
         let stack = NSStackView()
@@ -1504,7 +1513,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stack.addArrangedSubview(urlField)
 
         let qrImage = QRCodeGenerator.generateQRCode(from: pairingURL)
-        JevLog.write("[jev] pairing dialog: qr generated=\(qrImage != nil) size=\(qrImage?.size ?? .zero)")
+        JevLog.write("[allowly] pairing dialog: qr generated=\(qrImage != nil) size=\(qrImage?.size ?? .zero)")
         if let qr = qrImage {
             let imageView = NSImageView(image: qr)
             imageView.translatesAutoresizingMaskIntoConstraints = false
@@ -1525,7 +1534,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               styleMask: [.titled, .closable],
                               backing: .buffered,
                               defer: false)
-        window.title = "Pair Jev Device"
+        window.title = "Pair Allowly Device"
         window.isReleasedWhenClosed = false
 
         // A bare NSStackView with autoresizing off cannot be the contentView:
@@ -1547,7 +1556,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pairingWindow = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        JevLog.write("[jev] pairing dialog shown, contentView size=\(window.contentView?.frame.size ?? .zero) subviews=\(window.contentView?.subviews.count ?? 0)")
+        JevLog.write("[allowly] pairing dialog shown, contentView size=\(window.contentView?.frame.size ?? .zero) subviews=\(window.contentView?.subviews.count ?? 0)")
     }
 
     @objc private func copyPairingURL(_ sender: NSButton) {
@@ -1576,7 +1585,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = "Gemini transcription"
         alert.informativeText = """
-            Paste a Google AI Studio key. jev will use \(GeminiTranscriber.model) for             everything you say, and fall back to the built-in recogniser whenever it             cannot answer.
+            Paste a Google AI Studio key. Allowly will use \(GeminiTranscriber.model) for             everything you say, and fall back to the built-in recogniser whenever it             cannot answer.
 
             The key is kept in your Keychain and never written to the log.
             """
@@ -1595,7 +1604,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do { try GeminiTranscriber.saveAPIKey(input.stringValue) }
             catch {
                 // Never echoes what was typed.
-                JevLog.write("[jev] could not save the Gemini key")
+                JevLog.write("[allowly] could not save the Gemini key")
             }
         }
         input.stringValue = ""
@@ -1613,9 +1622,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = "Your \(field.name)"
         alert.informativeText = field.isSensitive
-            ? "Typed here and kept in your Keychain. jev will type it when you ask for it by name — "
+            ? "Typed here and kept in your Keychain. Allowly will type it when you ask for it by name — "
               + "it is never spoken, transcribed, logged, or sent to a model."
-            : "Typed here and kept in your Keychain. jev will type it when you ask for it by name."
+            : "Typed here and kept in your Keychain. Allowly will type it when you ask for it by name."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
         if PersonalDetails.value(for: field.name)?.isEmpty == false {
@@ -1639,7 +1648,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do { try PersonalDetails.save(name: field.name, value: input.stringValue) }
             catch {
                 // Never echoes what was typed.
-                JevLog.write("[jev] could not save \(field.name)")
+                JevLog.write("[allowly] could not save \(field.name)")
             }
         case .alertThirdButtonReturn:
             PersonalDetails.forget(name: field.name)
@@ -1652,7 +1661,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func pickVoiceLocale(_ sender: NSMenuItem) {
         let identifier = (sender.representedObject as? String) ?? ""
         VoiceLocale.chosen = identifier.isEmpty ? nil : identifier
-        JevLog.write("[jev] voice language set to \(VoiceLocale.effective)"
+        JevLog.write("[allowly] voice language set to \(VoiceLocale.effective)"
                    + (identifier.isEmpty ? " (following this Mac)" : ""))
     }
 
@@ -1662,11 +1671,12 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func checkOnboarding() {
         let defaults = UserDefaults.standard
-        let hasCompletedOnboarding = defaults.bool(forKey: "JevOnboardingCompleted")
+        let hasCompletedOnboarding = defaults.bool(forKey: "AllowlyOnboardingCompleted")
+            || defaults.bool(forKey: "JevOnboardingCompleted")
 
         if !hasCompletedOnboarding {
             printOnboarding()
-            defaults.set(true, forKey: "JevOnboardingCompleted")
+            defaults.set(true, forKey: "AllowlyOnboardingCompleted")
         }
 
         if !PermissionChecker.isAccessibilityEnabled() {
@@ -1683,17 +1693,17 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func printOnboarding() {
         let message = """
         ========================================
-        Welcome to Jev
+        Welcome to Allowly
         ========================================
-        Jev detects dialogs on your Mac and asks for your approval before acting.
+        Allowly detects dialogs on your Mac and asks for your approval before acting.
 
         To pair your phone:
-        1. Open Jev in your menu bar (top right)
+        1. Open Allowly in your menu bar (top right)
         2. Click "Pairing..." to see the QR code
         3. Scan the QR code with your phone
         4. The PWA will appear; add it to your Home Screen
 
-        Jev needs two permissions:
+        Allowly needs two permissions:
         - Accessibility (to read and interact with dialogs)
         - Screen Recording (to capture screenshots)
 
@@ -1706,7 +1716,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func printOnboardingWarning(_ message: String) {
-        print("[Jev Warning] \(message)")
+        print("[Allowly Warning] \(message)")
     }
 }
 

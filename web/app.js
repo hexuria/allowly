@@ -35,6 +35,7 @@ const APP = {
 
     // Initialize app on page load
     init() {
+        this.migrateStorage();
         this.restoreSession();
         this.setupEventListeners();
         this.detectPlatform();
@@ -91,10 +92,10 @@ const APP = {
         const supported = 'serviceWorker' in navigator && 'PushManager' in window;
         const show = (message, actionLabel) => this.showPushBanner(message, actionLabel);
 
-        if (localStorage.getItem('jev-push-dismissed') === 'true') return;
+        if (localStorage.getItem('allowly-push-dismissed') === 'true') return;
 
         if (isIOS && !this.isInstalled()) {
-            show('Add Jev to your Home Screen so approvals can reach you when the app is closed.');
+            show('Add Allowly to your Home Screen so approvals can reach you when the app is closed.');
             return;
         }
         if (!supported) return;
@@ -103,7 +104,7 @@ const APP = {
             return;
         }
         if (Notification.permission === 'denied') {
-            show('Notifications are blocked. Approvals will only appear while Jev is open.');
+            show('Notifications are blocked. Approvals will only appear while Allowly is open.');
             return;
         }
         show('Get told when something needs your approval.', 'Turn on');
@@ -111,7 +112,7 @@ const APP = {
             // Must run inside the gesture — iOS ignores a deferred request.
             const permission = await Notification.requestPermission();
             if (permission !== 'granted') {
-                show('Notifications are blocked. Approvals will only appear while Jev is open.');
+                show('Notifications are blocked. Approvals will only appear while Allowly is open.');
                 return;
             }
             banner.classList.add('hidden');
@@ -192,7 +193,7 @@ const APP = {
                 state = 'This browser cannot show notifications.';
             } else if (Notification.permission === 'denied') {
                 state = 'Notifications are blocked in your browser settings.';
-            } else if (localStorage.getItem('jev-push-dismissed') === 'true') {
+            } else if (localStorage.getItem('allowly-push-dismissed') === 'true') {
                 state = 'You chose not to be notified on this phone.';
                 canEnable = true;
             } else if (Notification.permission !== 'granted') {
@@ -312,9 +313,25 @@ const APP = {
     },
 
     // Restore session from localStorage, or pair straight from the URL.
+
+    migrateStorage() {
+        const pairs = [
+            ['jev-session', 'allowly-session'],
+            ['jev-push-dismissed', 'allowly-push-dismissed'],
+            ['jev-hands-free', 'allowly-hands-free'],
+            ['jev-fullscreen-hint', 'allowly-fullscreen-hint'],
+            ['jev-screen-fill', 'allowly-screen-fill'],
+        ];
+        for (const [from, to] of pairs) {
+            if (localStorage.getItem(to) === null && localStorage.getItem(from) !== null) {
+                localStorage.setItem(to, localStorage.getItem(from));
+            }
+        }
+    },
+
     restoreSession() {
         try {
-            const stored = localStorage.getItem('jev-session');
+            const stored = localStorage.getItem('allowly-session');
             if (stored) {
                 const session = JSON.parse(stored);
                 this.baseUrl = session.baseUrl;
@@ -374,7 +391,7 @@ const APP = {
 
     // Save session to localStorage
     saveSession() {
-        localStorage.setItem('jev-session', JSON.stringify({
+        localStorage.setItem('allowly-session', JSON.stringify({
             baseUrl: this.baseUrl,
             token: this.token,
         }));
@@ -398,7 +415,7 @@ const APP = {
 
         document.getElementById('pushBannerDismiss')?.addEventListener('click', () => {
             document.getElementById('pushBanner').classList.add('hidden');
-            localStorage.setItem('jev-push-dismissed', 'true');
+            localStorage.setItem('allowly-push-dismissed', 'true');
             this.renderPushSetting();
         });
 
@@ -417,7 +434,7 @@ const APP = {
         // "Notifications are on." while the Mac had never been told.
         // The one escape hatch from "Not now" was itself broken.
         document.getElementById('pushEnable')?.addEventListener('click', async () => {
-            localStorage.removeItem('jev-push-dismissed');
+            localStorage.removeItem('allowly-push-dismissed');
             // ASK. Round 29 fixed the TypeError here and left the button
             // a no-op in the state it exists for: `detectPlatform` only
             // paints a banner, and `ensurePushSubscription` returns at
@@ -542,7 +559,7 @@ const APP = {
                 // forgot minutes ago. Coming back to the app is the natural
                 // moment to find out, and it costs one small request.
                 if (this.baseUrl && this.token) this.loadApprovals();
-                if (localStorage.getItem('jev-hands-free') === 'true' && !this.handsFree) {
+                if (localStorage.getItem('allowly-hands-free') === 'true' && !this.handsFree) {
                     this.startHandsFree();
                 }
             }
@@ -634,7 +651,7 @@ const APP = {
         // Hands-free too, or the toggle reads "on" while nothing is
         // listening — reachable by unpairing and re-pairing, since the
         // preference outlives the session.
-        if (localStorage.getItem('jev-hands-free') === 'true') {
+        if (localStorage.getItem('allowly-hands-free') === 'true') {
             this.syncHandsFreeToggles(true);
             this.setHandsFreeStatus('Tap anywhere to start listening', '');
             // iOS will not open a microphone without a user gesture, so
@@ -717,14 +734,14 @@ const APP = {
         // are on." about a subscription this line just tore down.
         this.pushSubscribed = null;
         this.pushBlocked = null;
-        localStorage.removeItem('jev-hands-free');
+        localStorage.removeItem('allowly-hands-free');
         this.syncHandsFreeToggles(false);
         // Anything already in flight must not repopulate what this just
         // cleared. An /api/pending response landing after the clear put
         // the old Mac's card back, with live buttons.
         this.pairingGeneration = (this.pairingGeneration || 0) + 1;
         this.approvalsLoaded = false;
-        localStorage.removeItem('jev-session');
+        localStorage.removeItem('allowly-session');
         this.disconnectWebSocket();
         this.showSetupScreen();
         this.closeSettings();
@@ -955,8 +972,8 @@ const APP = {
         // to the home screen the app runs standalone and there is no browser
         // chrome at all. Said once, then remembered, because a nag every time
         // is worse than the problem.
-        if (on && !this.isInstalled() && !localStorage.getItem('jev-fullscreen-hint')) {
-            localStorage.setItem('jev-fullscreen-hint', '1');
+        if (on && !this.isInstalled() && !localStorage.getItem('allowly-fullscreen-hint')) {
+            localStorage.setItem('allowly-fullscreen-hint', '1');
             this.toast('Safari keeps its bars in a tab. Share → Add to Home Screen for true full screen.');
         }
     },
@@ -1179,7 +1196,7 @@ const APP = {
     // default because you cannot press what you cannot see — but the bars
     // waste a lot of a small screen, so this is a choice rather than a rule.
     applyScreenFill() {
-        const fill = localStorage.getItem('jev-screen-fill') === '1';
+        const fill = localStorage.getItem('allowly-screen-fill') === '1';
         document.body.classList.toggle('screen-fill', fill);
         const btn = document.getElementById('fillToggle');
         if (btn) {
@@ -1190,8 +1207,8 @@ const APP = {
     },
 
     toggleScreenFill() {
-        const fill = localStorage.getItem('jev-screen-fill') === '1';
-        localStorage.setItem('jev-screen-fill', fill ? '0' : '1');
+        const fill = localStorage.getItem('allowly-screen-fill') === '1';
+        localStorage.setItem('allowly-screen-fill', fill ? '0' : '1');
         this.applyScreenFill();
         this.toast(fill ? 'Showing the whole screen' : 'Filling the screen — edges are cropped');
     },
@@ -1783,7 +1800,7 @@ const APP = {
             let recorder = null;
 
             this.handsFree = { stream, context, stop: false };
-            localStorage.setItem('jev-hands-free', 'true');
+            localStorage.setItem('allowly-hands-free', 'true');
             this.syncHandsFreeToggles(true);
             this.setHandsFreeStatus('Listening…', 'live');
 
@@ -1858,7 +1875,7 @@ const APP = {
         } catch (err) {
             this.setHandsFreeStatus(`Microphone unavailable: ${err.message}`, '');
             this.syncHandsFreeToggles(false);
-            localStorage.removeItem('jev-hands-free');
+            localStorage.removeItem('allowly-hands-free');
         }
     },
 
@@ -1869,7 +1886,7 @@ const APP = {
         this.handsFree.stream.getTracks().forEach(t => t.stop());
         this.handsFree.context.close().catch(() => {});
         this.handsFree = null;
-        localStorage.removeItem('jev-hands-free');
+        localStorage.removeItem('allowly-hands-free');
         this.syncHandsFreeToggles(false);
         this.setHandsFreeStatus('Off', '');
     },
@@ -2376,7 +2393,7 @@ const APP = {
             } else {
                 remember();
                 this.toast(mode === 'auto'
-                    ? 'Jev will decide this app from now on'
+                    ? 'Allowly will decide this app from now on'
                     : 'Remembered. Answer this one on the card.');
             }
             return;
@@ -2482,8 +2499,8 @@ const APP = {
             // sends, deletes or discards comes to you, whatever the
             // decider says, because those are the ones you are asked to
             // confirm even when you tap them yourself.
-            auto: 'Jev answers the safe ones itself (Cancel, Deny, Not Now) and asks you about the rest.',
-            ask: 'Jev asks you about anything not listed here.',
+            auto: 'Allowly answers the safe ones itself (Cancel, Deny, Not Now) and asks you about the rest.',
+            ask: 'Allowly asks you about anything not listed here.',
         }[policy.global] || '';
         document.getElementById('policyExceptionsHint').textContent = hint;
 
@@ -2502,7 +2519,7 @@ const APP = {
             row.appendChild(name);
 
             const select = document.createElement('select');
-            [['always', 'Always'], ['auto', 'Ask Jev'], ['never', 'Never']].forEach(([value, label]) => {
+            [['always', 'Always'], ['auto', 'Ask Allowly'], ['never', 'Never']].forEach(([value, label]) => {
                 const option = document.createElement('option');
                 option.value = value;
                 option.textContent = label;
@@ -2720,7 +2737,7 @@ const APP = {
                 <div class="approval-tcc-notice">
                     <p><strong>You have to press this one at the Mac.</strong>
                     It is a macOS privacy prompt, and Apple only accepts a press
-                    from real hardware. No remote tool can answer it — not Jev,
+                    from real hardware. No remote tool can answer it — not Allowly,
                     not Screen Sharing.</p>
                     <p class="approval-tcc-advice">Grant it once in System Settings
                     on your Mac and it will stop interrupting you when you are away.</p>
@@ -3521,7 +3538,7 @@ const APP = {
             // and genuinely have nothing in them. Saying so quietly beats
             // saying nothing: a screen that never changes looks broken, and
             // there was no way to tell a missed word from a dead microphone.
-            console.warn('[jev] hands-free segment not transcribed', result.error || '');
+            console.warn('[allowly] hands-free segment not transcribed', result.error || '');
             this.noteHeard(null);
             return;
         }
@@ -3694,7 +3711,7 @@ const APP = {
                 throw new Error(outcome.error || 'your Mac would not store it');
             }
 
-            console.log('[jev] push subscription registered');
+            console.log('[allowly] push subscription registered');
             return subscription;
         } catch (error) {
             console.error('Failed to subscribe to push:', error);

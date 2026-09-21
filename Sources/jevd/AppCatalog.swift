@@ -86,7 +86,7 @@ final class AppCatalog: @unchecked Sendable {
             let before = self.all.count
             self.refresh()
             let after = self.all.count
-            JevLog.write("[jev] apps: \(root) changed; catalog \(before) → \(after)")
+            JevLog.write("[allowly] apps: \(root) changed; catalog \(before) → \(after)")
         }
         pendingRefresh = work
         lock.unlock()

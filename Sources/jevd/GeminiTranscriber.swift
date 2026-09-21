@@ -49,8 +49,7 @@ struct GeminiTranscriber: Transcriber {
             .trimmingCharacters(in: .whitespacesAndNewlines), !stored.isEmpty {
             return stored
         }
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/gemini-api-key")
+        let url = Allowly.supportDirectory.appendingPathComponent("gemini-api-key")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -62,12 +61,12 @@ struct GeminiTranscriber: Transcriber {
         guard !trimmed.isEmpty else { throw TranscriptionError.recognitionFailed("Empty key") }
         try KeychainManager.shared.store(key: keychainKey, value: trimmed)
         // That one was set, never what it is.
-        JevLog.write("[jev] Gemini key saved; transcription will use \(model)")
+        JevLog.write("[allowly] Gemini key saved; transcription will use \(model)")
     }
 
     static func clearAPIKey() {
         try? KeychainManager.shared.store(key: keychainKey, value: "")
-        JevLog.write("[jev] Gemini key removed; using the built-in recogniser")
+        JevLog.write("[allowly] Gemini key removed; using the built-in recogniser")
     }
 
     /// Where the key in use came from, for the menu. Never the key.
@@ -82,9 +81,8 @@ struct GeminiTranscriber: Transcriber {
     }
 
     static var model: String {
-        let fromEnv = ProcessInfo.processInfo.environment["JEV_GEMINI_MODEL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (fromEnv?.isEmpty == false) ? fromEnv! : defaultModel
+        let fromEnv = Allowly.environment("ALLOWLY_GEMINI_MODEL", "JEV_GEMINI_MODEL")
+        return fromEnv ?? defaultModel
     }
 
     static var isConfigured: Bool { loadAPIKey() != nil }
@@ -258,7 +256,7 @@ struct FallbackTranscriber: Transcriber {
         case (.failure(let why), .success(let ear)):
             // Say which one spoke, once, and why. Without this a quietly
             // degrading key looks like a quietly degrading recogniser.
-            JevLog.write("[jev] voice: Gemini did not answer (\(why)); using the built-in recogniser")
+            JevLog.write("[allowly] voice: Gemini did not answer (\(why)); using the built-in recogniser")
             return .success(ear)
         case (.failure, .failure(let why)):
             return .failure(why)
