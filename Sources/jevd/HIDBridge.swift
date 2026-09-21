@@ -45,16 +45,38 @@ enum HIDBridge {
 
     // MARK: - Finding the board
 
+    /// Point the bridge at one specific device instead of hunting /dev.
+    ///
+    /// This exists so the protocol can be exercised without owning the
+    /// hardware: `scripts/fake-hid-board.py` opens a pseudo-terminal, runs
+    /// the REAL firmware behind it, and hands back a path that looks nothing
+    /// like `cu.usbmodem`. Everything below this line then behaves exactly as
+    /// it will with a board on the end of a cable.
+    static let portOverrideVariable = "JEV_HID_PORT"
+
+    static var portOverride: String? {
+        let value = ProcessInfo.processInfo.environment[portOverrideVariable]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
     /// Serial ports that could be the board. CircuitPython presents its CDC
     /// port as a usbmodem device; `cu.` rather than `tty.` because `tty.`
     /// blocks on open waiting for carrier detect.
     static func candidatePorts() -> [String] {
-        let dev = "/dev"
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dev) else { return [] }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: "/dev")) ?? []
+        return candidatePorts(in: names, override: portOverride)
+    }
+
+    /// Pure, so the `cu.`-not-`tty.` rule is asserted rather than assumed.
+    /// Picking `tty.` would block on open waiting for carrier detect, which
+    /// is a hang at startup rather than a wrong answer.
+    static func candidatePorts(in names: [String], override: String?) -> [String] {
+        if let override { return [override] }
         return names
             .filter { $0.hasPrefix("cu.usbmodem") }
             .sorted()
-            .map { "\(dev)/\($0)" }
+            .map { "/dev/\($0)" }
     }
 
     /// Whether a board is attached and answering.
@@ -107,6 +129,30 @@ enum HIDBridge {
         return nil
     }
 
+    /// Read whatever is waiting, without blocking and without Foundation.
+    ///
+    /// `FileHandle.read(upToCount:)` cannot be used on a non-blocking
+    /// descriptor. It throws EAGAIN when there is nothing to read, which is
+    /// expected — but measured against a port with a reply already sitting in
+    /// it, it threw on all 27 attempts across 600 ms while a plain `read(2)`
+    /// on the same port returned the answer on the first try.
+    ///
+    /// Every read in this file went through it, so the handshake could never
+    /// complete: `isAttached()` would have been false with a board plugged
+    /// in, and the $4 part would have arrived and done nothing. Found by the
+    /// fake board in `scripts/fake-hid-board.py`, which is the entire reason
+    /// that script exists.
+    ///
+    /// The write path is left on FileHandle deliberately — it demonstrably
+    /// works, and `isWouldBlock` exists to handle its EAGAIN.
+    private static func readAvailable(_ handle: FileHandle, max count: Int = 256) -> Data {
+        var buffer = [UInt8](repeating: 0, count: count)
+        let read = buffer.withUnsafeMutableBytes { raw -> Int in
+            Darwin.read(handle.fileDescriptor, raw.baseAddress, count)
+        }
+        return read > 0 ? Data(buffer[0..<read]) : Data()
+    }
+
     private static func handshake(on handle: FileHandle) -> Bool {
         guard write("PING", to: handle) else { return false }
         // The board answers in a few milliseconds. Poll rather than block, so a
@@ -114,7 +160,8 @@ enum HIDBridge {
         let deadline = Date().addingTimeInterval(0.6)
         var seen = ""
         while Date() < deadline {
-            if let chunk = try? handle.read(upToCount: 256), !chunk.isEmpty {
+            let chunk = readAvailable(handle)
+            if !chunk.isEmpty {
                 seen += String(decoding: chunk, as: UTF8.self)
                 if seen.contains("PONG jev-hid") { return true }
             }
@@ -236,6 +283,54 @@ enum HIDBridge {
 
     enum Acknowledgement: Sendable { case ok, refused, silent }
 
+    /// What the board has said so far, or nil for "not enough yet".
+    ///
+    /// Pure, and every line of it is scar tissue:
+    ///
+    /// - ERR is checked FIRST. The firmware echoes the verb back in its error
+    ///   line, so looking for "OK" over an accumulating buffer can match a
+    ///   verb that happens to contain those letters.
+    /// - PONG counts as OK. The handshake reply is neither, so `send("PING")`
+    ///   against a LIVE board returned `.silent` and dropped the port —
+    ///   detaching working hardware and logging that it had.
+    ///
+    /// Both were found by reading, not by testing, because nothing here could
+    /// be tested without a board. Now it can.
+    static func classify(_ seen: String) -> Acknowledgement? {
+        if seen.contains("ERR") { return .refused }
+        if seen.contains("OK") || seen.contains("PONG jev-hid") { return .ok }
+        return nil
+    }
+
+    /// The exact line that goes down the wire.
+    ///
+    /// Pure and separated out because this is the contract with
+    /// `firmware/jev-hid/code.py`, which parses positionally — `parts[1]`,
+    /// `parts[2]` — and the only other way to check the two agree is to own
+    /// the hardware and watch the pointer move.
+    enum Wire {
+        static func move(_ p: (x: Int, y: Int)) -> String { "MOVE \(p.x) \(p.y)" }
+
+        static func click(_ p: (x: Int, y: Int), button: Button, count: Int) -> String {
+            "CLICK \(p.x) \(p.y) \(button.rawValue) \(max(1, count))"
+        }
+
+        static func drag(_ a: (x: Int, y: Int), _ b: (x: Int, y: Int)) -> String {
+            "DRAG \(a.x) \(a.y) \(b.x) \(b.y)"
+        }
+
+        static func scroll(_ p: (x: Int, y: Int), amount: Int) -> String {
+            "SCROLL \(p.x) \(p.y) \(amount)"
+        }
+
+        /// An empty key list still sends one argument, because the firmware
+        /// indexes `parts[2]` unconditionally.
+        static func key(modifier: Int, codes: [Int]) -> String {
+            let list = codes.map(String.init).joined(separator: ",")
+            return "KEY \(modifier) \(list.isEmpty ? "0" : list)"
+        }
+    }
+
     /// How long the board gets to answer an ordinary command.
     ///
     /// A click is two sleeps and a report; a drag is twelve. Everything but
@@ -277,7 +372,7 @@ enum HIDBridge {
         // would block every pointer command, not just the HID ones. Sixteen
         // reads is 8 KB, far more than any reply this protocol produces.
         for _ in 0..<16 {
-            guard let chunk = try? handle.read(upToCount: 512), !chunk.isEmpty else { return }
+            guard !readAvailable(handle, max: 512).isEmpty else { return }
         }
     }
 
@@ -287,18 +382,10 @@ enum HIDBridge {
         let deadline = Date().addingTimeInterval(timeout)
         var seen = ""
         while Date() < deadline {
-            if let chunk = try? handle.read(upToCount: 128), !chunk.isEmpty {
+            let chunk = readAvailable(handle, max: 128)
+            if !chunk.isEmpty {
                 seen += String(decoding: chunk, as: UTF8.self)
-                // ERR first. The firmware echoes the verb back in its
-                // error line, so checking for "OK" over an accumulating
-                // buffer could match a verb that happens to contain it.
-                if seen.contains("ERR") { return .refused }
-                // PONG counts. The handshake reply is neither OK nor
-                // ERR, so `send("PING")` against a LIVE board returned
-                // `.silent` and dropped the port — detaching working
-                // hardware and logging that it had. Latent only because
-                // the one caller runs behind `if !isAttached()`.
-                if seen.contains("OK") || seen.contains("PONG jev-hid") { return .ok }
+                if let verdict = classify(seen) { return verdict }
             }
             usleep(5_000)
         }
@@ -320,8 +407,7 @@ enum HIDBridge {
     // MARK: - The operations Pointer and Keystrokes need
 
     static func move(to point: CGPoint, in bounds: CGRect) -> Bool {
-        let p = absolute(point, in: bounds)
-        return send("MOVE \(p.x) \(p.y)")
+        return send(Wire.move(absolute(point, in: bounds)))
     }
 
     static func click(at point: CGPoint, in bounds: CGRect,
@@ -334,7 +420,7 @@ enum HIDBridge {
         // longer produces what scroll used to: the board acts, the flat
         // ack window lapses, `send` reports false, and CGEvent does it
         // all over again.
-        return send("CLICK \(p.x) \(p.y) \(button.rawValue) \(max(1, count))",
+        return send(Wire.click(p, button: button, count: count),
                     timeout: clickTimeout(count: count))
     }
 
@@ -342,17 +428,16 @@ enum HIDBridge {
         let a = absolute(start, in: bounds)
         let b = absolute(end, in: bounds)
         // Twelve interpolated steps in the firmware, ~138 ms of sleeps.
-        return send("DRAG \(a.x) \(a.y) \(b.x) \(b.y)", timeout: dragTimeout)
+        return send(Wire.drag(a, b), timeout: dragTimeout)
     }
 
     static func scroll(at point: CGPoint, in bounds: CGRect, amount: Int) -> Bool {
         let p = absolute(point, in: bounds)
-        return send("SCROLL \(p.x) \(p.y) \(amount)", timeout: scrollTimeout(notches: amount))
+        return send(Wire.scroll(p, amount: amount), timeout: scrollTimeout(notches: amount))
     }
 
     static func key(modifier: Int, codes: [Int]) -> Bool {
-        let list = codes.map(String.init).joined(separator: ",")
-        return send("KEY \(modifier) \(list.isEmpty ? "0" : list)")
+        return send(Wire.key(modifier: modifier, codes: codes))
     }
 
     enum Button: Int {

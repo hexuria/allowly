@@ -87,6 +87,135 @@ enum HIDBridgeSelfTest {
             }
         }
 
+        // ---- End to end, against a board that does not exist ----
+        //
+        // Only with an explicit JEV_HID_PORT. Never on a plain launch: if a
+        // real board is plugged in, driving it here would jerk the pointer
+        // across the screen and click something every time jev started.
+        //
+        // With `scripts/fake-hid-board.py` on the other end this covers the
+        // whole path — connect, handshake, drain, write, acknowledge — and
+        // the real firmware parses every command. See that script.
+        if let fake = HIDBridge.portOverride {
+            let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+            check("the fake board is found at the port it was given",
+                  HIDBridge.isAttached() && HIDBridge.attachedPort == fake)
+            check("PING is acknowledged", HIDBridge.send("PING"))
+            check("a move is acknowledged",
+                  HIDBridge.move(to: CGPoint(x: 900, y: 584), in: screen))
+            check("a click is acknowledged",
+                  HIDBridge.click(at: CGPoint(x: 900, y: 584), in: screen))
+            check("a double click is acknowledged",
+                  HIDBridge.click(at: CGPoint(x: 10, y: 10), in: screen, count: 2))
+            check("a right click is acknowledged",
+                  HIDBridge.click(at: CGPoint(x: 10, y: 10), in: screen, button: .right))
+            check("a drag is acknowledged",
+                  HIDBridge.drag(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 400, y: 300),
+                                 in: screen))
+            check("a long scroll finishes inside its own deadline",
+                  HIDBridge.scroll(at: CGPoint(x: 900, y: 584), in: screen, amount: 40))
+            check("a keystroke is acknowledged", HIDBridge.key(modifier: 8, codes: [4]))
+            // A refusal must read as a refusal. Treating it as silence
+            // detached a working board and logged that it had.
+            check("an unknown command is refused, and the port survives it",
+                  HIDBridge.send("WIGGLE 1 2") == false)
+            check("the board is still attached after a refusal",
+                  HIDBridge.attachedPort == fake)
+            check("and still answers afterwards", HIDBridge.send("PING"))
+        }
+
+        // ---- The wire, which nothing could check before ----
+        //
+        // These strings are the contract with firmware/jev-hid/code.py, which
+        // parses positionally. Swap two arguments here and every other test in
+        // this file still passes; you find out when the hardware arrives and
+        // the pointer goes to the wrong place. The expected strings below are
+        // written out in full on purpose: they are meant to be read against
+        // the firmware's own `handle()`, not derived from the same code that
+        // produces them.
+        let mid = (x: 16384, y: 9001)
+        check("MOVE is verb, x, y",
+              HIDBridge.Wire.move(mid) == "MOVE 16384 9001")
+        check("CLICK is verb, x, y, button, count",
+              HIDBridge.Wire.click(mid, button: .left, count: 1) == "CLICK 16384 9001 1 1")
+        check("the right button is 2, as the firmware's BUTTON_RIGHT is",
+              HIDBridge.Wire.click(mid, button: .right, count: 1) == "CLICK 16384 9001 2 1")
+        check("the middle button is 4, not 3",
+              HIDBridge.Wire.click(mid, button: .middle, count: 1) == "CLICK 16384 9001 4 1")
+        check("a double click asks for two",
+              HIDBridge.Wire.click(mid, button: .left, count: 2) == "CLICK 16384 9001 1 2")
+        check("a count below one is still one click, not zero or a crash",
+              HIDBridge.Wire.click(mid, button: .left, count: 0) == "CLICK 16384 9001 1 1")
+        check("DRAG carries both ends, start first",
+              HIDBridge.Wire.drag((x: 1, y: 2), (x: 3, y: 4)) == "DRAG 1 2 3 4")
+        check("SCROLL keeps its sign — the firmware decides direction from it",
+              HIDBridge.Wire.scroll(mid, amount: -7) == "SCROLL 16384 9001 -7")
+        check("KEY joins its codes with commas and no spaces",
+              HIDBridge.Wire.key(modifier: 8, codes: [4, 5]) == "KEY 8 4,5")
+        check("KEY with nothing held still sends an argument to index",
+              HIDBridge.Wire.key(modifier: 0, codes: []) == "KEY 0 0")
+        for line in [HIDBridge.Wire.move(mid),
+                     HIDBridge.Wire.click(mid, button: .left, count: 2),
+                     HIDBridge.Wire.drag(mid, mid),
+                     HIDBridge.Wire.scroll(mid, amount: 3),
+                     HIDBridge.Wire.key(modifier: 0, codes: [])] {
+            check("no command contains a newline, which would split it in two",
+                  !line.contains("\n"))
+            check("no command is longer than the firmware's 200-byte line limit",
+                  line.utf8.count < 200)
+        }
+
+        // ---- What the board's answer means ----
+        check("silence is not an answer yet", HIDBridge.classify("") == nil)
+        check("a partial reply is not an answer yet", HIDBridge.classify("O") == nil)
+        check("OK is success", HIDBridge.classify("OK\r\n") == .ok)
+        check("PONG is success too — it is what a PING gets back",
+              HIDBridge.classify("PONG jev-hid 1\r\n") == .ok)
+        check("ERR is a refusal, not silence",
+              HIDBridge.classify("ERR unknown command WIGGLE\r\n") == .refused)
+        // The ordering that matters: the firmware echoes the verb into its
+        // error line, so a buffer holding an error about a verb containing
+        // "OK" must still read as a refusal.
+        check("an error mentioning a verb with OK in it is still an error",
+              HIDBridge.classify("ERR unknown command LOOKUP\r\n") == .refused)
+        check("a late OK after an error still reads as the error",
+              HIDBridge.classify("ERR bad arguments\r\nOK\r\n") == .refused)
+
+        // ---- Which /dev entries are even candidates ----
+        let dev = ["cu.usbmodem1101", "tty.usbmodem1101", "cu.Bluetooth-Incoming-Port",
+                   "cu.usbmodem0002", "null", "disk0"]
+        let ports = HIDBridge.candidatePorts(in: dev, override: nil)
+        check("only cu.usbmodem entries are candidates", ports.count == 2)
+        check("tty. is never chosen — it blocks on open waiting for carrier",
+              !ports.contains { $0.contains("tty.") })
+        check("candidates are full paths", ports.first == "/dev/cu.usbmodem0002")
+        check("candidates are sorted, so the choice is not filesystem order",
+              ports == ports.sorted())
+        check("nothing plugged in is no candidates",
+              HIDBridge.candidatePorts(in: ["null"], override: nil).isEmpty)
+        check("an override wins outright, so a fake board needs no usbmodem name",
+              HIDBridge.candidatePorts(in: dev, override: "/dev/ttys004") == ["/dev/ttys004"])
+
+        // ---- "No room in the buffer" is not "the board is gone" ----
+        //
+        // This exists because misreading EAGAIN detached a working board
+        // mid-swipe. Foundation can hand the same condition back in three
+        // shapes, and only the first is obvious.
+        check("a POSIX EAGAIN is would-block",
+              HIDBridge.isWouldBlock(POSIXError(.EAGAIN)))
+        check("an NSError in the POSIX domain is would-block",
+              HIDBridge.isWouldBlock(NSError(domain: NSPOSIXErrorDomain,
+                                             code: Int(EAGAIN))))
+        check("a Cocoa write error WRAPPING EAGAIN is would-block — the shape that bit",
+              HIDBridge.isWouldBlock(NSError(
+                domain: NSCocoaErrorDomain, code: 512,
+                userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain,
+                                                         code: Int(EAGAIN))])))
+        check("an unplugged board (ENXIO) is NOT would-block",
+              !HIDBridge.isWouldBlock(NSError(domain: NSPOSIXErrorDomain, code: Int(ENXIO))))
+        check("a closed descriptor (EBADF) is NOT would-block",
+              !HIDBridge.isWouldBlock(POSIXError(.EBADF)))
+
         check("direction does not change the deadline",
               HIDBridge.scrollTimeout(notches: -18) == HIDBridge.scrollTimeout(notches: 18))
 
