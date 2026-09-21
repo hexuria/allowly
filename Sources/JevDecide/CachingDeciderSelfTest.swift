@@ -251,6 +251,68 @@ public enum CachingDeciderSelfTest {
         try? FileManager.default.setAttributes([.posixPermissions: 0o700],
                                                 ofItemAtPath: lockedDir.path)
 
+        // ---- A tampered ledger cannot forge an approval ----
+        //
+        // The rule was enforced on write only, which trusts the file. The
+        // file is bytes on a disk: editing one line from "askHuman" to
+        // "allow" made a fresh cache hand a forged approval to the caller.
+        // 0600 is not the argument — a forged click is worse than a read.
+        let tamperDir = dir.appendingPathComponent("tamper")
+        let writing = DecisionCache(directory: tamperDir)
+        let writingDecider = CachingDecider(wrapping: Counting(ask), namespace: "test",
+                                            cache: writing)
+        _ = await writingDecider.decide(request: request(), dialogText: "tree")
+        let ledgerPath = tamperDir.appendingPathComponent("ledger.jsonl")
+        if let honest = try? String(contentsOf: ledgerPath, encoding: .utf8) {
+            let forged = honest.replacingOccurrences(of: "\"askHuman\"", with: "\"allow\"")
+            check("the tampered line really did change", forged != honest)
+            try? forged.write(to: ledgerPath, atomically: true, encoding: .utf8)
+        }
+        // A brand new cache over the forged file, as a restart would be.
+        let reading = DecisionCache(directory: tamperDir)
+        let readingBackend = Counting(ask)
+        let readingDecider = CachingDecider(wrapping: readingBackend, namespace: "test",
+                                            cache: reading)
+        let afterTamper = await readingDecider.decide(request: request(), dialogText: "tree")
+        check("a forged allow in the ledger is never served",
+              afterTamper.value == .askHuman)
+        check("and the backend was asked instead", await readingBackend.count() == 1)
+        check("the forged line is not kept", await reading.stats().entries == 1)
+
+        // ---- Duplicate keys are compacted, not accumulated ----
+        //
+        // Compaction triggered only on dropped lines, so three writes of one
+        // key left three lines behind a map of one, forever.
+        let dupDir = dir.appendingPathComponent("dupes")
+        let dupCache = DecisionCache(directory: dupDir)
+        let dupPath = dupDir.appendingPathComponent("ledger.jsonl")
+        for n in 1...3 {
+            // Same key each time: same question, asked again.
+            await dupCache.store("same-key", decision: Decision(
+                value: .askHuman, confidence: Double(n) / 10, reason: "again", source: .jev))
+        }
+        let beforeCompaction = ((try? String(contentsOf: dupPath, encoding: .utf8)) ?? "")
+            .split(separator: "\n").count
+        check("three writes of one key append three lines", beforeCompaction == 3)
+        let reopened = DecisionCache(directory: dupDir)
+        check("reloading keeps one entry", await reopened.stats().entries == 1)
+        let afterCompaction = ((try? String(contentsOf: dupPath, encoding: .utf8)) ?? "")
+            .split(separator: "\n").count
+        check("and compacts the file down to it", afterCompaction == 1)
+
+        // ---- Clearing forgets the counters too ----
+        let countDir = dir.appendingPathComponent("counters")
+        let countCache = DecisionCache(directory: countDir)
+        let countDecider = CachingDecider(wrapping: Counting(ask), namespace: "test",
+                                          cache: countCache)
+        _ = await countDecider.decide(request: request(), dialogText: "tree")
+        _ = await countDecider.decide(request: request(), dialogText: "tree")
+        check("a hit and a miss were counted", await countCache.stats().hits == 1)
+        try? FileManager.default.removeItem(at: countDir.appendingPathComponent("ledger.jsonl"))
+        _ = await countDecider.decide(request: request(), dialogText: "tree")
+        check("clearing the ledger resets the counters too, so the two paths agree",
+              await countCache.stats().hits == 0)
+
         // ---- Per-schema salt ----
         check("one master salt gives different schemas different salts",
               DecisionCache.salt(master: "m", schema: "approval.v1")

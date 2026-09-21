@@ -51,6 +51,12 @@ public struct CachingDecider: Decider {
         self.cache = cache ?? DecisionCache.shared
     }
 
+    /// Known and accepted: two identical requests arriving together both
+    /// miss and both reach the backend, because the lookup and the store are
+    /// separate hops on an actor that suspends between them. It costs a
+    /// second call, never a wrong answer, and coalescing would mean moving
+    /// the backend call inside the actor — a bigger change than the saving
+    /// justifies at the rate dialogs actually arrive.
     public func decide(request: ApprovalRequest, dialogText: String) async -> Decision {
         let key = await cache.key(for: request, dialogText: dialogText, namespace: namespace)
         if let remembered = await cache.lookup(key) {
@@ -80,6 +86,8 @@ public actor DecisionCache {
     /// matter on a path you hit daily and short enough that a stale answer
     /// ages out rather than being inherited by next year's version of the app.
     public static let defaultTTL: TimeInterval = 30 * 24 * 60 * 60
+    /// Per-schema overrides. Empty today because there is one schema — this
+    /// is the place to put a second one's TTL, not a derivation.
     private static let ttlBySchema: [String: TimeInterval] = [:]
 
     public static func ttl(for schema: String) -> TimeInterval {
@@ -133,10 +141,12 @@ public actor DecisionCache {
     /// same key here. A wrong cached decision is worse than a slow one: it is
     /// permanent, and it looks confident.
     ///
-    /// Three fields are deliberately absent. `id` is a fresh UUID per request
+    /// Four fields are deliberately absent. `id` is a fresh UUID per request
     /// and `timestamp` is the moment it arrived; including either would make
     /// every key unique and the hit rate exactly zero. `screenshotReference`
-    /// is a path to a file, not a fact about the question.
+    /// is a path to a file, not a fact about the question. And the app's
+    /// display `name` is localised, where its bundle identifier is not — two
+    /// Macs in two languages should agree about what the same question is.
     public static func canonical(request: ApprovalRequest, dialogText: String) -> String {
         func flat(_ text: String) -> String {
             text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -205,8 +215,16 @@ public actor DecisionCache {
             // that had already been wiped, so "empties it" quietly meant
             // "empties it after you restart".
             if !entries.isEmpty, !FileManager.default.fileExists(atPath: ledgerURL.path) {
+                // Counted BEFORE the clear. Read after `removeAll` this said
+                // "forgetting 0" every single time.
+                let forgotten = entries.count
                 entries.removeAll()
-                Self.log("[jev] decisions: ledger was cleared underneath us; forgetting \(entries.count)")
+                // `clearOnDisk` removes the counters too, so a live daemon
+                // that kept its own would rewrite them on the next lookup
+                // and the two paths would disagree about what "cleared" means.
+                hits = 0
+                misses = 0
+                Self.log("[jev] decisions: ledger was cleared underneath us; forgetting \(forgotten)")
             }
             return
         }
@@ -252,25 +270,41 @@ public actor DecisionCache {
         decoder.dateDecodingStrategy = .iso8601
         let now = Date()
         var dropped = false
+        var kept = 0
         for line in text.split(separator: "\n") {
             guard let data = line.data(using: .utf8),
                   let entry = try? decoder.decode(Entry.self, from: data) else { dropped = true; continue }
+            // The rule is enforced on READ as well as on write.
+            //
+            // Guarding only `store` trusts the file, and the file is just
+            // bytes on a disk. Editing one line from "askHuman" to "allow"
+            // made a fresh cache hand a forged approval to the caller —
+            // demonstrated, not imagined. 0600 is not the argument: the salt
+            // comment below already treats a same-user reader as in scope,
+            // and a forged click is worse than an enumerated ledger.
+            guard Self.isCacheable(entry.decision) else { dropped = true; continue }
             // Append-only, so a key written twice is the later one.
             guard now.timeIntervalSince(entry.storedAt) < ttl(for: Self.schemaVersion) else {
                 dropped = true
                 continue
             }
             entries[entry.key] = entry
+            kept += 1
         }
-        // Compaction. The TTL filtered on read only, so the file grew forever
-        // while the map it produced stayed small.
-        if dropped { rewriteLedger() }
+        // Compaction, for both ways the file outgrows the map it produces:
+        // lines that were dropped, and lines superseded by a later write of
+        // the same key. Triggering on `dropped` alone left a ledger of three
+        // lines behind a map of one, forever.
+        if dropped || kept > entries.count { rewriteLedger() }
     }
 
     public func lookup(_ key: String) -> Decision? {
         load()
         guard !disabled else { return nil }
         guard let entry = entries[key],
+              // Belt and braces with the check in `load`. Anything that is
+              // not "ask them" is not servable, however it got here.
+              Self.isCacheable(entry.decision),
               Date().timeIntervalSince(entry.storedAt) < ttl(for: Self.schemaVersion) else {
             misses += 1
             saveCounters()
