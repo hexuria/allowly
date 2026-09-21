@@ -877,6 +877,28 @@ public struct SelfTest {
         check("a held card can still be answered", await holding.resolve(id: "held") != nil)
         check("answering releases the hold", await !holding.isHeld(id: "held"))
 
+        // A hold is not forever. Holding while the dialog is on screen fixed
+        // a destroyed card; it also made a MISTAKEN card permanent, because
+        // "still on screen" is just as true of something that was never a
+        // dialog. The watcher really does raise these — Safari's address bar
+        // reports as a dialog with two real buttons.
+        let capped = ApprovalStore()
+        _ = await capped.addDeduplicated(request("old", title: "Finder",
+                                                 body: "not really a dialog", age: 1800,
+                                                 options: ["Edit", "Show Search Menu"]))
+        await capped.hold(id: "old")
+        check("a held card outlives the ordinary five minutes",
+              await capped.getAllPending().count == 1)
+        let ancient = ApprovalStore()
+        _ = await ancient.addDeduplicated(request("ancient", title: "Finder",
+                                                  body: "not really a dialog", age: 7200,
+                                                  options: ["Edit", "Show Search Menu"]))
+        await ancient.hold(id: "ancient")
+        check("but not past the hold limit, however live it claims to be",
+              await ancient.getAllPending().isEmpty)
+        check("and it is reaped rather than lingering invisibly",
+              await ancient.reapExpired().count == 1)
+
         // And it ages out the moment its dialog goes.
         let released = ApprovalStore()
         _ = await released.addDeduplicated(request("gone", title: "Finder",

@@ -46,6 +46,15 @@ public enum CachingDeciderSelfTest {
     }
 
     public static func run() async -> [String] {
+        // These tests deliberately drive the failure paths — an unsaveable
+        // salt, a ledger deleted underneath a live cache — and the log hook
+        // is shared with production. Left connected, a passing test wrote
+        // "caching is off this session" into jev.log and sent me hunting a
+        // bug that was not there.
+        let realLog = DecisionCache.log
+        DecisionCache.log = { _ in }
+        defer { DecisionCache.log = realLog }
+
         var failures: [String] = []
         func check(_ name: String, _ condition: Bool) {
             if !condition { failures.append("cache: \(name)") }
