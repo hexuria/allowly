@@ -299,11 +299,21 @@ final class CommandExecutor {
     static func typeAnywhere(_ text: String) async -> ExecutionResult {
         if HIDBridge.isAttached() {
             SecureInput.warnIfLayoutIsNotUS { JevLog.write($0) }
-            if HIDBridge.type(text) {
-                // Never the text itself. This is the path a password takes.
-                return .ok(reason: "Typed \(text.count) characters")
+            switch HIDBridge.type(text) {
+            case .sent:
+                // Never the text, and never its length either: the length of
+                // a password is a real fact about it, and this reason string
+                // reaches the phone, the log and the journal.
+                return .ok(reason: "Typed it")
+            case .partiallySent:
+                // Do NOT fall back. Some of it is already on the bus, and
+                // typing the whole string again would leave the first part
+                // there twice.
+                JevLog.write("[allowly] the board stopped partway through typing; not retrying")
+                return .failed(reason: "Only part of that was typed. Check the Mac before trying again.")
+            case .nothingSent:
+                JevLog.write("[allowly] the board would not type that; falling back")
             }
-            JevLog.write("[allowly] the board could not type that; falling back")
         }
         if SecureInput.isOn {
             return .failed(reason: SecureInput.explanation)

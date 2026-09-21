@@ -271,7 +271,10 @@ enum HIDBridge {
         case .ok:
             return true
         case .refused:
-            JevLog.write("[allowly] HID bridge refused: \(command.prefix(12))")
+            // The VERB only. `command.prefix(12)` on a `KEY 2 36` is the
+            // usage and shift state of one character — which, on the path a
+            // password takes, is one character of it.
+            JevLog.write("[allowly] HID bridge refused: \(command.prefix(while: { $0 != " " }))")
             return false
         case .silent:
             dropLocked("no acknowledgement")
@@ -447,16 +450,32 @@ enum HIDBridge {
     /// Refuses the whole string if any character has no key, rather than
     /// typing an approximation of it. A password typed nearly right is worse
     /// than one not typed at all: it looks like it worked.
-    static func type(_ text: String) -> Bool {
+    static func type(_ text: String) -> Typed {
         var plan: [(UInt8, UInt8)] = []
         for character in text {
-            guard let key = HIDKeycodes.character(character) else { return false }
+            guard let key = HIDKeycodes.character(character) else { return .nothingSent }
             plan.append((key.shift ? HIDKeycodes.shift : 0, key.usage))
         }
-        for (modifier, usage) in plan {
-            guard key(modifier: Int(modifier), codes: [Int(usage)]) else { return false }
+        for (index, step) in plan.enumerated() {
+            guard key(modifier: Int(step.0), codes: [Int(step.1)]) else {
+                // How far it got decides what the caller may do. Nothing sent
+                // is safe to retry another way; a failure halfway through is
+                // not — falling back would type the first half twice.
+                return index == 0 ? .nothingSent : .partiallySent(index)
+            }
         }
-        return true
+        return .sent
+    }
+
+    /// What happened to a string handed to the board.
+    enum Typed: Equatable {
+        case sent
+        /// The board refused before anything reached the bus. Safe to try
+        /// another way.
+        case nothingSent
+        /// This many characters are already typed. Trying again anywhere
+        /// would duplicate them.
+        case partiallySent(Int)
     }
 
     enum Button: Int {

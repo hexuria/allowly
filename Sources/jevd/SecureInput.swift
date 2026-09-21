@@ -44,11 +44,12 @@ enum SecureInput {
     /// characters we mean on this Mac.
     static func warnIfLayoutIsNotUS(log: (String) -> Void) {
         guard !warnedAboutLayout else { return }
+        // Nothing to warn about when macOS told us what the keys produce.
+        guard HIDKeycodes.liveMap == nil else { return }
         let identifier = currentLayoutIdentifier
         guard !HIDKeycodes.looksLikeUSLayout(identifier) else { return }
         warnedAboutLayout = true
-        log("[allowly] keyboard layout is \(identifier ?? "unknown"); the USB board sends key "
-            + "POSITIONS, so typed characters may not match. Letters and digits are only "
-            + "guaranteed on a US/ABC layout.")
+        log("[allowly] could not read the layout for \(identifier ?? "this input source"), so the "
+            + "board is falling back to US key positions. Characters may not match what is typed.")
     }
 }

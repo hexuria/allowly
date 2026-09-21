@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import Carbon.HIToolbox
 
 /// The translation between how macOS numbers keys and how USB does.
 ///
@@ -108,10 +109,71 @@ enum HIDKeycodes {
     /// Typing a password is a sequence of these. Anything not here returns nil
     /// and the caller refuses: typing an approximation of someone's password is
     /// worse than typing nothing, because it looks like it worked.
+    ///
+    /// **Asked of macOS, not assumed.** The board sends key POSITIONS, and the
+    /// character a position produces is decided by the layout in use. Hardcoding
+    /// the US answer was wrong twice over: `ABC-AZERTY` sailed through the guard
+    /// meant to catch it, and British was waved through although its shift-2 is
+    /// `"` and not `@`. `UCKeyTranslate` knows what every key on THIS Mac types
+    /// right now, so it is asked, and the US table below is only the fallback
+    /// for when it cannot answer.
     static func character(_ character: Character) -> (shift: Bool, usage: UInt8)? {
+        if let live = liveMap, let found = live[character] { return found }
+        if liveMap != nil { return nil }
         if let plain = unshifted[character] { return (false, plain) }
         if let shifted = Self.shifted[character] { return (true, shifted) }
         return nil
+    }
+
+    /// What this Mac's keyboard actually produces, built once.
+    ///
+    /// Nil when macOS will not say — an input source with no Unicode layout
+    /// data, such as some IMEs — and then the US fallback applies and the
+    /// caller warns.
+    nonisolated(unsafe) static let liveMap: [Character: (shift: Bool, usage: UInt8)]? = buildLiveMap()
+
+    static func buildLiveMap() -> [Character: (shift: Bool, usage: UInt8)]? {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            return nil
+        }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+        var table: [Character: (shift: Bool, usage: UInt8)] = [:]
+        let keyboardType = UInt32(LMGetKbdType())
+
+        data.withUnsafeBytes { buffer in
+            guard let layout = buffer.baseAddress?
+                .assumingMemoryBound(to: UCKeyboardLayout.self) else { return }
+            // Unshifted first, so a character reachable both ways is typed the
+            // simpler way. `shiftKey` is a Carbon modifier mask and
+            // UCKeyTranslate wants its high byte.
+            for shifted in [false, true] {
+                let modifiers = shifted ? UInt32((shiftKey >> 8) & 0xFF) : 0
+                for (keyCode, hid) in usage {
+                    var dead: UInt32 = 0
+                    var characters = [UniChar](repeating: 0, count: 4)
+                    var length = 0
+                    let status = UCKeyTranslate(
+                        layout, UInt16(keyCode), UInt16(kUCKeyActionDown), modifiers,
+                        keyboardType, UInt32(kUCKeyTranslateNoDeadKeysBit),
+                        &dead, characters.count, &length, &characters)
+                    guard status == noErr, length == 1,
+                          let scalar = UnicodeScalar(characters[0]) else { continue }
+                    // Control characters are reached by name, not by typing
+                    // them: return, tab and escape are added explicitly below.
+                    guard !CharacterSet.controlCharacters.contains(scalar) else { continue }
+                    let character = Character(scalar)
+                    if table[character] == nil { table[character] = (shifted, hid) }
+                }
+            }
+        }
+        guard !table.isEmpty else { return nil }
+        // The three that are keys rather than characters, and are the same
+        // position on every layout.
+        table["\n"] = (false, 40)
+        table["\t"] = (false, 43)
+        table[" "] = (false, 44)
+        return table
     }
 
     /// Built once from the rows below rather than written out twice, because a
@@ -156,12 +218,32 @@ enum HIDKeycodes {
     /// Asked rather than assumed, because the failure is silent and expensive:
     /// on a French layout, sending the usage for "the A key" types `q`, so a
     /// password would be typed wrong with no error anywhere. Callers warn once.
+    /// A closed list of exact identifiers, because the near-misses are the
+    /// whole danger.
+    ///
+    /// The first version matched `contains("abc-")`, which waved through
+    /// `ABC-AZERTY` and `ABC-QWERTZ` — precisely the layouts the check exists
+    /// to catch — so the warning stayed silent while the board typed `q` for
+    /// `a`. It also allowed British and Irish on the grounds that they share
+    /// US letters and digits, which is true and not enough: `HIDBridge.type`
+    /// sends all of printable ASCII, and on British shift-2 is `"` not `@`
+    /// and shift-3 is `£` not `#`. A password with an `@` in it would have
+    /// been typed wrong, silently.
+    ///
+    /// This only drives a warning now — the map itself comes from
+    /// `UCKeyTranslate` and is right on any layout — so it is the honest
+    /// belt to that braces.
+    static let usLikeLayouts: Set<String> = [
+        "com.apple.keylayout.us",
+        "com.apple.keylayout.usextended",
+        "com.apple.keylayout.us-extended",
+        "com.apple.keylayout.abc",
+        "com.apple.keylayout.australian",
+        "com.apple.keylayout.canadian",
+    ]
+
     static func looksLikeUSLayout(_ identifier: String?) -> Bool {
         guard let identifier = identifier?.lowercased() else { return false }
-        // The layouts that share the US positions for letters and digits.
-        return identifier.hasSuffix(".us") || identifier.hasSuffix(".abc")
-            || identifier.contains("abc-") || identifier.hasSuffix(".australian")
-            || identifier.hasSuffix(".british") || identifier.hasSuffix(".canadian")
-            || identifier.hasSuffix(".irish")
+        return usLikeLayouts.contains(identifier)
     }
 }

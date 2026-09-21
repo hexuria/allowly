@@ -89,14 +89,16 @@ enum Keystrokes {
         // Real hardware first, exactly as `Pointer.perform` does it. This is
         // the only path that reaches a password field: secure input discards
         // software keystrokes and cannot discard a keyboard.
-        if HIDBridge.isAttached() {
-            guard let modifier = HIDKeycodes.modifier(from: flags) else {
-                return .failed(reason: "The board has no fn key, so “\(spec)” cannot be sent through it")
-            }
-            if let usage = HIDKeycodes.usage[keyCode],
-               HIDBridge.key(modifier: Int(modifier), codes: [Int(usage)]) {
-                return .ok(reason: "Pressed \(spec)")
-            }
+        // Real hardware first when it is attached, and FALL THROUGH when it
+        // cannot do this one — the same contract as `Pointer.perform`. fn has
+        // no USB modifier, so `fn+left` goes the software route it always
+        // went; hard-failing here meant plugging a board in broke shortcuts
+        // that had always worked.
+        if HIDBridge.isAttached(),
+           let modifier = HIDKeycodes.modifier(from: flags),
+           let usage = HIDKeycodes.usage[keyCode],
+           HIDBridge.key(modifier: Int(modifier), codes: [Int(usage)]) {
+            return .ok(reason: "Pressed \(spec)")
         }
 
         // Nothing typed is better than a lie about typing.
