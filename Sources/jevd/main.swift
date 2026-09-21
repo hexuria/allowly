@@ -1395,6 +1395,18 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         menu.addItem(screenItem)
 
+        // What the board will type, and whether that is trustworthy.
+        //
+        // Shown and not settable, on purpose. The board sends key POSITIONS
+        // and the layout decides the character, so something does have to
+        // agree — but a setting is a thing you keep correct by hand, and
+        // getting it wrong types the wrong password silently. macOS already
+        // knows, so it is asked. This is here so the answer is visible
+        // rather than something you take on faith.
+        let keyboardItem = NSMenuItem(title: Self.keyboardSummary(), action: nil, keyEquivalent: "")
+        keyboardItem.isEnabled = false
+        menu.addItem(keyboardItem)
+
         menu.addItem(NSMenuItem.separator())
 
         // Auto-approve toggle
@@ -1595,6 +1607,16 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
         sender.title = "Copied"
+    }
+
+    /// One line naming the layout and saying whether typing is derived from
+    /// it or falling back to US positions.
+    static func keyboardSummary() -> String {
+        let name = (SecureInput.currentLayoutIdentifier?
+            .split(separator: ".").last).map(String.init) ?? "unknown"
+        return HIDKeycodes.liveMap == nil
+            ? "Keyboard: \(name) ✗ using US positions"
+            : "Keyboard: \(name) ✓ read from macOS"
     }
 
     @objc private func openAccessibilitySettings() {
