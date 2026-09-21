@@ -29,9 +29,15 @@ public actor ApprovalStore: Sendable {
     }
 
     /// Keep this card for as long as its dialog is on screen.
-    public func hold(id: String) {
-        guard pendingRequests[id] != nil else { return }
-        held.insert(id)
+    ///
+    /// Returns true only the first time, so the caller can say so once
+    /// rather than every two seconds — and so there is a positive line in
+    /// the log for a card being kept, instead of only the absence of the
+    /// line that used to take it away.
+    @discardableResult
+    public func hold(id: String) -> Bool {
+        guard pendingRequests[id] != nil else { return false }
+        return held.insert(id).inserted
     }
 
     /// Let it age out again — its dialog has gone.

@@ -1602,7 +1602,9 @@ actor JevRuntime {
         for request in await store.everyPending()
         where request.kind == .appDialog || request.kind == .tccConsent {
             if DialogRegistry.shared.isLive(id: request.id) {
-                await store.hold(id: request.id)
+                if await store.hold(id: request.id) {
+                    JevLog.write("[jev] holding “\(request.title)” — its dialog is still on screen")
+                }
             } else {
                 await store.release(id: request.id)
             }
