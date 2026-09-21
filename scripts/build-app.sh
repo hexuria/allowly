@@ -136,6 +136,14 @@ for bundle in "${RESOURCE_BUNDLE_DIR}"/*.bundle; do
     echo "  bundled $(basename "${bundle}")"
 done
 
+# The app icon. Without this the Dock, Alfred and Finder all show the generic
+# blank page, which is how you can tell an app was never actually installed.
+if [ -f "${PROJECT_DIR}/assets/Allowly.icns" ]; then
+    cp "${PROJECT_DIR}/assets/Allowly.icns" "${RESOURCES_DIR}/Allowly.icns"
+else
+    echo "warning: assets/Allowly.icns is missing; the app will have no icon" >&2
+fi
+
 cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -150,6 +158,8 @@ cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
+	<string>Allowly</string>
+	<key>CFBundleIconFile</key>
 	<string>Allowly</string>
 	<key>NSPrincipalClass</key>
     <string>NSApplication</string>
