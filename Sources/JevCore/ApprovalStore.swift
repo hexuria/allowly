@@ -21,11 +21,22 @@ public actor ApprovalStore: Sendable {
     /// `DialogRegistry.isLive` every two seconds and now says so here.
     private var held: Set<String> = []
 
+    /// The longest a card may outlive its ordinary five minutes.
+    ///
+    /// Holding a card while its dialog is on screen fixed a real problem — a
+    /// macOS permission prompt waits indefinitely and its card was destroyed
+    /// at five minutes. It also made a MISTAKE permanent: the watcher can
+    /// raise a card for something that is not a dialog at all, and "still on
+    /// screen" is just as true of that. An hour is long enough for the prompt
+    /// you walked away from and short enough that nothing is stuck forever.
+    private let holdLimit: TimeInterval = 60 * 60
+
     /// Still worth showing: not yet aged out, or held open because its
     /// dialog is still there.
     private func isFresh(_ request: ApprovalRequest, now: Date = Date()) -> Bool {
-        held.contains(request.id)
-            || now.timeIntervalSince(request.timestamp) <= expirationInterval
+        let age = now.timeIntervalSince(request.timestamp)
+        if age <= expirationInterval { return true }
+        return held.contains(request.id) && age <= expirationInterval + holdLimit
     }
 
     /// Keep this card for as long as its dialog is on screen.

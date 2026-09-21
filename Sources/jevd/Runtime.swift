@@ -556,6 +556,20 @@ actor JevRuntime {
                 return .failed(reason: "Your Mac is already answering that one")
             }
 
+            // Take the card away and touch nothing on the Mac.
+            //
+            // This is the escape hatch every card needs and dialog cards did
+            // not have. It resolves the request and drops the AX handle; it
+            // does not press, so dismissing a real dialog leaves that dialog
+            // exactly where it was, on the Mac, for you to answer there.
+            if optionId == "dismiss" {
+                _ = await self.store.resolve(id: requestId)
+                DialogRegistry.shared.discard(id: requestId)
+                await self.broadcastResolved(id: requestId)
+                JevLog.write("[jev] dismissed a card; nothing was pressed")
+                return .ok(reason: "Dismissed — nothing was pressed")
+            }
+
             // A Claude Code permission request has a hook holding an open
             // HTTP connection for it. Hand it the answer and stop — there is
             // no command on this Mac to run; Claude Code does the running.

@@ -596,7 +596,16 @@ public actor DialogWatcher: Sendable {
             kind: isTCC ? .tccConsent : .appDialog,
             title: title,
             bodyText: body,
-            options: options,
+            // Always a way out that presses nothing.
+            //
+            // A dialog card used to offer only the dialog's own buttons, so
+            // the sole escape from one raised by mistake was the five-minute
+            // expiry — and holding a live dialog open removed that. Safari's
+            // address-bar panel reports as an AXDialog-subrole window with
+            // two real AXButtons ("Edit", "Show Search Menu"); neither is an
+            // answer to anything, and the card could not be got rid of.
+            options: options + [ApprovalOption(id: "dismiss", label: "Dismiss",
+                                               riskLevel: .low)],
             originatingApp: appInfo,
             timestamp: Date(),
             screenshotReference: nil,
