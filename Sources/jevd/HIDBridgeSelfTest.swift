@@ -11,6 +11,11 @@ import JevCore
 /// the Cua backend once.
 enum HIDBridgeSelfTest {
 
+    /// Typed by the end-to-end check and decoded back by
+    /// `scripts/decode-keystrokes.py`. A capital, a digit and a symbol, so
+    /// shift is exercised rather than assumed.
+    static let endToEndText = "Hunter2!"
+
     static func run() -> [String] {
         var failures: [String] = []
         func check(_ name: String, _ condition: Bool) {
@@ -115,6 +120,15 @@ enum HIDBridgeSelfTest {
             check("a long scroll finishes inside its own deadline",
                   HIDBridge.scroll(at: CGPoint(x: 900, y: 584), in: screen, amount: 40))
             check("a keystroke is acknowledged", HIDBridge.key(modifier: 8, codes: [4]))
+            // The whole point, end to end. `scripts/decode-keystrokes.py`
+            // reads the reports the firmware emits and turns them back into
+            // text, so the string below has to survive Swift, the wire, the
+            // firmware's parser and the HID report packing.
+            check("a mixed string types", HIDBridge.type(Self.endToEndText) == .sent)
+            // Refused before a single byte goes out, so the caller may safely
+            // try another way. A partial send must never report this.
+            check("a character with no key sends nothing at all",
+                  HIDBridge.type("café") == .nothingSent)
             // A refusal must read as a refusal. Treating it as silence
             // detached a working board and logged that it had.
             check("an unknown command is refused, and the port survives it",
@@ -123,6 +137,120 @@ enum HIDBridgeSelfTest {
                   HIDBridge.attachedPort == fake)
             check("and still answers afterwards", HIDBridge.send("PING"))
         }
+
+        // ---- Every key jev can name, the board can press ----
+        //
+        // The whole point of the table. A key present in `Keystrokes` and
+        // missing here is a shortcut that silently stops working the moment a
+        // board is plugged in, which is the worst time to find out.
+        var unreachable: [String] = []
+        for (name, code) in Keystrokes.keyCodes where HIDKeycodes.usage[code] == nil {
+            unreachable.append("\(name)=\(code)")
+        }
+        check("every named key has a USB usage (missing: \(unreachable.joined(separator: " ")))",
+              unreachable.isEmpty)
+        check("no two different keys share a usage",
+              Set(HIDKeycodes.usage.values).count == HIDKeycodes.usage.count)
+
+        // Spot-checked against the USB HID Usage Tables, not derived from the
+        // same code that produces them — a table that agrees with itself
+        // proves nothing.
+        check("a is macOS 0 and USB 4", HIDKeycodes.usage[0] == 4)
+        check("z is macOS 6 and USB 29", HIDKeycodes.usage[6] == 29)
+        check("1 is macOS 18 and USB 30", HIDKeycodes.usage[18] == 30)
+        check("0 is macOS 29 and USB 39, not 0", HIDKeycodes.usage[29] == 39)
+        check("return is macOS 36 and USB 40", HIDKeycodes.usage[36] == 40)
+        check("escape is macOS 53 and USB 41", HIDKeycodes.usage[53] == 41)
+        check("tab is macOS 48 and USB 43", HIDKeycodes.usage[48] == 43)
+        check("delete is macOS 51 and USB 42", HIDKeycodes.usage[51] == 42)
+        check("the arrows are 79..82 and not transposed",
+              HIDKeycodes.usage[124] == 79 && HIDKeycodes.usage[123] == 80
+                && HIDKeycodes.usage[125] == 81 && HIDKeycodes.usage[126] == 82)
+        // macOS numbers 6 before 5 on the number row. Copying the digits in
+        // reading order would swap them and nothing else would notice.
+        check("5 and 6 are not swapped",
+              HIDKeycodes.usage[23] == 34 && HIDKeycodes.usage[22] == 35)
+
+        // ---- Modifiers ----
+        check("cmd is 0x08", HIDKeycodes.modifier(from: .maskCommand) == 0x08)
+        check("shift is 0x02", HIDKeycodes.modifier(from: .maskShift) == 0x02)
+        check("control is 0x01", HIDKeycodes.modifier(from: .maskControl) == 0x01)
+        check("option is 0x04", HIDKeycodes.modifier(from: .maskAlternate) == 0x04)
+        check("they combine", HIDKeycodes.modifier(from: [.maskCommand, .maskShift]) == 0x0A)
+        check("no modifiers is zero, not nil", HIDKeycodes.modifier(from: []) == 0)
+        // fn has no USB equivalent. Dropping it silently would turn
+        // "fn+left" (start of line) into "left" (one character).
+        check("fn refuses rather than being dropped",
+              HIDKeycodes.modifier(from: .maskSecondaryFn) == nil)
+        check("fn refuses even alongside a real modifier",
+              HIDKeycodes.modifier(from: [.maskSecondaryFn, .maskCommand]) == nil)
+
+        // ---- Characters, for typing a password ----
+        check("a lowercase letter needs no shift",
+              HIDKeycodes.character("a")?.shift == false && HIDKeycodes.character("a")?.usage == 4)
+        check("a capital is the same key with shift",
+              HIDKeycodes.character("A")?.shift == true && HIDKeycodes.character("A")?.usage == 4)
+        check("a digit is the number row", HIDKeycodes.character("7")?.usage == 36)
+        check("its symbol is the same key shifted",
+              HIDKeycodes.character("&")?.shift == true && HIDKeycodes.character("&")?.usage == 36)
+        check("space is 44", HIDKeycodes.character(" ")?.usage == 44)
+        check("a symbol that is NOT on the number row still works",
+              HIDKeycodes.character("/")?.usage == 56 && HIDKeycodes.character("?")?.shift == true)
+        check("every printable ASCII character can be typed",
+              (33...126).allSatisfy { HIDKeycodes.character(Character(UnicodeScalar($0)!)) != nil })
+        // Refusing is the safe answer: a password typed nearly right looks
+        // like it worked.
+        check("an accented character is refused, not approximated",
+              HIDKeycodes.character("é") == nil)
+        check("an emoji is refused", HIDKeycodes.character("🙂") == nil)
+
+        // ---- The layout, which is now asked rather than assumed ----
+        //
+        // The map comes from UCKeyTranslate, so it is right on any layout. On
+        // this Mac it should have been readable; if it ever is not, the US
+        // fallback applies and the warning fires.
+        check("macOS told us what the keys type",
+              HIDKeycodes.liveMap != nil)
+        if let live = HIDKeycodes.liveMap {
+            check("the live map covers the lowercase alphabet",
+                  "abcdefghijklmnopqrstuvwxyz".allSatisfy { live[$0] != nil })
+            check("and the digits", "0123456789".allSatisfy { live[$0] != nil })
+            check("space, tab and return are there as keys",
+                  live[" "]?.usage == 44 && live["\t"]?.usage == 43 && live["\n"]?.usage == 40)
+            check("a character is never mapped to usage 0", !live.values.contains { $0.usage == 0 })
+        }
+
+        // The near-misses are the whole danger, so they are named.
+        //
+        // `contains("abc-")` waved through ABC-AZERTY and ABC-QWERTZ — exactly
+        // what the check exists to catch — and British was allowed because it
+        // shares US letters and digits, which is true and not enough: its
+        // shift-2 is " and not @.
+        check("a US layout is recognised",
+              HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.US"))
+        check("ABC counts too", HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.ABC"))
+        check("ABC-AZERTY is NOT US-like, however it is spelled",
+              !HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.ABC-AZERTY"))
+        check("nor is ABC-QWERTZ",
+              !HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.ABC-QWERTZ"))
+        check("British is not US-like — its shift-2 is a quote, not an at sign",
+              !HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.British"))
+        check("nor is Irish", !HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.Irish"))
+        check("AZERTY does not — its A key types q",
+              !HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.French"))
+        check("neither does Dvorak", !HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.Dvorak"))
+        check("an unknown layout is treated as not-US", !HIDKeycodes.looksLikeUSLayout(nil))
+
+        // ---- A half-typed password is never retyped ----
+        //
+        // `type` reports how far it got, because "nothing sent" may be retried
+        // another way and "some sent" may not — falling back there would put
+        // the first half in twice.
+        check("nothing sent is not the same as sent", HIDBridge.Typed.nothingSent != .sent)
+        check("partly sent is not nothing sent",
+              HIDBridge.Typed.partiallySent(3) != .nothingSent)
+        check("partly sent carries how far it got",
+              HIDBridge.Typed.partiallySent(3) != .partiallySent(4))
 
         // ---- The wire, which nothing could check before ----
         //

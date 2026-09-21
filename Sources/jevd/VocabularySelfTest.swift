@@ -394,6 +394,21 @@ enum VocabularySelfTest {
         check(fromChrome.addressing("in google chrome, close tab", running: procs, context: neutral)?.scope.aim == nil,
               "addressing: the app already in front needs no aim")
 
+        // The prompts the dialog watcher structurally cannot see, because
+        // they belong to another user. Focus is the only signal, so this list
+        // is the whole detector — a name missing from it is a password box
+        // that never reaches the phone.
+        for name in ["SecurityAgent", "securityagent", "loginwindow",
+                     "AuthorizationHost", "CoreAuthUI"] {
+            check(ScopeStore.isPrivilegedPrompt(name), "prompt: \(name) is recognised")
+        }
+        check(ScopeStore.isPrivilegedPrompt("Security Agent"),
+              "prompt: the spaced spelling is recognised too")
+        for name in ["Safari", "Finder", "Security", "Keychain Access", ""] {
+            check(!ScopeStore.isPrivilegedPrompt(name),
+                  "prompt: \(name.isEmpty ? "(empty)" : name) is not one")
+        }
+
         // When a dialog counts as gone. A busy app answering nothing is not
         // a dead one — but a process that has exited cannot have a dialog on
         // screen, whatever Accessibility says, and treating the two alike

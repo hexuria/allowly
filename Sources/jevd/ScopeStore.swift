@@ -56,6 +56,20 @@ actor ScopeStore {
         refreshRunning()
     }
 
+    /// Raised when a prompt no remote tool can see takes focus. Set by the
+    /// runtime, which is the only thing that can put a card on the phone.
+    nonisolated(unsafe) static var onPrivilegedPrompt: (@Sendable (String) -> Void)?
+
+    /// Is this a prompt drawn by the system on another user's behalf?
+    ///
+    /// Pure, and a closed list rather than a guess: these are the processes
+    /// that draw password and authorisation boxes, all of them outside the
+    /// login session and therefore outside Accessibility.
+    static func isPrivilegedPrompt(_ appName: String) -> Bool {
+        ["securityagent", "loginwindow", "authorizationhost", "coreauthui"]
+            .contains(appName.lowercased().replacingOccurrences(of: " ", with: ""))
+    }
+
     func focusChanged(to pid: pid_t) async {
         let before = ledger.focusedPid
         ledger.noteFocus(pid: pid, at: Date())
@@ -64,6 +78,17 @@ actor ScopeStore {
         await CommandExecutor.cua.invalidateSnapshot()
         if let name = NSRunningApplication(processIdentifier: pid)?.localizedName {
             JevLog.write("[allowly] focus: \(name)")
+            // The one prompt the dialog watcher structurally cannot see.
+            //
+            // A keychain or login box belongs to `_securityagent`, another
+            // user, so Accessibility cannot attach and no window-created
+            // notification ever arrives. Focus is the only signal there is —
+            // and it was already being written to the log and thrown away,
+            // which is why a password box could sit on the Mac all afternoon
+            // with the phone showing nothing.
+            if Self.isPrivilegedPrompt(name) {
+                Self.onPrivilegedPrompt?(name)
+            }
         }
     }
 
