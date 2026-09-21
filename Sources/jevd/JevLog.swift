@@ -140,12 +140,12 @@ enum JevLog {
                 .attributesOfItem(atPath: fileURL.path),
               let size = attributes[.size] as? Int, size > sizeCeiling else { return }
         let previous = fileURL.deletingLastPathComponent()
-            .appendingPathComponent("jev.log.1")
+            .appendingPathComponent("allowly.log.1")
         try? FileManager.default.removeItem(at: previous)
         try? FileManager.default.moveItem(at: fileURL, to: previous)
         FileManager.default.createFile(
             atPath: fileURL.path,
-            contents: Data("\(ISO8601DateFormatter().string(from: Date())) [jev] log rotated\n".utf8),
+            contents: Data("\(ISO8601DateFormatter().string(from: Date())) [allowly] log rotated\n".utf8),
             attributes: [.posixPermissions: 0o600])
     }
 

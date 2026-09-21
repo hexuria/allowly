@@ -316,11 +316,11 @@ const APP = {
 
     migrateStorage() {
         const pairs = [
-            ['allowly-session', 'allowly-session'],
-            ['allowly-push-dismissed', 'allowly-push-dismissed'],
-            ['allowly-hands-free', 'allowly-hands-free'],
-            ['allowly-fullscreen-hint', 'allowly-fullscreen-hint'],
-            ['allowly-screen-fill', 'allowly-screen-fill'],
+            ['jev-session', 'allowly-session'],
+            ['jev-push-dismissed', 'allowly-push-dismissed'],
+            ['jev-hands-free', 'allowly-hands-free'],
+            ['jev-fullscreen-hint', 'allowly-fullscreen-hint'],
+            ['jev-screen-fill', 'allowly-screen-fill'],
         ];
         for (const [from, to] of pairs) {
             if (localStorage.getItem(to) === null && localStorage.getItem(from) !== null) {

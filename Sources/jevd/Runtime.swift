@@ -174,7 +174,7 @@ actor JevRuntime {
             // also registers the app under its current code signature, which a
             // stale entry left over from an earlier signing identity does not.
             _ = AccessibilityPermission.requestTrust()
-            JevLog.write("[allowly] Requested Accessibility. Approve it, then relaunch Jev.")
+            JevLog.write("[allowly] Requested Accessibility. Approve it, then relaunch Allowly.")
             return
         }
 
@@ -566,7 +566,7 @@ actor JevRuntime {
                 _ = await self.store.resolve(id: requestId)
                 DialogRegistry.shared.discard(id: requestId)
                 await self.broadcastResolved(id: requestId)
-                JevLog.write("[jev] dismissed a card; nothing was pressed")
+                JevLog.write("[allowly] dismissed a card; nothing was pressed")
                 return .ok(reason: "Dismissed — nothing was pressed")
             }
 
@@ -1932,7 +1932,7 @@ actor JevRuntime {
     private func act(on verdict: SafetyVerdict, _ parsed: VoiceCommand.Parsed, spokenAs text: String,
                      bundleId: String, spokenIsPrivate: Bool, from source: String,
                      aim: Aim?) async -> ExecutionResult {
-        JevLog.write(String(format: "[jev] %@: %@ routine=%.2f destructive=%.2f", source,
+        JevLog.write(String(format: "[allowly] %@: %@ routine=%.2f destructive=%.2f", source,
                             CommandJournal.safeDescription(parsed.description, parsed.command),
                             verdict.routine, verdict.destructive))
         guard verdict.allowsUnattended else {
