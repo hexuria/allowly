@@ -166,25 +166,16 @@ Click the menu bar icon.
 **Voice language** — follows your Mac by default. Pick one, or "detect
 automatically" if you switch languages mid-sentence (Gemini only).
 
-**Hearing you** — Apple's recogniser is the default and needs no setup. It is
-not good enough for every accent. Measured on a Mac set to `en-PH`: "press cmd
-1" came back as *"prayers for man one"*.
+**Hearing you** — use [Gemini 3.5 Transcribe](https://ai.google.dev/gemini-api/docs/models#gemini-3-5-transcribe)
+(`gemini-3.5-transcribe`) for speech. Apple's recogniser is the default and
+needs no setup. It is not good enough for every accent. Measured on a Mac set
+to `en-PH`: "press cmd 1" came back as *"prayers for man one"*.
 
-To use Gemini instead: **Hearing you → Set Gemini key…** and paste a key from
-Google AI Studio. It goes in your Keychain and takes effect on the next thing
-you say. With no key, nothing changes. If Gemini can't answer — no network, bad
-key — Apple's recogniser takes over automatically.
+To switch: **Hearing you → Set Gemini key…** and paste a key from Google AI
+Studio. It goes in your Keychain and takes effect on the next thing you say.
+If Gemini can't answer — no network, bad key — Apple's recogniser takes over.
 
-Other ways to set the key, if you start `allowlyd` from a terminal:
-
-```sh
-export GEMINI_API_KEY=...
-# or
-echo '...' > ~/"Library/Application Support/allowly/gemini-api-key"
-```
-
-Order: environment, then Keychain, then file. Model defaults to
-`gemini-3.5-transcribe`; `ALLOWLY_GEMINI_MODEL` overrides it.
+See [Models](#models) for the other keys (Jev, the gateway).
 
 **Decisions** (in the phone's Settings) — who answers what:
 
@@ -195,6 +186,63 @@ Order: environment, then Keychain, then file. Model defaults to
 
 Typing and clicking are allowed **per app**, so "always allow" for your terminal
 doesn't also allow typing into your bank.
+
+---
+
+## Models
+
+Three different jobs, three different backends. None of them is required to
+open the phone and tap a dialog. They make speech, auto-judging, and browser
+tasks better.
+
+**Speech — Gemini 3.5 Transcribe.** Better STT than Apple's recogniser. Menu
+bar **Hearing you → Set Gemini key…**, or:
+
+```sh
+export GEMINI_API_KEY=...
+# or
+echo '...' > ~/"Library/Application Support/allowly/gemini-api-key"
+```
+
+Order: environment, then Keychain, then file. Default model is
+`gemini-3.5-transcribe`. `ALLOWLY_GEMINI_MODEL` overrides it.
+
+**Judging — Jev by [TypeSafe AI](https://typesafe.ai).** When a command is
+ambiguous or looks risky, Allowly asks TypeSafe's classifier (`jev-latest`)
+whether to do it, ask you, or refuse. Without a key, policy still runs and
+everything it cannot settle goes to your phone.
+
+```sh
+export TYPESAFE_API_KEY=...
+# or
+echo '...' > ~/"Library/Application Support/allowly/typesafe-api-key"
+```
+
+**Writing into pages — [open-ai-gateway](https://github.com/hexuria/open-ai-gateway).**
+Browser tasks that have to *invent* a value (fill a field) call a local
+gateway on `127.0.0.1:29080`. The gateway holds the provider keys, rotates
+across API keys and subscription seats, and records what was spent. Allowly
+only stores an OAG key:
+
+```sh
+export ALLOWLY_OAG_API_KEY=...
+# or
+echo '...' > ~/"Library/Application Support/allowly/oag-api-key"
+```
+
+Default model is `openai/gpt-5.6-luna`. `ALLOWLY_WEB_TEXT_MODEL` overrides it.
+Point at a different origin with `ALLOWLY_WEB_TEXT_BASE_URL` (loopback only).
+
+**Custom subscriptions (Codex, ChatGPT, …).** A Codex seat is a credential
+the *gateway* imports from a prior `codex login`:
+
+```sh
+oag admin account add --from codex --owner-email you@example.com
+```
+
+That reads `~/.codex/auth.json`. Extra API keys go in the same pool, and the
+gateway rotates across them. Signing into ChatGPT from Allowly's menu bar is
+[#19](https://github.com/hexuria/allowly/issues/19).
 
 ---
 
@@ -258,15 +306,15 @@ and tells the board to click it. The box sees hardware and accepts it. That is
 
 The code is already written and tested — both halves. You need the hardware.
 
-Any board CircuitPython supports with native USB works. A plain Raspberry Pi
-Pico is the cheapest that does the job. In the Philippines: [Makerlab
-PH](https://makerlab.ph) (~₱399), [Circuitrocks](https://circuit.rocks), or
-search Shopee/Lazada for `RP2040`.
+Any board CircuitPython supports with native USB works. Compatible devices:
+
+- **Raspberry Pi Pico** (RP2040, micro-USB)
+- **RP2040-Zero** (USB-C)
 
 Two things that will waste your afternoon:
 
-- A Pico is **micro-USB** and your Mac is USB-C. Get the right cable, or buy an
-  RP2040-Zero, which is USB-C.
+- A Pico is **micro-USB** and your Mac is USB-C. Get the right cable, or use an
+  RP2040-Zero.
 - It must be a **data** cable. A charge-only cable looks exactly like a dead
   board.
 
