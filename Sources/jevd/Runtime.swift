@@ -1032,9 +1032,13 @@ actor JevRuntime {
                     // the phone must still be told ok — only the journal
                     // needs to say the command is merely pending. The route
                     // name carries that, and `verified` says it outright.
-                    let asked = await self.requestApproval(for: parsed, spokenAs: text,
-                                                           key: scope.policyKey(for: parsed.command),
-                                                           aim: scope.aim)
+                    let asked = await self.requestApproval(
+                        for: parsed, spokenAs: text,
+                        key: scope.policyKey(for: parsed.command), aim: scope.aim,
+                        // Two different doubts reach this guard, and the card
+                        // should say which one it is.
+                        reason: resolution.verdict.looksDestructive
+                            ? .hardToUndo : .halfHeard(confidence: resolution.confidence))
                     CommandJournal.record(heard: text, route: "model/asked",
                                           command: parsed.description, kind: parsed.command,
                                           result: asked, started: started,
@@ -1793,7 +1797,8 @@ actor JevRuntime {
         // jev auto-runs is a single reversible act; this is a loop.
         if case .webTask = parsed.command, mode != .always {
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim,
+                                         reason: .browserTask)
         }
 
         switch mode {
@@ -1837,7 +1842,8 @@ actor JevRuntime {
         }
         guard let apiKey = JevAPI.loadAPIKey() else {
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim,
+                                         reason: .cannotJudge)
         }
 
         let appName = AppCatalog.shared.all.first { $0.bundleIdentifier == bundleId }?.name ?? bundleId
@@ -1866,7 +1872,8 @@ actor JevRuntime {
         guard case .success(let answers) = result else {
             JevLog.write("[jev] auto: Jev unavailable, asking you")
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim,
+                                         reason: .cannotJudge)
         }
 
         let judged = SafetyVerdict(routine: answers.noul("routine") ?? 0,
@@ -1884,7 +1891,8 @@ actor JevRuntime {
                             verdict.routine, verdict.destructive))
         guard verdict.allowsUnattended else {
             return await requestApproval(for: parsed, spokenAs: text,
-                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim)
+                                         spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim,
+                                         reason: verdict.looksDestructive ? .hardToUndo : .notRoutine)
         }
         let executed = await executor.execute(parsed.command, humanApproved: true, aim: aim)
         return executed.status == .ok
@@ -2023,10 +2031,62 @@ actor JevRuntime {
         return true
     }
 
+    /// Why a card is in front of you.
+    ///
+    /// Every card said the same thing — "… has not been allowed yet" —
+    /// whatever had actually stopped the command, and only one of these
+    /// reasons is about permission at all. So a sentence jev merely
+    /// half-caught raised a card blaming a setting, which is how "always
+    /// allow" came to look broken: the person had allowed it, the card still
+    /// said they had not, and the real reason (0.54 confident) was in a log
+    /// nobody reads.
+    ///
+    /// Permission answers "may I". It was never the answer to "did I hear
+    /// you right", and the card should not pretend otherwise.
+    enum ApprovalReason: Sendable, Equatable {
+        /// Understood; this app or action has not been allowed.
+        case notAllowed
+        /// Heard, but not well enough to act on the guess.
+        case halfHeard(confidence: Double)
+        /// Understood, and it looks hard to undo.
+        case hardToUndo
+        /// Allowed or not, a browser task is a loop rather than one act.
+        case browserTask
+        /// Nothing could judge it: no key, or Jev unreachable.
+        case cannotJudge
+        /// Judged, and not clearly routine.
+        case notRoutine
+
+        /// Pure, and asserted: this is the sentence the person reads at 2am
+        /// deciding whether to tap Allow.
+        func body(said: String, appName: String, description: String) -> String {
+            let heard = "You said “\(said)”."
+            switch self {
+            case .notAllowed:
+                return "\(heard)\njev can do this, but \(appName) has not been allowed yet."
+            case .halfHeard(let confidence):
+                return "\(heard)\njev is only \(Int((confidence * 100).rounded()))% sure that means "
+                    + "“\(description)”, so it would rather ask than guess. This is not a permission "
+                    + "setting — allowing \(appName) will not stop it."
+            case .hardToUndo:
+                return "\(heard)\njev understood this, and thinks it may be hard to undo."
+            case .browserTask:
+                return "\(heard)\nA browser task clicks its own way through a page, so jev asks every "
+                    + "time no matter what is allowed."
+            case .cannotJudge:
+                return "\(heard)\njev could not reach the decider to judge this, so it is asking you "
+                    + "instead."
+            case .notRoutine:
+                return "\(heard)\njev did not think this was routine enough to do on its own."
+            }
+        }
+    }
+
     private func requestApproval(for parsed: VoiceCommand.Parsed, spokenAs text: String,
                                  spokenIsPrivate: Bool = false,
                                  key: String? = nil,
-                                 aim: Aim? = nil) async -> ExecutionResult {
+                                 aim: Aim? = nil,
+                                 reason: ApprovalReason = .notAllowed) async -> ExecutionResult {
         let id = UUID().uuidString
         // What "always" and "never" on the card will be granted for.
         let key = key ?? parsed.command.bundleIdentifier
@@ -2046,7 +2106,7 @@ actor JevRuntime {
             id: id,
             kind: .spokenCommand,
             title: parsed.description,
-            bodyText: "You said “\(text)”.\njev can do this, but \(appName) has not been allowed yet.",
+            bodyText: reason.body(said: text, appName: appName, description: parsed.description),
             options: [
                 ApprovalOption(id: "once", label: "Allow", riskLevel: .low),
                 ApprovalOption(id: "deny", label: "Deny", riskLevel: .low),

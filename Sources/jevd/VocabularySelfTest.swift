@@ -393,6 +393,37 @@ enum VocabularySelfTest {
         check(fromChrome.addressing("in google chrome, close tab", running: procs, context: neutral)?.scope.aim == nil,
               "addressing: the app already in front needs no aim")
 
+        // What the card says, and above all what it does NOT say. A card
+        // raised because jev half-caught the sentence must not blame a
+        // permission the person has already granted.
+        func card(_ reason: JevRuntime.ApprovalReason) -> String {
+            reason.body(said: "visit facebook", appName: "opening a page",
+                        description: "Open facebook.com")
+        }
+        check(card(.notAllowed).contains("has not been allowed yet"),
+              "card: a permission card says so")
+        check(card(.halfHeard(confidence: 0.54)).contains("54% sure"),
+              "card: a half-caught sentence says how sure jev is")
+        check(card(.halfHeard(confidence: 0.54)).contains("not a permission setting"),
+              "card: a half-caught sentence says allowing the app will not help")
+        check(!card(.halfHeard(confidence: 0.54)).contains("has not been allowed yet"),
+              "card: a half-caught sentence never blames permission")
+        check(!card(.hardToUndo).contains("has not been allowed yet"),
+              "card: “hard to undo” never blames permission")
+        check(!card(.browserTask).contains("has not been allowed yet"),
+              "card: a browser task never blames permission")
+        check(!card(.cannotJudge).contains("has not been allowed yet"),
+              "card: an unreachable decider never blames permission")
+        check(!card(.notRoutine).contains("has not been allowed yet"),
+              "card: “not routine” never blames permission")
+        check(card(.halfHeard(confidence: 0.996)).contains("100% sure"),
+              "card: the percentage rounds rather than truncating")
+        for reason in [JevRuntime.ApprovalReason.notAllowed, .halfHeard(confidence: 0.5),
+                       .hardToUndo, .browserTask, .cannotJudge, .notRoutine] {
+            check(card(reason).hasPrefix("You said “visit facebook”."),
+                  "card: every card still repeats what was heard")
+        }
+
         // A policy saved under the old shared key. A refusal survives the
         // move to per-app keys; a blanket grant does not.
         check(AppPolicyStore.inherited(bucket: .never) == .never,
