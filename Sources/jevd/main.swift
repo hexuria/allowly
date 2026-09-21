@@ -1189,6 +1189,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Run self-tests
         CuaDriver.log = { JevLog.write($0) }
+        DecisionCache.log = { JevLog.write($0) }
         var testFailures = SelfTest.run()
         // The push crypto is unverifiable from the outside — a wrong key
         // derivation just means a notification that never arrives — so it
@@ -1204,9 +1205,17 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // is visible rather than merely cheap-looking. It said nothing at all
         // when a salt bug meant it wrote entries it could never read back.
         let cacheStats = runBlocking { await DecisionCache.shared.stats() }
+        // Counters are lifetime and read back from disk, so this line can
+        // actually be non-zero. Reporting a hit rate that was structurally
+        // always 0/0 told you nothing about whether the cache worked — which
+        // is the one thing it exists to tell you.
+        let asked = cacheStats.hits + cacheStats.misses
+        let rate = asked == 0 ? "no lookups yet"
+            : "\(Int((Double(cacheStats.hits) / Double(asked) * 100).rounded()))% hit rate "
+              + "over \(asked) lookups"
         JevLog.write("[jev] decisions cached: \(cacheStats.entries)"
-            + " (hits \(cacheStats.hits), misses \(cacheStats.misses); "
-            + "clear with `jevd --clear-decisions`)")
+            + (cacheStats.disabled ? " (CACHING OFF — see the line above)" : "")
+            + " (\(rate); clear with `jevd --clear-decisions`)")
         testFailures.append(contentsOf: SelfTest.checkHeadings(DialogWatcher.heading))
         testFailures.append(contentsOf: SelfTest.checkWidgetNoise { DialogSerialiser.isWidgetNoise($0, appName: $1) })
         testFailures.append(contentsOf: SelfTest.checkButtonChoice(DialogSerialiser.chooseButton))

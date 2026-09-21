@@ -52,7 +52,11 @@ public actor DecisionPipeline: Decider {
             // told again to ask you. Only "ask them" is ever remembered —
             // see CachingDecider for why an approval never is.
             remote: hasKey
-                ? CachingDecider(wrapping: JevDecider(apiKey: key), namespace: "JevDecider")
+                // The MODEL is in the namespace, not just the type name. An
+                // answer computed by one model must not be served for another,
+                // and the type name is the same string whichever model runs.
+                ? CachingDecider(wrapping: JevDecider(apiKey: key),
+                                 namespace: "JevDecider/\(JevAPI.defaultModel)")
                 : MockDecider(),
             usesRemoteDecider: hasKey
         )

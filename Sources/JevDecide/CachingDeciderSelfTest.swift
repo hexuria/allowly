@@ -34,13 +34,15 @@ public enum CachingDeciderSelfTest {
             ApprovalOption(id: "cancel", label: "Cancel", riskLevel: .low),
         ],
         at: Date = Date(timeIntervalSince1970: 1_700_000_000),
-        screenshot: String? = nil
+        screenshot: String? = nil,
+        handoff: Bool = false,
+        kind: ApprovalKind = .appDialog
     ) -> ApprovalRequest {
         ApprovalRequest(
-            id: id, kind: .appDialog, title: title, bodyText: body,
+            id: id, kind: kind, title: title, bodyText: body,
             options: options,
             originatingApp: ApplicationInfo(name: "Finder", bundleIdentifier: app),
-            timestamp: at, screenshotReference: screenshot, handoffOnly: false)
+            timestamp: at, screenshotReference: screenshot, handoffOnly: handoff)
     }
 
     public static func run() async -> [String] {
@@ -129,6 +131,12 @@ public enum CachingDeciderSelfTest {
                                                         dialogText: "tree")),
             ("a different dialog tree", DecisionCache.canonical(request: request(),
                                                                 dialogText: "other")),
+            // Both normative in docs/ARCHITECTURE.md (Trust Boundaries): a
+            // handoff-only sheet is the one jev must never claim to press.
+            ("a handoff-only sheet", DecisionCache.canonical(
+                request: request(handoff: true), dialogText: "tree")),
+            ("a different kind of request", DecisionCache.canonical(
+                request: request(kind: .tccConsent), dialogText: "tree")),
             ("different buttons", DecisionCache.canonical(request: request(options: [
                 ApprovalOption(id: "ok", label: "OK", riskLevel: .low)]), dialogText: "tree")),
             ("the same buttons in the other order", DecisionCache.canonical(request: request(options: [
@@ -169,6 +177,92 @@ public enum CachingDeciderSelfTest {
         _ = await expiringDecider.decide(request: request(), dialogText: "tree")
         _ = await expiringDecider.decide(request: request(), dialogText: "tree")
         check("an answer past its time is asked again", await expiringBackend.count() == 2)
+
+        // ---- The model, THROUGH CachingDecider ----
+        //
+        // The old version of this only exercised `DecisionCache.fingerprint`
+        // with two namespace strings, so it passed while the real path put no
+        // model in the key at all. Two deciders, two namespaces, one shared
+        // ledger: neither may be served the other's answer.
+        let shared = DecisionCache(directory: dir.appendingPathComponent("models"))
+        let modelA = Counting(ask)
+        let modelB = Counting(ask)
+        let deciderA = CachingDecider(wrapping: modelA, namespace: "JevDecider/model-a",
+                                      cache: shared)
+        let deciderB = CachingDecider(wrapping: modelB, namespace: "JevDecider/model-b",
+                                      cache: shared)
+        _ = await deciderA.decide(request: request(), dialogText: "tree")
+        _ = await deciderB.decide(request: request(), dialogText: "tree")
+        check("a second model is asked rather than served the first's answer",
+              await modelB.count() == 1)
+        _ = await deciderA.decide(request: request(), dialogText: "tree")
+        check("the first model still hits its own entry", await modelA.count() == 1)
+
+        // ---- A cleared ledger is noticed by a RUNNING cache ----
+        //
+        // `jevd --clear-decisions` is its own process and cannot reach this
+        // map, so without noticing the file has gone a running daemon keeps
+        // serving entries that were deleted.
+        let clearedDir = dir.appendingPathComponent("cleared")
+        let clearedCache = DecisionCache(directory: clearedDir)
+        let clearedBackend = Counting(ask)
+        let clearedDecider = CachingDecider(wrapping: clearedBackend, namespace: "test",
+                                            cache: clearedCache)
+        _ = await clearedDecider.decide(request: request(), dialogText: "tree")
+        try? FileManager.default.removeItem(at: clearedDir.appendingPathComponent("ledger.jsonl"))
+        _ = await clearedDecider.decide(request: request(), dialogText: "tree")
+        check("deleting the ledger under a running cache empties it",
+              await clearedBackend.count() == 2)
+
+        // ---- Appending must never replace ----
+        //
+        // The fallback for a FileHandle that would not open used to be
+        // `createFile`, which REPLACES the file. One permissions blip would
+        // have left a single line where the whole ledger had been.
+        let appendDir = dir.appendingPathComponent("append")
+        let appendCache = DecisionCache(directory: appendDir)
+        let appendDecider = CachingDecider(wrapping: Counting(ask), namespace: "test",
+                                           cache: appendCache)
+        _ = await appendDecider.decide(request: request(title: "One"), dialogText: "a")
+        _ = await appendDecider.decide(request: request(title: "Two"), dialogText: "b")
+        let ledger = (try? String(contentsOf: appendDir.appendingPathComponent("ledger.jsonl"),
+                                  encoding: .utf8)) ?? ""
+        check("a second entry is appended, not written over the first",
+              ledger.split(separator: "\n").count == 2)
+        check("both entries are in memory too", await appendCache.stats().entries == 2)
+
+        // ---- A cache that cannot be made safe does not cache ----
+        //
+        // A salt that cannot be saved means a new salt every launch, so every
+        // entry is unreadable on the next run. Caching off is the honest
+        // answer; a zero salt that still looks salted is not.
+        let lockedDir = dir.appendingPathComponent("locked")
+        try? FileManager.default.createDirectory(at: lockedDir, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o500],
+                                                ofItemAtPath: lockedDir.path)
+        let lockedCache = DecisionCache(directory: lockedDir)
+        let lockedBackend = Counting(ask)
+        let lockedDecider = CachingDecider(wrapping: lockedBackend, namespace: "test",
+                                           cache: lockedCache)
+        _ = await lockedDecider.decide(request: request(), dialogText: "tree")
+        _ = await lockedDecider.decide(request: request(), dialogText: "tree")
+        check("a cache that cannot save its salt says so", await lockedCache.stats().disabled)
+        check("and caches nothing at all", await lockedBackend.count() == 2)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                                ofItemAtPath: lockedDir.path)
+
+        // ---- Per-schema salt ----
+        check("one master salt gives different schemas different salts",
+              DecisionCache.salt(master: "m", schema: "approval.v1")
+                != DecisionCache.salt(master: "m", schema: "utterance.v1"))
+        check("the same schema and master is the same salt",
+              DecisionCache.salt(master: "m", schema: "approval.v1")
+                == DecisionCache.salt(master: "m", schema: "approval.v1"))
+        check("a different master changes it",
+              DecisionCache.salt(master: "n", schema: "approval.v1")
+                != DecisionCache.salt(master: "m", schema: "approval.v1"))
+        check("an unlisted schema still gets the default month",
+              DecisionCache.ttl(for: "anything") == DecisionCache.defaultTTL)
 
         return failures
     }
