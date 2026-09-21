@@ -48,7 +48,12 @@ public actor DecisionPipeline: Decider {
 
         return DecisionPipeline(
             policyDecider: PolicyDecider(policy: policy),
-            remote: hasKey ? JevDecider(apiKey: key) : MockDecider(),
+            // Wrapped, so a repeated dialog stops costing a round trip to be
+            // told again to ask you. Only "ask them" is ever remembered —
+            // see CachingDecider for why an approval never is.
+            remote: hasKey
+                ? CachingDecider(wrapping: JevDecider(apiKey: key), namespace: "JevDecider")
+                : MockDecider(),
             usesRemoteDecider: hasKey
         )
     }
