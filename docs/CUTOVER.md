@@ -1,8 +1,8 @@
 # Cutover plan — Cua + Chrome, generative forms on the phone
 
-Consolidates issues [#2](https://github.com/hexuria/jevvc/issues/2),
-[#3](https://github.com/hexuria/jevvc/issues/3), [#4](https://github.com/hexuria/jevvc/issues/4),
-[#5](https://github.com/hexuria/jevvc/issues/5), plus two things those issues do not
+Consolidates issues [#2](https://github.com/hexuria/allowly/issues/2),
+[#3](https://github.com/hexuria/allowly/issues/3), [#4](https://github.com/hexuria/allowly/issues/4),
+[#5](https://github.com/hexuria/allowly/issues/5), plus two things those issues do not
 cover: the phone-side generative form UI, and the pointer rework.
 
 Decisions taken, which override the issues where they disagree:
