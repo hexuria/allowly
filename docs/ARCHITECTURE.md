@@ -27,7 +27,7 @@ Allowly detects dialog boxes on your Mac and asks for human approval when you're
 7. Policy re-evaluates (dangerous buttons escalate to human, unknown apps deny)
 8. JevAX executes via AXPress or launches app
 
-**TCC consent sheets** (cert trust, location, microphone, Full Disk Access) are detected but cannot be clicked. Every click carries a source tag, and the sheet honours only events tagged as coming from real hardware; anything posted through `CGEvent` is tagged synthetic and discarded. That applies to remote-control software too, including Apple's Screen Sharing — `AppleVNCServer` is pre-granted `kTCCServicePostEvent` so it never has to ask for Accessibility, but it holds no HID entitlement, so its events are synthetic like everyone else's. jev therefore marks these `handoffOnly`, surfaces what is being asked, and never reports having pressed one. The only way to produce an accepted event is genuine hardware: a USB HID bridge. See https://claude.ai/artifact/HXvBXAsWSYbgaPUfELMzoL.
+**TCC consent sheets** (cert trust, location, microphone, Full Disk Access) honour only events tagged as coming from real hardware. Anything posted through `CGEvent` is tagged synthetic and discarded, including Apple's Screen Sharing. Without a USB board, Allowly marks these `handoffOnly`, surfaces what is being asked, and does not claim to have pressed one. With a USB HID bridge plugged in, the click is hardware and the sheet accepts it.
 
 ## Trust Boundaries
 

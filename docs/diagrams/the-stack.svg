@@ -32,7 +32,7 @@
 
   <rect x="278" y="58" width="186" height="76" rx="11" fill="#F5F3EF" stroke="#DEDAD2" stroke-width="2"/>
   <text x="371" y="86" text-anchor="middle" class="lab" font-size="13">the app / menu bar</text>
-  <text x="371" y="106" text-anchor="middle" class="m" font-size="12">Jev.app · pair, settings</text>
+  <text x="371" y="106" text-anchor="middle" class="m" font-size="12">Allowly.app · pair, settings</text>
 
   <rect x="478" y="58" width="186" height="76" rx="11" fill="#F5F3EF" stroke="#DEDAD2" stroke-width="2"/>
   <text x="571" y="86" text-anchor="middle" class="lab" font-size="13">the daemon</text>

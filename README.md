@@ -73,7 +73,7 @@ notifications when something needs you. Add it to the home screen.
 
 **The device.** The USB board. Plug it in and clicks already route through it —
 `Pointer.swift` tries the board first. How to flash one is under
-[Prompts Allowly can't press](#prompts-allowly-cant-press).
+[Privacy prompts](#privacy-prompts).
 
 ---
 
@@ -86,7 +86,7 @@ Real screens, not mock-ups.
 | <img src="docs/screenshots/06-normal.png" width="240"> | **The normal view.** Live picture of your Mac on top, one button at the bottom. Drag to move the pointer, pinch to zoom, two fingers to scroll. Hold the button and talk. |
 | <img src="docs/screenshots/02-agent-permission.png" width="240"> | **An agent asking permission.** Claude Code wants to run a command. Tap an answer or say it. |
 | <img src="docs/screenshots/04-app-dialog.png" width="240"> | **An app dialog.** With a picture, so you can see what you are answering. If the match is ambiguous, Allowly refuses instead of guessing. |
-| <img src="docs/screenshots/01-system-permission.png" width="240"> | **A macOS privacy prompt.** Allowly can't press these — see [Prompts Allowly can't press](#prompts-allowly-cant-press). It shows you what is being asked and says so. |
+| <img src="docs/screenshots/01-system-permission.png" width="240"> | **A macOS privacy prompt.** Without the USB board, Allowly shows you the prompt and the box ignores a software click. With the board, Allow is a real mouse click. See [Privacy prompts](#privacy-prompts). |
 | <img src="docs/screenshots/03-generative-form.png" width="240"> | **A form from your Mac.** Allowly reads the fields and rebuilds them on your phone, so you type with a real keyboard. |
 | <img src="docs/screenshots/05-numbers.png" width="240"> | **Numbers.** Four buttons all called "Alex"? Say "show numbers", then say "6". |
 | <img src="docs/screenshots/07-settings.png" width="240"> | **Settings.** Hands-free listening, gestures, and who answers what. |
@@ -99,10 +99,14 @@ Real screens, not mock-ups.
 - macOS Sonoma (14.0) or newer
 - [Tailscale](https://tailscale.com), on both the Mac and the phone
 - Accessibility and Screen Recording permission for Allowly.app
+- A USB board if you want to press macOS privacy prompts from the phone
+  (optional until one of those boxes appears — see [Privacy prompts](#privacy-prompts))
 
 ## Install
 
 ```bash
+git clone https://github.com/hexuria/allowly.git
+cd allowly
 make app            # build and sign Allowly.app
 open build/Allowly.app  # run it
 ```
@@ -235,22 +239,20 @@ anyone who can touch the machine is logged in as you. Your call.
 
 ---
 
-## Prompts Allowly can't press
+## Privacy prompts
 
-macOS privacy prompts — *"X would like to access your Documents"* — are drawn
-by the system and only accept clicks from real hardware. That's on purpose:
-otherwise malware could approve itself. No software can press them. Not Allowly,
-not TeamViewer, and almost certainly not Apple's own Screen Sharing.
+macOS privacy prompts — *"X would like to access your Documents"* — only accept
+clicks from real hardware. That's the wall in [The problem](#the-problem).
+Software clicks, including Allowly's, are stamped synthetic and ignored.
 
-Allowly shows you what's being asked and tells you to press it at the Mac.
+**Without the board.** Allowly still sees the prompt and shows it on your
+phone. The Allow button on the phone does not move the box. Press it at the
+Mac, or grant the app once in System Settings so the prompt never appears.
 
-Two ways around it:
-
-**Grant it in advance.** Allow the app once, in person, in System Settings.
-Then the prompt never appears. Works for the apps you know about.
-
-**Use a $4 board.** A microcontroller that plugs into USB and *is* a real
-mouse. Nothing is faked, so nothing gets rejected.
+**With the board.** Plug in a USB microcontroller that enumerates as a genuine
+mouse. You tap Allow on the phone. Allowly already knows where the button is
+and tells the board to click it. The box sees hardware and accepts it. That is
+[The solution](#the-solution).
 
 ### The board
 
@@ -277,7 +279,7 @@ Setup:
 Allowly finds it on its own. No config, no code change — `Pointer.swift` already
 tries the board before falling back to software.
 
-### Testing it without the board
+### Testing the firmware on this Mac
 
 ```bash
 make hid-test

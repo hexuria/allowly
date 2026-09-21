@@ -14,7 +14,8 @@ This guide walks through a one-time, in-person setup to get Allowly running on y
 ### Clone and build
 
 ```bash
-cd /path/to/allowly
+git clone https://github.com/hexuria/allowly.git
+cd allowly
 make build
 ```
 
@@ -143,15 +144,13 @@ Once paired, the PWA prompts you to add it to the Home Screen. This is **require
 
 Once enabled, when a dialog appears on your Mac, you will receive a notification on your phone, even if the PWA is not open.
 
-## What Allowly Cannot Do
+## Privacy prompts (TCC consent sheets)
 
-### TCC Consent Sheets
+macOS TCC sheets (certificate trust, location, microphone, camera, Full Disk Access) reject synthetic input. CGEvent, AXPress, and virtual HID all bounce. Screen Sharing posts the same synthetic events.
 
-Allowly **cannot automatically answer** macOS TCC consent sheets (certificate trust, location access, microphone, camera, Full Disk Access, etc.). These are rendered by the system `tccd` process and explicitly reject synthetic input (CGEvent, AXPress, virtual HID).
+**Without a USB board.** Allowly detects the sheet, marks it `handoffOnly: true`, and shows you on the phone what is being asked and by which app. There is no working Allow button until a real mouse clicks it. Press it at the Mac, or grant the permission once in System Settings so the sheet never appears.
 
-**What happens instead:** Allowly detects the TCC sheet, marks it `handoffOnly: true`, and shows you on the phone what is being asked and by which app — with no button, because no button would work. Screen Sharing does not help here: its VNC server posts the same synthetic events the sheet rejects.
-
-**To stop hitting these while away**, in increasing order of effort: grant the permission once while you are at the Mac; pre-approve the binary with a PPPC configuration profile (Full Disk Access and Accessibility only — Apple reserves camera, microphone and Screen Recording for a human); or attach a USB HID bridge, which produces real hardware events and is the only complete fix. Full explanation: https://claude.ai/artifact/HXvBXAsWSYbgaPUfELMzoL
+**With a USB board.** The board enumerates as hardware. Allowly already knows where Allow is and tells the board to click it. That is the complete fix. See the README section *Privacy prompts*.
 
 **Examples of TCC dialogs:**
 - "MyApp would like to access your files" (Full Disk Access)
@@ -161,7 +160,7 @@ Allowly **cannot automatically answer** macOS TCC consent sheets (certificate tr
 
 ### Full Disk Access
 
-Apps must be granted Full Disk Access explicitly in System Settings. Allowly itself does not need Full Disk Access (it uses Accessibility to drive dialog buttons). However, if you want Claude Code or another tool to run with Full Disk Access, you must grant it manually in System Settings once; jev cannot do this for you, and neither can any tool.
+Apps must be granted Full Disk Access explicitly in System Settings. Allowly itself does not need Full Disk Access (it uses Accessibility to drive dialog buttons). However, if you want Claude Code or another tool to run with Full Disk Access, you must grant it manually in System Settings once; Allowly cannot do this for you, and neither can any tool.
 
 **What to do:**
 1. In System Settings → **Privacy & Security** → **Full Disk Access**

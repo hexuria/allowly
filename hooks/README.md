@@ -9,7 +9,7 @@ This directory contains the integration hook for Claude Code's PermissionRequest
 The hook script `jev-permission-hook.sh` is installed as part of the jev build and is located at:
 
 ```
-/path/to/jev/hooks/jev-permission-hook.sh
+/path/to/allowly/hooks/jev-permission-hook.sh
 ```
 
 ### 2. Register the hook in Claude Code
@@ -21,7 +21,7 @@ Edit `~/.claude/settings.json` and add the following under the `"hooks"` key:
   "hooks": {
     "permissionRequest": {
       "command": "bash",
-      "args": ["/path/to/jev/hooks/jev-permission-hook.sh"]
+      "args": ["/path/to/allowly/hooks/jev-permission-hook.sh"]
     }
   }
 }
@@ -89,7 +89,7 @@ security delete-generic-password -s dev.goldcoders.allowly -a daemon-pairing-tok
 
 - Verify the path in `~/.claude/settings.json` is correct.
 - Restart Claude Code after updating settings.json.
-- Check that the hook is executable: `ls -l /path/to/jev/hooks/jev-permission-hook.sh` should show `-rwx...`.
+- Check that the hook is executable: `ls -l /path/to/allowly/hooks/jev-permission-hook.sh` should show `-rwx...`.
 
 ### Daemon returns "invalid token" or "unauthorized"
 
