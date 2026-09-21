@@ -90,6 +90,27 @@ final class AppPolicyStore: @unchecked Sendable {
         }
     }
 
+    /// What a policy saved under the OLD shared key still means.
+    ///
+    /// Typing and clicking used to be filed under "system.keyboard" and
+    /// "system.pointer" whatever app they landed in, and are granted per app
+    /// now. That move must not quietly change what someone already decided,
+    /// and the two directions are not symmetric:
+    ///
+    ///   * `never` still refuses. A refusal is never widened by a refactor —
+    ///     someone who turned typing off does not get it back because the key
+    ///     it was stored under was renamed.
+    ///   * `always` no longer grants, because a blanket "allow typing" is
+    ///     exactly the hole being closed: it covered a terminal and a bank
+    ///     alike. It is retired out loud rather than silently, and the person
+    ///     can allow the app itself the next time a card asks.
+    ///
+    /// Pure, and asserted, because getting this backwards re-enables
+    /// something that was deliberately switched off.
+    static func inherited(bucket: AppMode?) -> AppMode? {
+        bucket == .never ? .never : nil
+    }
+
     func forget(_ bundleIdentifier: String) {
         lock.lock()
         modes.removeValue(forKey: bundleIdentifier)

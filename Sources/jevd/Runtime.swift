@@ -1771,19 +1771,32 @@ actor JevRuntime {
                                          spokenIsPrivate: spokenIsPrivate, aim: aim)
         }
 
+        // A policy saved before typing was granted per app still counts,
+        // where counting means refusing. See `AppPolicyStore.inherited`.
+        let bucket = parsed.command.bundleIdentifier
+        let inherited = bucket == bundleId ? nil
+            : AppPolicyStore.inherited(bucket: bucket.flatMap { AppPolicyStore.shared.mode(for: $0) })
+        let mode = inherited ?? AppPolicyStore.shared.effectiveMode(for: bundleId)
+        if inherited == nil, bucket != bundleId,
+           let old = bucket, AppPolicyStore.shared.mode(for: old) == .always {
+            // Said once per command rather than kept quiet: this is a grant
+            // the person made that jev is deliberately no longer honouring.
+            JevLog.write("[jev] policy: “\(old)” was set to always, which no longer covers every app — "
+                + "asking for \(bundleId) on its own")
+        }
+
         // A web task never goes to the decision model, whatever the policy
         // says. Unknown bundle ids inherit the global mode, which defaults to
         // .auto — so without this, "order me another pack of coffee filters"
         // would be classified as routine and a sixty-action agent would run
         // loose on a signed-in shop with no card ever shown. Everything else
         // jev auto-runs is a single reversible act; this is a loop.
-        if case .webTask = parsed.command,
-           AppPolicyStore.shared.effectiveMode(for: bundleId) != .always {
+        if case .webTask = parsed.command, mode != .always {
             return await requestApproval(for: parsed, spokenAs: text,
                                          spokenIsPrivate: spokenIsPrivate, key: bundleId, aim: aim)
         }
 
-        switch AppPolicyStore.shared.effectiveMode(for: bundleId) {
+        switch mode {
         case .always:
             let result = await executor.execute(parsed.command, aim: scope.aim)
             // Report what actually happened. Substituting the description here

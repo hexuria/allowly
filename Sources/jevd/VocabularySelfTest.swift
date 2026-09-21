@@ -393,6 +393,17 @@ enum VocabularySelfTest {
         check(fromChrome.addressing("in google chrome, close tab", running: procs, context: neutral)?.scope.aim == nil,
               "addressing: the app already in front needs no aim")
 
+        // A policy saved under the old shared key. A refusal survives the
+        // move to per-app keys; a blanket grant does not.
+        check(AppPolicyStore.inherited(bucket: .never) == .never,
+              "policy: “never allow typing” still refuses after the move to per-app keys")
+        check(AppPolicyStore.inherited(bucket: .always) == nil,
+              "policy: a blanket “always allow typing” no longer covers every app")
+        check(AppPolicyStore.inherited(bucket: .auto) == nil,
+              "policy: auto under the old key defers to the app's own")
+        check(AppPolicyStore.inherited(bucket: nil) == nil,
+              "policy: nothing saved inherits nothing")
+
         // One verdict, wherever it was asked. Either doubt asks.
         check(SafetyVerdict(routine: 0.9, destructive: 0.1).allowsUnattended, "verdict: routine and harmless runs")
         check(!SafetyVerdict(routine: 0.5, destructive: 0.1).allowsUnattended, "verdict: not routine asks")
