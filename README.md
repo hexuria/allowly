@@ -306,15 +306,25 @@ and tells the board to click it. The box sees hardware and accepts it. That is
 
 The code is already written and tested — both halves. You need the hardware.
 
-Any board CircuitPython supports with native USB works. A plain Raspberry Pi
-Pico is the cheapest that does the job. In the Philippines: [Makerlab
-PH](https://makerlab.ph) (~₱399), [Circuitrocks](https://circuit.rocks), or
-search Shopee/Lazada for `RP2040`.
+Any board CircuitPython supports with native USB works. Search the shops for
+**Raspberry Pi Pico** (official, micro-USB) or **RP2040-Zero** (Waveshare,
+USB-C — plugs into a Mac without an adapter).
+
+Philippines:
+
+- [Makerlab PH — Raspberry Pi Pico](https://makerlab.ph/products/raspberry-pi-pico-rp2040-microcontroller-raspberry-pi-pico-w) (~₱399)
+- [Circuitrocks — Raspberry Pi Pico](https://circuit.rocks/products/raspberry-pi-pico) (~₱548)
+- [MakerPH — Raspberry Pi Pico](https://www.makerph.com/product/raspberry-pi-pico/) (~₱358)
+- Shopee / Lazada: `RP2040-Zero` or `Raspberry Pi Pico`
+
+Those Pico listings go in and out of stock. The USB-C board that ships is
+Waveshare's [RP2040-Zero](https://www.waveshare.com/rp2040-zero.htm) (~US$4).
+Official Pico: [raspberrypi.com/products/raspberry-pi-pico](https://www.raspberrypi.com/products/raspberry-pi-pico/).
 
 Two things that will waste your afternoon:
 
-- A Pico is **micro-USB** and your Mac is USB-C. Get the right cable, or buy an
-  RP2040-Zero, which is USB-C.
+- A Pico is **micro-USB** and your Mac is USB-C. Get the right cable, or buy the
+  RP2040-Zero.
 - It must be a **data** cable. A charge-only cable looks exactly like a dead
   board.
 
