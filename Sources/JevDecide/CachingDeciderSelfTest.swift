@@ -209,7 +209,7 @@ public enum CachingDeciderSelfTest {
 
         // ---- A cleared ledger is noticed by a RUNNING cache ----
         //
-        // `jevd --clear-decisions` is its own process and cannot reach this
+        // `allowlyd --clear-decisions` is its own process and cannot reach this
         // map, so without noticing the file has gone a running daemon keeps
         // serving entries that were deleted.
         let clearedDir = dir.appendingPathComponent("cleared")

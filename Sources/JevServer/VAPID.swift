@@ -164,7 +164,7 @@ public enum VAPIDSubject {
         return fallback
     }
 
-    /// `~/Library/Application Support/jev/vapid-subject`
+    /// `~/Library/Application Support/allowly/vapid-subject`
     public static var fileURL: URL {
         Allowly.supportDirectory.appendingPathComponent("vapid-subject")
     }

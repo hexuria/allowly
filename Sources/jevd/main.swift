@@ -1222,9 +1222,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let rate = asked == 0 ? "no lookups yet"
             : "\(Int((Double(cacheStats.hits) / Double(asked) * 100).rounded()))% hit rate "
               + "over \(asked) lookups"
-        JevLog.write("[jev] decisions cached: \(cacheStats.entries)"
+        JevLog.write("[allowly] decisions cached: \(cacheStats.entries)"
             + (cacheStats.disabled ? " (CACHING OFF — see the line above)" : "")
-            + " (\(rate); clear with `jevd --clear-decisions`)")
+            + " (\(rate); clear with `allowlyd --clear-decisions`)")
         testFailures.append(contentsOf: SelfTest.checkHeadings(DialogWatcher.heading))
         testFailures.append(contentsOf: SelfTest.checkWidgetNoise { DialogSerialiser.isWidgetNoise($0, appName: $1) })
         testFailures.append(contentsOf: SelfTest.checkButtonChoice(DialogSerialiser.chooseButton))

@@ -119,8 +119,7 @@ public actor DecisionCache {
     /// - Parameter ttl: for tests. Production TTL comes from the schema.
     public init(directory: URL? = nil, ttl: TimeInterval? = nil) {
         self.ttlOverride = ttl
-        self.directory = directory ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/decisions")
+        self.directory = directory ?? Allowly.supportDirectory.appendingPathComponent("decisions")
     }
 
     private var ledgerURL: URL { directory.appendingPathComponent("ledger.jsonl") }
@@ -209,7 +208,7 @@ public actor DecisionCache {
 
     public func load() {
         if loaded {
-            // The ledger can be deleted from a terminal — `jevd
+            // The ledger can be deleted from a terminal — `allowlyd
             // --clear-decisions` runs as its own process and cannot reach this
             // map. Without this check a running daemon kept serving entries
             // that had already been wiped, so "empties it" quietly meant
@@ -224,7 +223,7 @@ public actor DecisionCache {
                 // and the two paths would disagree about what "cleared" means.
                 hits = 0
                 misses = 0
-                Self.log("[jev] decisions: ledger was cleared underneath us; forgetting \(forgotten)")
+                Self.log("[allowly] decisions: ledger was cleared underneath us; forgetting \(forgotten)")
             }
             return
         }
@@ -243,7 +242,7 @@ public actor DecisionCache {
             // cannot be made safe must not cache.
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
                 disabled = true
-                Self.log("[jev] decisions: no random bytes for a salt; caching is off this session")
+                Self.log("[allowly] decisions: no random bytes for a salt; caching is off this session")
                 return
             }
             masterSalt = Data(bytes).base64EncodedString()
@@ -254,7 +253,7 @@ public actor DecisionCache {
                                                  contents: Data(masterSalt.utf8),
                                                  attributes: [.posixPermissions: 0o600]) else {
                 disabled = true
-                Self.log("[jev] decisions: could not save the salt; caching is off this session")
+                Self.log("[allowly] decisions: could not save the salt; caching is off this session")
                 return
             }
         }
@@ -340,12 +339,12 @@ public actor DecisionCache {
             if !FileManager.default.createFile(atPath: ledgerURL.path,
                                                contents: Data(line.utf8),
                                                attributes: [.posixPermissions: 0o600]) {
-                Self.log("[jev] decisions: could not create the ledger; this one stays in memory")
+                Self.log("[allowly] decisions: could not create the ledger; this one stays in memory")
             }
             return
         }
         guard let handle = try? FileHandle(forWritingTo: ledgerURL) else {
-            Self.log("[jev] decisions: ledger is there but will not open; this one stays in memory")
+            Self.log("[allowly] decisions: ledger is there but will not open; this one stays in memory")
             return
         }
         defer { try? handle.close() }
@@ -392,8 +391,7 @@ public actor DecisionCache {
     /// Wipe the ledger from a terminal, without launching the app. A daemon
     /// already running notices on its next lookup — see `load`.
     public static func clearOnDisk() -> String {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/jev/decisions")
+        let dir = Allowly.supportDirectory.appendingPathComponent("decisions")
         let ledger = dir.appendingPathComponent("ledger.jsonl")
         let counters = dir.appendingPathComponent("counters.json")
         let existed = FileManager.default.fileExists(atPath: ledger.path)
