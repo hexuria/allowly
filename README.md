@@ -7,6 +7,55 @@ You see your Mac's screen, tap or speak, and it happens. When something on your
 Mac pops up a dialog — an app, or an AI agent asking permission — you get a
 notification and can answer it from wherever you are.
 
+## The wall
+
+Every click carries a birth certificate. macOS stamps every mouse click with
+where it came from. A click jev makes in software is stamped **synthetic**. A
+permission box — *"X would like to access your Documents"* — looks at that stamp
+and ignores it.
+
+That is on purpose. If software clicks worked, any malware could tick its own
+Allow box. There is no entitlement, no developer account, and no permission that
+changes the stamp. The rule exists so it cannot be bought.
+
+You are also away from the desk. An app or an AI agent has opened a box on the
+Mac at home, and you need to see it and answer it. The path to that Mac has to
+stay private: a phone talking to your computer is full control of your computer.
+
+## The answer
+
+Stop faking the click. Be a mouse.
+
+A cheap USB board enumerates as a genuine mouse. You tap Allow on the phone.
+jev already knows where the button is — Accessibility can *read* the box, it
+just cannot press it — and tells the board `CLICK 16384 9001`. The Mac's USB
+stack sees a mouse move and click. The permission box checks the stamp, sees
+hardware, and accepts it. Nothing is faked, so there is nothing to reject.
+
+The board is one piece. These are the others, and they already exist:
+
+**Tailscale.** The phone and the Mac share a private tailnet. `jevd` listens on
+loopback (`127.0.0.1:8787`). `tailscale serve` terminates TLS on your tailnet
+and proxies to that port, so the phone gets an HTTPS origin on the tailnet.
+Only a device signed into your tailnet can find that origin; a pairing token is
+a second gate after that. Voice, notifications, and the home-screen app all
+need that secure context — which is why Tailscale is the security boundary.
+
+**The daemon (`jevd`).** Watches dialogs, captures the screen, serves the web
+app, and talks to the board. The work lives here. It keeps running after you
+put the phone down.
+
+**The app / menu bar.** `Jev.app` is what you grant Accessibility and Screen
+Recording to. The icon in the menu bar is how you pair a phone, change
+settings, and quit.
+
+**The web.** A PWA on your phone: live picture of the Mac, tap or speak,
+notifications when something needs you. Add it to the home screen.
+
+**The device.** The USB board. Plug it in and clicks already route through it —
+`Pointer.swift` tries the board first. How to flash one is under
+[Prompts jev can't press](#prompts-jev-cant-press).
+
 ---
 
 ## Screenshots
