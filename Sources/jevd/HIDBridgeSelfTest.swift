@@ -241,6 +241,17 @@ enum HIDBridgeSelfTest {
         check("neither does Dvorak", !HIDKeycodes.looksLikeUSLayout("com.apple.keylayout.Dvorak"))
         check("an unknown layout is treated as not-US", !HIDKeycodes.looksLikeUSLayout(nil))
 
+        // ---- What the menu bar says about the keyboard ----
+        //
+        // A line that lies here is worse than no line: it is the only place
+        // you can check whether the board will type what you meant.
+        let summary = JevAppDelegate.keyboardSummary()
+        check("the menu names the layout", summary.hasPrefix("Keyboard: "))
+        check("and says which of the two worlds it is in",
+              summary.contains("read from macOS") || summary.contains("using US positions"))
+        check("the tick and the cross are not both shown",
+              summary.contains("✓") != summary.contains("✗"))
+
         // ---- A half-typed password is never retyped ----
         //
         // `type` reports how far it got, because "nothing sent" may be retried
