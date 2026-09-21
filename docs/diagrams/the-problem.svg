@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 300" role="img" aria-label="A software click bounces off the permission box; a hardware click passes through">
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1A1D21; }
+    .lab { font-weight: 700; }
+    .m { fill: #5E6670; }
+  </style>
+  <rect width="700" height="300" fill="#FFFFFF"/>
+
+  <rect x="16" y="28" width="150" height="54" rx="12" fill="#FAE3DC" stroke="#C4482B" stroke-width="2"/>
+  <text x="91" y="52" text-anchor="middle" class="lab" font-size="14">jev</text>
+  <text x="91" y="70" text-anchor="middle" class="m" font-size="12">CGEvent click</text>
+  <path d="M170 55 L 330 55" stroke="#C4482B" stroke-width="3" stroke-dasharray="7 5" fill="none"/>
+  <text x="250" y="42" text-anchor="middle" font-size="12" fill="#C4482B">stamped SYNTHETIC</text>
+  <path d="M330 55 q 30 0 34 26 q 4 26 -30 34" fill="none" stroke="#C4482B" stroke-width="3"/>
+  <polygon points="338,118 326,113 336,105" fill="#C4482B"/>
+  <text x="250" y="132" text-anchor="middle" font-size="13" fill="#C4482B" class="lab">ignored</text>
+
+  <rect x="340" y="24" width="220" height="120" rx="12" fill="#FFFFFF" stroke="#1A1D21" stroke-width="2.5"/>
+  <text x="450" y="52" text-anchor="middle" font-size="13" class="lab">macOS permission box</text>
+  <text x="450" y="74" text-anchor="middle" font-size="12" class="m">“would like to access…”</text>
+  <rect x="368" y="92" width="76" height="30" rx="7" fill="#DEDAD2"/>
+  <text x="406" y="112" text-anchor="middle" font-size="12">Don't Allow</text>
+  <rect x="458" y="92" width="76" height="30" rx="7" fill="#1C7C5A"/>
+  <text x="496" y="112" text-anchor="middle" font-size="12" fill="#FFFFFF">Allow</text>
+
+  <rect x="16" y="200" width="150" height="54" rx="12" fill="#DCEFE6" stroke="#1C7C5A" stroke-width="2"/>
+  <text x="91" y="224" text-anchor="middle" class="lab" font-size="14">a real mouse</text>
+  <text x="91" y="242" text-anchor="middle" class="m" font-size="12">USB device</text>
+  <path d="M170 227 L 440 227 L 440 150" fill="none" stroke="#1C7C5A" stroke-width="3.5"/>
+  <polygon points="440,142 434,156 446,156" fill="#1C7C5A"/>
+  <text x="300" y="214" text-anchor="middle" font-size="12" fill="#1C7C5A">stamped HARDWARE</text>
+  <text x="300" y="250" text-anchor="middle" font-size="13" fill="#1C7C5A" class="lab">accepted</text>
+</svg>

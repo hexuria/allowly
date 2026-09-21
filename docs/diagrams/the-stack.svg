@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 280" role="img" aria-label="The phone reaches the Mac over Tailscale. The menu bar app, the daemon, and the USB board live on the Mac.">
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1A1D21; }
+    .lab { font-weight: 700; }
+    .m { fill: #5E6670; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+  <defs>
+    <marker id="s" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="#2E6FB7"/>
+    </marker>
+  </defs>
+  <rect width="700" height="280" fill="#FFFFFF"/>
+
+  <text x="80" y="28" text-anchor="middle" class="lab" font-size="11" fill="#2E6FB7" letter-spacing="1.4">THE WEB</text>
+  <rect x="16" y="40" width="128" height="200" rx="14" fill="#DCE8F6" stroke="#2E6FB7" stroke-width="2"/>
+  <rect x="48" y="62" width="64" height="110" rx="12" fill="#FFFFFF" stroke="#2E6FB7" stroke-width="2"/>
+  <rect x="58" y="72" width="44" height="78" rx="6" fill="#F5F3EF"/>
+  <circle cx="80" cy="160" r="4" fill="#2E6FB7"/>
+  <text x="80" y="198" text-anchor="middle" class="lab" font-size="14">the web</text>
+  <text x="80" y="218" text-anchor="middle" class="m" font-size="12">PWA on your phone</text>
+  <text x="80" y="234" text-anchor="middle" class="m" font-size="12">tap, speak, notify</text>
+
+  <path d="M144 140 L 252 140" stroke="#2E6FB7" stroke-width="3.5" marker-end="url(#s)" fill="none"/>
+  <rect x="156" y="102" width="88" height="76" rx="10" fill="#DCE8F6" stroke="#2E6FB7" stroke-width="2"/>
+  <text x="200" y="124" text-anchor="middle" class="lab" font-size="12" fill="#2E6FB7">Tailscale</text>
+  <text x="200" y="142" text-anchor="middle" class="m" font-size="11">HTTPS · tailnet</text>
+  <text x="200" y="160" text-anchor="middle" class="m" font-size="11">pairing token</text>
+
+  <text x="470" y="28" text-anchor="middle" class="lab" font-size="11" fill="#1A1D21" letter-spacing="1.4">THE MAC</text>
+  <rect x="258" y="40" width="426" height="200" rx="14" fill="#FFFFFF" stroke="#1A1D21" stroke-width="2.5"/>
+
+  <rect x="278" y="58" width="186" height="76" rx="11" fill="#F5F3EF" stroke="#DEDAD2" stroke-width="2"/>
+  <text x="371" y="86" text-anchor="middle" class="lab" font-size="13">the app / menu bar</text>
+  <text x="371" y="106" text-anchor="middle" class="m" font-size="12">Jev.app · pair, settings</text>
+
+  <rect x="478" y="58" width="186" height="76" rx="11" fill="#F5F3EF" stroke="#DEDAD2" stroke-width="2"/>
+  <text x="571" y="86" text-anchor="middle" class="lab" font-size="13">the daemon</text>
+  <text x="571" y="106" text-anchor="middle" class="mono" font-size="12" fill="#5E6670">jevd · 127.0.0.1:8787</text>
+
+  <rect x="278" y="148" width="386" height="72" rx="11" fill="#F7ECD4" stroke="#B8862B" stroke-width="2.5"/>
+  <text x="471" y="176" text-anchor="middle" class="lab" font-size="13">the device</text>
+  <text x="471" y="196" text-anchor="middle" class="m" font-size="12">USB board · a real mouse on the bus</text>
+
+  <text x="470" y="258" text-anchor="middle" class="m" font-size="12">tailscale serve terminates TLS and proxies to loopback</text>
+</svg>
