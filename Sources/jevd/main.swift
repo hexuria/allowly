@@ -1189,6 +1189,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Run self-tests
         CuaDriver.log = { JevLog.write($0) }
+        DecisionCache.log = { JevLog.write($0) }
         var testFailures = SelfTest.run()
         // The push crypto is unverifiable from the outside — a wrong key
         // derivation just means a notification that never arrives — so it
@@ -1199,6 +1200,22 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // treatment. Three of the last two rounds' findings were in here
         // and none of them had a test.
         testFailures.append(contentsOf: runBlocking { await SelfTest.runStore() })
+        testFailures.append(contentsOf: runBlocking { await CachingDeciderSelfTest.run() })
+        // What the ledger is holding, so a cache that quietly stopped working
+        // is visible rather than merely cheap-looking. It said nothing at all
+        // when a salt bug meant it wrote entries it could never read back.
+        let cacheStats = runBlocking { await DecisionCache.shared.stats() }
+        // Counters are lifetime and read back from disk, so this line can
+        // actually be non-zero. Reporting a hit rate that was structurally
+        // always 0/0 told you nothing about whether the cache worked — which
+        // is the one thing it exists to tell you.
+        let asked = cacheStats.hits + cacheStats.misses
+        let rate = asked == 0 ? "no lookups yet"
+            : "\(Int((Double(cacheStats.hits) / Double(asked) * 100).rounded()))% hit rate "
+              + "over \(asked) lookups"
+        JevLog.write("[jev] decisions cached: \(cacheStats.entries)"
+            + (cacheStats.disabled ? " (CACHING OFF — see the line above)" : "")
+            + " (\(rate); clear with `jevd --clear-decisions`)")
         testFailures.append(contentsOf: SelfTest.checkHeadings(DialogWatcher.heading))
         testFailures.append(contentsOf: SelfTest.checkWidgetNoise { DialogSerialiser.isWidgetNoise($0, appName: $1) })
         testFailures.append(contentsOf: SelfTest.checkButtonChoice(DialogSerialiser.chooseButton))
@@ -1694,6 +1711,13 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 // MARK: - Application Entry Point
+
+// Before AppKit, because this is a command and not an app launch: somebody at
+// a terminal wants the decision ledger emptied, not a menu bar icon.
+if CommandLine.arguments.contains("--clear-decisions") {
+    print(DecisionCache.clearOnDisk())
+    exit(0)
+}
 
 let app = NSApplication.shared
 // Accessory: menu bar only, no Dock icon, no menu bar takeover.

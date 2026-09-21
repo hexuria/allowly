@@ -48,7 +48,16 @@ public actor DecisionPipeline: Decider {
 
         return DecisionPipeline(
             policyDecider: PolicyDecider(policy: policy),
-            remote: hasKey ? JevDecider(apiKey: key) : MockDecider(),
+            // Wrapped, so a repeated dialog stops costing a round trip to be
+            // told again to ask you. Only "ask them" is ever remembered —
+            // see CachingDecider for why an approval never is.
+            remote: hasKey
+                // The MODEL is in the namespace, not just the type name. An
+                // answer computed by one model must not be served for another,
+                // and the type name is the same string whichever model runs.
+                ? CachingDecider(wrapping: JevDecider(apiKey: key),
+                                 namespace: "JevDecider/\(JevAPI.defaultModel)")
+                : MockDecider(),
             usesRemoteDecider: hasKey
         )
     }
