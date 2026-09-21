@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 340" role="img" aria-label="The journey of one click from phone to permission box">
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1A1D21; }
+    .lab { font-weight: 700; }
+    .m { fill: #5E6670; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="#2E6FB7"/>
+    </marker>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="#B8862B"/>
+    </marker>
+    <marker id="ay" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="#1C7C5A"/>
+    </marker>
+  </defs>
+  <rect width="700" height="340" fill="#FFFFFF"/>
+
+  <rect x="14" y="18" width="104" height="60" rx="11" fill="#DCE8F6" stroke="#2E6FB7" stroke-width="2"/>
+  <text x="66" y="42" text-anchor="middle" class="lab" font-size="13">1 · phone</text>
+  <text x="66" y="62" text-anchor="middle" class="m" font-size="12.5">you tap Allow</text>
+
+  <rect x="150" y="18" width="130" height="60" rx="11" fill="#DCE8F6" stroke="#2E6FB7" stroke-width="2"/>
+  <text x="215" y="38" text-anchor="middle" class="lab" font-size="13">2 · jev on the Mac</text>
+  <text x="215" y="56" text-anchor="middle" class="m" font-size="12.5">reads where it is</text>
+  <text x="215" y="71" text-anchor="middle" class="m" font-size="12.5">can't press it</text>
+
+  <rect x="312" y="18" width="150" height="60" rx="11" fill="#DCE8F6" stroke="#2E6FB7" stroke-width="2"/>
+  <text x="387" y="38" text-anchor="middle" class="lab" font-size="13">3 · one line of text</text>
+  <text x="387" y="60" text-anchor="middle" class="mono" font-size="12.5" fill="#2E6FB7">CLICK 16384 9001</text>
+
+  <rect x="494" y="18" width="192" height="60" rx="11" fill="#F7ECD4" stroke="#B8862B" stroke-width="2.5"/>
+  <text x="590" y="38" text-anchor="middle" class="lab" font-size="13">4 · the $5 board</text>
+  <text x="590" y="58" text-anchor="middle" class="m" font-size="12.5">emits real HID reports</text>
+  <text x="590" y="72" text-anchor="middle" class="m" font-size="12.5">down the same cable</text>
+
+  <path d="M120 48 L 146 48" stroke="#2E6FB7" stroke-width="2.5" marker-end="url(#a)" fill="none"/>
+  <path d="M282 48 L 308 48" stroke="#2E6FB7" stroke-width="2.5" marker-end="url(#a)" fill="none"/>
+  <path d="M464 48 L 490 48" stroke="#2E6FB7" stroke-width="2.5" marker-end="url(#a)" fill="none"/>
+  <path d="M590 82 L 590 118" stroke="#B8862B" stroke-width="3" marker-end="url(#ag)" fill="none"/>
+
+  <rect x="430" y="122" width="256" height="54" rx="11" fill="#FFFFFF" stroke="#DEDAD2" stroke-width="2"/>
+  <text x="558" y="144" text-anchor="middle" class="lab" font-size="13">5 · the Mac's USB stack</text>
+  <text x="558" y="163" text-anchor="middle" class="m" font-size="12.5">“a mouse moved and clicked”</text>
+  <path d="M430 149 L 300 149" stroke="#1C7C5A" stroke-width="3" marker-end="url(#ay)" fill="none"/>
+
+  <rect x="60" y="112" width="230" height="130" rx="12" fill="#FFFFFF" stroke="#1A1D21" stroke-width="2.5"/>
+  <text x="175" y="138" text-anchor="middle" class="lab" font-size="12.5">6 · the permission box</text>
+  <text x="175" y="160" text-anchor="middle" class="m" font-size="12.5">checks the stamp…</text>
+  <rect x="86" y="176" width="82" height="32" rx="7" fill="#DEDAD2"/>
+  <text x="127" y="197" text-anchor="middle" font-size="12">Don't Allow</text>
+  <rect x="180" y="176" width="82" height="32" rx="7" fill="#1C7C5A"/>
+  <text x="221" y="197" text-anchor="middle" font-size="12" fill="#FFFFFF">Allow</text>
+  <circle cx="221" cy="192" r="15" fill="none" stroke="#1C7C5A" stroke-width="3"/>
+  <text x="175" y="228" text-anchor="middle" font-size="12.5" fill="#1C7C5A" class="lab">pressed, for real</text>
+
+  <text x="350" y="272" text-anchor="middle" class="m" font-size="13">The board is plugged into the same Mac. One cable carries both</text>
+  <text x="350" y="292" text-anchor="middle" class="m" font-size="13">jev's instructions (as a serial port) and the mouse clicks (as a mouse).</text>
+  <text x="350" y="312" text-anchor="middle" class="m" font-size="13">The Mac never knows the two are the same object.</text>
+</svg>
