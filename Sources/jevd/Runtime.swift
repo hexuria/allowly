@@ -1593,6 +1593,21 @@ actor JevRuntime {
     func releasePress(_ id: String) { pressingNow.remove(id) }
 
     private func sweepDeadDialogs() async {
+        // Before anything ages out: a card about a dialog that is STILL ON
+        // SCREEN is not stale, however long it has been there. A macOS
+        // permission prompt waits indefinitely, and withdrawing its card at
+        // five minutes left the prompt sitting on the Mac with no way to
+        // answer it from the phone — and a push notification pointing at a
+        // card that had been destroyed.
+        for request in await store.everyPending()
+        where request.kind == .appDialog || request.kind == .tccConsent {
+            if DialogRegistry.shared.isLive(id: request.id) {
+                await store.hold(id: request.id)
+            } else {
+                await store.release(id: request.id)
+            }
+        }
+
         // Cards the store has aged out. Nothing told the phone, so they sat
         // there unanswerable — and with the swipe gone, a TCC card (which
         // has no buttons at all) could not be got rid of by any means.

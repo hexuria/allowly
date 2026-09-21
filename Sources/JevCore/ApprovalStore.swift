@@ -4,6 +4,49 @@ public actor ApprovalStore: Sendable {
     private var pendingRequests: [String: ApprovalRequest] = [:]
     private let expirationInterval: TimeInterval = 300 // 5 minutes
 
+    /// Cards that must not age out, because the thing they are about is
+    /// still on screen waiting.
+    ///
+    /// Five minutes is the right life for a card about a moment that has
+    /// passed — a spoken command nobody answered means something else by
+    /// now. It is the wrong life for a macOS permission dialog, which sits
+    /// there indefinitely until somebody answers it. Measured: a TCC prompt
+    /// went up, jev pushed a notification, the card was destroyed five
+    /// minutes later, and the dialog was still on screen eight minutes
+    /// after that — a notification pointing at a card that no longer
+    /// existed, and a dialog that could no longer be answered from the
+    /// phone at all.
+    ///
+    /// The store cannot see a screen, so it is told. The sweep already asks
+    /// `DialogRegistry.isLive` every two seconds and now says so here.
+    private var held: Set<String> = []
+
+    /// Still worth showing: not yet aged out, or held open because its
+    /// dialog is still there.
+    private func isFresh(_ request: ApprovalRequest, now: Date = Date()) -> Bool {
+        held.contains(request.id)
+            || now.timeIntervalSince(request.timestamp) <= expirationInterval
+    }
+
+    /// Keep this card for as long as its dialog is on screen.
+    public func hold(id: String) {
+        guard pendingRequests[id] != nil else { return }
+        held.insert(id)
+    }
+
+    /// Let it age out again — its dialog has gone.
+    public func release(id: String) {
+        held.remove(id)
+    }
+
+    public func isHeld(id: String) -> Bool { held.contains(id) }
+
+    /// Every card in the store, aged out or not.
+    ///
+    /// The sweep is the one caller that has to see an expired card, because
+    /// it is the only one that can tell whether it should have expired.
+    public func everyPending() -> [ApprovalRequest] { Array(pendingRequests.values) }
+
     public init() {}
 
     /// Add a new approval request to the store.
@@ -57,8 +100,7 @@ public actor ApprovalStore: Sendable {
     /// long as nothing reaped it — and nothing reaps it at all when
     /// Accessibility is not granted, because the sweep never starts.
     public func get(id: String) -> ApprovalRequest? {
-        guard let request = pendingRequests[id],
-              Date().timeIntervalSince(request.timestamp) <= expirationInterval else { return nil }
+        guard let request = pendingRequests[id], isFresh(request) else { return nil }
         return request
     }
 
@@ -71,7 +113,8 @@ public actor ApprovalStore: Sendable {
     /// while `get(id:)` had already stopped acknowledging it.
     public func resolve(id: String) -> ApprovalRequest? {
         guard let request = pendingRequests.removeValue(forKey: id) else { return nil }
-        return Date().timeIntervalSince(request.timestamp) <= expirationInterval ? request : nil
+        defer { held.remove(id) }
+        return isFresh(request) ? request : nil
     }
 
     /// Requests that have just aged out — removed, and handed back so
@@ -86,9 +129,9 @@ public actor ApprovalStore: Sendable {
     public func reapExpired() -> [ApprovalRequest] {
         let now = Date()
         var reaped: [ApprovalRequest] = []
-        for (id, request) in pendingRequests
-        where now.timeIntervalSince(request.timestamp) > expirationInterval {
+        for (id, request) in pendingRequests where !isFresh(request, now: now) {
             pendingRequests.removeValue(forKey: id)
+            held.remove(id)
             reaped.append(request)
         }
         return reaped
@@ -106,21 +149,18 @@ public actor ApprovalStore: Sendable {
     /// state `reapExpired` was written to eliminate.
     public func getAllPending() -> [ApprovalRequest] {
         let now = Date()
-        return pendingRequests.values.filter {
-            now.timeIntervalSince($0.timestamp) <= expirationInterval
-        }
+        return pendingRequests.values.filter { isFresh($0, now: now) }
     }
 
     /// Count of pending requests. Also non-mutating, for the same reason.
     public func count() -> Int {
         let now = Date()
-        return pendingRequests.values.count {
-            now.timeIntervalSince($0.timestamp) <= expirationInterval
-        }
+        return pendingRequests.values.count { isFresh($0, now: now) }
     }
 
     /// Clear all pending requests.
     public func clear() {
         pendingRequests.removeAll()
+        held.removeAll()
     }
 }

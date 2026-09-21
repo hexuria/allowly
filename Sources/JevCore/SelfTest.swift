@@ -860,6 +860,34 @@ public struct SelfTest {
         check("reaping twice finds nothing", await store.reapExpired().isEmpty)
         check("the live one survived", await store.getAllPending().count == 1)
 
+        // A card whose dialog is still on screen must not age out. A macOS
+        // permission prompt waits indefinitely; the card for it was being
+        // destroyed at five minutes, leaving a prompt nobody could answer
+        // from the phone and a notification pointing at nothing.
+        let holding = ApprovalStore()
+        _ = await holding.addDeduplicated(request("held", title: "Finder",
+                                                  body: "would like to access files", age: 600,
+                                                  options: ["Allow", "Don't Allow"]))
+        check("an aged-out card is hidden before anything holds it",
+              await holding.getAllPending().isEmpty)
+        await holding.hold(id: "held")
+        check("holding brings it back", await holding.getAllPending().count == 1)
+        check("a held card is not reaped", await holding.reapExpired().isEmpty)
+        check("a held card can still be read", await holding.get(id: "held") != nil)
+        check("a held card can still be answered", await holding.resolve(id: "held") != nil)
+        check("answering releases the hold", await !holding.isHeld(id: "held"))
+
+        // And it ages out the moment its dialog goes.
+        let released = ApprovalStore()
+        _ = await released.addDeduplicated(request("gone", title: "Finder",
+                                                   body: "would like to access files", age: 600,
+                                                   options: ["Allow", "Don't Allow"]))
+        await released.hold(id: "gone")
+        await released.release(id: "gone")
+        check("a released card is reaped as normal", await released.reapExpired().count == 1)
+        check("holding an id the store never had does nothing",
+              await { await released.hold(id: "never"); return await !released.isHeld(id: "never") }())
+
         // Two untitled sheets from one app are not the same sheet. Both
         // take their app's name as a heading, so keying on the heading
         // alone suppressed the second one entirely.
