@@ -1,4 +1,5 @@
 import Foundation
+import JevAX
 import JevCore
 import JevDecide
 
@@ -392,6 +393,17 @@ enum VocabularySelfTest {
               "addressing: a name must end where the name ends")
         check(fromChrome.addressing("in google chrome, close tab", running: procs, context: neutral)?.scope.aim == nil,
               "addressing: the app already in front needs no aim")
+
+        // When a dialog counts as gone. A busy app answering nothing is not
+        // a dead one — but a process that has exited cannot have a dialog on
+        // screen, whatever Accessibility says, and treating the two alike
+        // kept a card for a vanished dialog forever.
+        check(DialogRegistry.isGone(processExists: false, axSaysInvalid: false), "dialog: a dead process means the dialog is gone")
+        check(DialogRegistry.isGone(processExists: true, axSaysInvalid: true), "dialog: an invalid element means the dialog is gone")
+        check(!DialogRegistry.isGone(processExists: true, axSaysInvalid: false), "dialog: a live process with a live element is not gone")
+        check(DialogRegistry.isGone(processExists: false, axSaysInvalid: true), "dialog: a dead process is gone even if AX still answers")
+        check(DialogRegistry.processExists(getpid()), "dialog: this very process exists")
+        check(DialogRegistry.processExists(1), "dialog: pid 1 exists and is not ours to signal")
 
         // The numbers the journal keeps, so a floor can be argued with.
         check(CommandJournal.Judgement.round(0.5432) == 0.54,

@@ -41,6 +41,24 @@ public final class DialogRegistry: @unchecked Sendable {
         return entries[id]?.element
     }
 
+    /// Is this process still around?
+    ///
+    /// `kill(pid, 0)` sends nothing; it only asks. `ESRCH` is the one answer
+    /// that means no such process — `EPERM` means it is there and not ours
+    /// to signal, which is still there.
+    public static func processExists(_ pid: pid_t) -> Bool {
+        if kill(pid, 0) == 0 { return true }
+        return errno != ESRCH
+    }
+
+    /// Pure, so the rule above is a launch assertion rather than a comment:
+    /// a dialog is gone when its process has gone, or when AX says outright
+    /// that the element is invalid. Anything else — a timeout from a busy
+    /// app — leaves the card alone.
+    public static func isGone(processExists: Bool, axSaysInvalid: Bool) -> Bool {
+        !processExists || axSaysInvalid
+    }
+
     /// Is this dialog still really on screen?
     ///
     /// `element(for:)` only says we once knew about it. A sheet the human
@@ -50,6 +68,26 @@ public final class DialogRegistry: @unchecked Sendable {
     /// way to know is to ask the element something and see if it answers.
     public func isLive(id: String) -> Bool {
         guard let element = element(for: id) else { return false }
+
+        // Ask the kernel before asking Accessibility.
+        //
+        // AX answers `cannotComplete` for a process that has EXITED and for
+        // one that is merely busy — the same code for "gone" and "beachballed
+        // for a second". Below, that ambiguity is resolved in favour of
+        // alive, which is right for a busy app and wrong for a dead one: a
+        // card for a dialog whose app had quit was kept indefinitely, so the
+        // next identical dialog was suppressed as a duplicate of a ghost and
+        // never reached the phone. Measured, minutes after the hold that
+        // made it possible went in.
+        //
+        // A process that has exited cannot have a dialog on screen, and
+        // that question has an unambiguous answer.
+        var owner: pid_t = 0
+        if AXUIElementGetPid(element, &owner) == .success, owner > 0,
+           !Self.processExists(owner) {
+            return false
+        }
+
         var value: AnyObject?
         let status = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
         switch status {
