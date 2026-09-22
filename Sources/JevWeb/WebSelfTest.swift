@@ -239,6 +239,29 @@ public enum WebSelfTest {
         check("the request does not ask for a constrained response format",
               request["response_format"] == nil)
         check("the request names a model", (request["model"] as? String)?.isEmpty == false)
+
+        // The model is HANDED to the body, not read again inside it, so the id
+        // that gets logged is the id that was sent. Two reads could straddle a
+        // menu pick and make the record name a model that never served it.
+        let pinned = WebTextModel.body(goal: "search for coffee filters",
+                                       fieldLabel: "Search", fieldRole: "searchbox",
+                                       currentValue: "", pageTitle: "Amazon.com",
+                                       model: "test/pinned-model")
+        check("the body carries the model it was handed",
+              (pinned["model"] as? String) == "test/pinned-model")
+
+        // What a request leaves in the log. The page must not be in it.
+        let line = WebTextModel.record(model: "xai/grok-4.7",
+                                       outcome: "filled a field", seconds: 1.84)
+        check("the record names the model that served it", line.contains("xai/grok-4.7"))
+        check("and what became of the request", line.contains("filled a field"))
+        check("and how long it took, so two models can be compared",
+              line.contains("1.8s"))
+        // The goal, the field, the page and the answer all went into `request`
+        // above. None of them is reachable from `record`, which is the point.
+        for leaked in ["coffee filters", "Search", "searchbox", "Amazon.com"] {
+            check("the record does not carry the page — \(leaked)", !line.contains(leaked))
+        }
     }
 
     private static func checkStartResolution(_ check: (String, Bool) -> Void) {
