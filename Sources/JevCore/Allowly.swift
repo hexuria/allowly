@@ -40,6 +40,23 @@ public enum Allowly {
         return fresh
     }
 
+    /// Whether a URL points at this machine and nowhere else.
+    ///
+    /// Pure, and asserted at launch: the whole value of a base-URL override is
+    /// that it cannot WIDEN where data goes. Every override that carries
+    /// something personal — a page somebody is signed into, a recording of a
+    /// voice — is gated on this, so a mistyped variable fails closed instead
+    /// of quietly shipping it somewhere new.
+    ///
+    /// Lives here rather than in one of the modules that needs it, because two
+    /// of them now do and a second copy of a security check is how the two
+    /// stop agreeing.
+    public static func isLoopback(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        guard url.scheme == "http" || url.scheme == "https" else { return false }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+    }
+
     /// First non-empty environment value among `keys`.
     public static func environment(_ keys: String...) -> String? {
         for key in keys {

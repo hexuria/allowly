@@ -1262,6 +1262,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         testFailures.append(contentsOf: runBlocking { await SelfTest.runStore() })
         testFailures.append(contentsOf: runBlocking { await CachingDeciderSelfTest.run() })
         testFailures.append(contentsOf: ModelPickerSelfTest.run())
+        testFailures.append(contentsOf: TranscriberRoutingSelfTest.run())
         // What the ledger is holding, so a cache that quietly stopped working
         // is visible rather than merely cheap-looking. It said nothing at all
         // when a salt bug meant it wrote entries it could never read back.

@@ -1,5 +1,6 @@
 import Foundation
 import JevCore
+import JevWeb
 
 /// Transcription by Gemini, when there is a key for it.
 ///
@@ -24,7 +25,59 @@ import JevCore
 struct GeminiTranscriber: Transcriber {
 
     static let defaultModel = "gemini-3.5-transcribe"
-    static let host = URL(string: "https://generativelanguage.googleapis.com")!
+    static let google = URL(string: "https://generativelanguage.googleapis.com")!
+
+    /// Where transcription is sent.
+    ///
+    /// Google unless something local says otherwise. The override exists so
+    /// the recording can go through a gateway on this machine that holds the
+    /// credential and counts what it costs, rather than every client keeping
+    /// its own Google key.
+    ///
+    /// **Loopback only**, exactly as `JevAPI.endpoint` is, and for a stronger
+    /// reason: this carries a recording of somebody's voice. A mistyped
+    /// variable must not be able to send that somewhere new, so anything that
+    /// is not a local address is ignored and Google is used.
+    static var host: URL {
+        resolvedHost(raw: Allowly.environment("ALLOWLY_GEMINI_BASE_URL", "JEV_GEMINI_BASE_URL"))
+    }
+
+    /// Pure, so "a non-local address is ignored" is a launch assertion rather
+    /// than a sentence in a comment.
+    static func resolvedHost(raw: String?) -> URL {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+              let url = URL(string: raw), Allowly.isLoopback(url)
+        else { return google }
+        return url
+    }
+
+    /// Whose credential a given host is owed.
+    ///
+    /// Pure, and the reason it exists is that getting it wrong is the worst
+    /// thing in this file: sending the Google key to a local gateway, or the
+    /// gateway key to Google, hands a working credential to somebody who
+    /// should never have seen it. So it is one function, decided by the host
+    /// alone, and asserted at launch.
+    enum KeyHolder: Equatable {
+        case google
+        case localGateway
+    }
+
+    static func keyHolder(for host: URL) -> KeyHolder {
+        Allowly.isLoopback(host) ? .localGateway : .google
+    }
+
+    /// The key for wherever this is pointed.
+    ///
+    /// Through the gateway it is the gateway's key — the same one the web
+    /// text model already uses — because that is who is being asked. Google's
+    /// key stays where it is and is not sent.
+    static func key(for host: URL) -> String? {
+        switch keyHolder(for: host) {
+        case .google: return loadAPIKey()
+        case .localGateway: return WebTextModel.loadAPIKey()
+        }
+    }
 
     /// Where a key set from the menu bar lives.
     static let keychainKey = "gemini-api-key"
@@ -71,6 +124,9 @@ struct GeminiTranscriber: Transcriber {
 
     /// Where the key in use came from, for the menu. Never the key.
     static func sourceDescription() -> String {
+        if keyHolder(for: host) == .localGateway {
+            return "from the local gateway"
+        }
         if ProcessInfo.processInfo.environment["GEMINI_API_KEY"]?.isEmpty == false {
             return "from the environment"
         }
@@ -85,7 +141,11 @@ struct GeminiTranscriber: Transcriber {
         return fromEnv ?? defaultModel
     }
 
-    static var isConfigured: Bool { loadAPIKey() != nil }
+    /// Configured means "there is a key for wherever this is pointed" — which
+    /// through a gateway is the gateway's key, not Google's. Checking only for
+    /// a Google key would hide the feature from somebody who set this up the
+    /// new way.
+    static var isConfigured: Bool { key(for: host) != nil }
 
     /// What Gemini is told the audio is.
     ///
@@ -162,8 +222,11 @@ struct GeminiTranscriber: Transcriber {
     // MARK: - Transcriber
 
     func transcribe(audioURL: URL) async -> Result<Heard, TranscriptionError> {
-        guard let key = Self.loadAPIKey() else {
-            return .failure(.recognitionFailed("No Gemini key"))
+        let host = Self.host
+        guard let key = Self.key(for: host) else {
+            return .failure(.recognitionFailed(
+                Self.keyHolder(for: host) == .localGateway
+                    ? "No gateway key" : "No Gemini key"))
         }
         guard let audio = try? Data(contentsOf: audioURL) else {
             return .failure(.unsupportedFormat)
@@ -172,8 +235,10 @@ struct GeminiTranscriber: Transcriber {
             return .failure(.unsupportedFormat)
         }
 
+        // Resolved once above, so the key and the destination cannot come
+        // from two different readings of the variable.
         var request = URLRequest(
-            url: Self.host.appendingPathComponent("v1beta/models/\(Self.model):generateContent"))
+            url: host.appendingPathComponent("v1beta/models/\(Self.model):generateContent"))
         request.httpMethod = "POST"
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
