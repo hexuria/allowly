@@ -48,6 +48,18 @@ enum ModelCatalog {
         let providers: [Provider]
     }
 
+    /// Where to go when the gateway is missing rather than merely unhappy.
+    ///
+    /// Allowly does not ship the gateway and cannot install it, so an empty
+    /// menu on a machine that never had one is a dead end: the honest reading
+    /// of "the gateway is not answering" is "I have no idea what that is".
+    /// A link is the smallest thing that turns that into a next step.
+    ///
+    /// Hardcoded, and deliberately not read from the failure, a page, or any
+    /// response — a URL that arrives from outside is a URL somebody else chose
+    /// to send a person to.
+    static let repository = URL(string: "https://github.com/hexuria/open-ai-gateway")!
+
     /// What went wrong, when nothing came back.
     enum Failure: Equatable {
         case noKey
@@ -65,6 +77,26 @@ enum ModelCatalog {
                 return "The gateway is not answering"
             case .unreadable:
                 return "The gateway sent something unreadable"
+            }
+        }
+
+        /// The row under the explanation that does something about it, if
+        /// there is one.
+        ///
+        /// Only where going somewhere actually helps. A refused key means the
+        /// gateway is installed and running and the key is wrong — that is a
+        /// file on this machine, not a thing to go and read about — and an
+        /// unreadable answer is a bug to report, not a setup step.
+        var help: (label: String, url: URL)? {
+            switch self {
+            case .unreachable:
+                // Cannot tell "never installed" from "not running right now",
+                // so the label has to cover both without guessing.
+                return ("Set up the gateway…", ModelCatalog.repository)
+            case .noKey:
+                return ("Where to get a key…", ModelCatalog.repository)
+            case .refused, .unreadable:
+                return nil
             }
         }
     }

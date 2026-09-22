@@ -27,6 +27,10 @@ import JevCore
 public enum WebTextModel {
 
     public enum Failure: Error, Sendable, Equatable {
+        /// Nobody has picked a model yet. Not an error in the request — an
+        /// answerable question for the person, so it is kept distinct from
+        /// every other way this can fail.
+        case noModel
         case noKey
         case transport(String)
         case http(Int)
@@ -46,20 +50,24 @@ public enum WebTextModel {
         return URL(string: "http://127.0.0.1:29080")!
     }
 
-    /// What the model is when nobody has said otherwise.
-    ///
-    /// The route is in passthrough mode, so a concrete name is honoured rather
-    /// than reclassified. Named explicitly instead of using a virtual `oag/*`
-    /// rung, because which model writes into a form field is a decision worth
-    /// being able to point at.
-    public static let defaultModel = "openai/gpt-5.6-luna"
+    // There is deliberately no default model.
+    //
+    // There was one, and it was a quiet decision made on the person's behalf:
+    // a fresh install filled in fields using a model nobody had chosen, and
+    // the only way to find out which was to read the log. Which model writes
+    // into a form field is worth being able to point at, and "whatever we
+    // happened to ship" is not something you can point at.
+    //
+    // So nothing is picked until somebody picks it, and until then a web task
+    // refuses and says why. The route is in passthrough mode, so whatever is
+    // picked is honoured as named rather than reclassified.
 
     /// What the menu bar has been told to use, when anything.
     ///
     /// JevWeb cannot see jevd, so the daemon hands the lookup in at startup —
     /// the hook shape `CuaDriver.log` and `DecisionCache.log` already use.
-    /// Unset in a test or a bare library run, and then the environment and the
-    /// default answer exactly as they did before.
+    /// Unset in a test or a bare library run, and then the environment is the
+    /// only thing left that can name a model.
     nonisolated(unsafe) public static var storedChoice: (@Sendable () -> String?)?
 
     /// Where a one-line record of each request goes, if anywhere.
@@ -89,8 +97,10 @@ public enum WebTextModel {
     /// calling the same function instead of a second copy of the rule. Two
     /// copies agreed on the day they were written and would have drifted.
     ///
-    /// An empty or blank string is not a choice.
-    public static func effective(stored: String?, environment: String?) -> String {
+    /// An empty or blank string is not a choice. Neither is the absence of
+    /// one: this returns nil rather than reaching for a default, because there
+    /// is no longer a default to reach for.
+    public static func effective(stored: String?, environment: String?) -> String? {
         if let stored = stored?.trimmingCharacters(in: .whitespacesAndNewlines),
            !stored.isEmpty {
             return stored
@@ -99,7 +109,7 @@ public enum WebTextModel {
            !environment.isEmpty {
             return environment
         }
-        return defaultModel
+        return nil
     }
 
     /// The environment half of the rule, in one place.
@@ -112,7 +122,9 @@ public enum WebTextModel {
         Allowly.environment("ALLOWLY_WEB_TEXT_MODEL", "JEV_WEB_TEXT_MODEL")
     }
 
-    public static var model: String {
+    /// Nil until somebody picks one. Callers must handle that rather than
+    /// substitute something.
+    public static var model: String? {
         effective(stored: storedChoice?(), environment: modelFromEnvironment)
     }
 
@@ -176,10 +188,11 @@ public enum WebTextModel {
     /// thing that actually holds.
     /// `model` is passed in rather than read here, so the caller resolves it
     /// once and the id it logs is the id in the body — not a second read that
-    /// could land after the menu changed.
+    /// could land after the menu changed. No default: there is no model to
+    /// fall back to, and a caller that has not got one must not build a body.
     public static func body(goal: String, fieldLabel: String, fieldRole: String,
                             currentValue: String, pageTitle: String,
-                            model: String = WebTextModel.model) -> [String: Any] {
+                            model: String) -> [String: Any] {
         [
             "model": model,
             "max_tokens": 1024,
@@ -216,13 +229,29 @@ public enum WebTextModel {
         "[allowly] web text: \(model) \(outcome) in \(String(format: "%.1f", seconds))s"
     }
 
+    /// The line for a request that was never made.
+    ///
+    /// Separate from `record` because there is no model to name and no
+    /// duration worth reporting — nothing was asked, so there is nothing to
+    /// have taken any time.
+    static func recordNoModel() -> String {
+        "[allowly] web text: nothing was asked — no model is picked"
+    }
+
     /// Ask for the value. Returns the string to type, or why it cannot.
     public static func text(goal: String, fieldLabel: String, fieldRole: String,
                             currentValue: String, pageTitle: String) async -> Result<String, Failure> {
         // Resolved once. Everything below — the body, the log line — uses this
         // one value, so the record cannot name a different model than the one
         // that was asked.
-        let asked = model
+        //
+        // Nothing picked means nothing is asked. Substituting a model here is
+        // exactly the behaviour this replaced: the field gets filled and the
+        // person never learns who filled it.
+        guard let asked = model else {
+            log?(recordNoModel())
+            return .failure(.noModel)
+        }
         let started = Date()
         // Named `note` and not `record`, so it does not shadow the pure
         // builder it calls.

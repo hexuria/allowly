@@ -43,11 +43,10 @@ public enum JevAPI {
     ///
     /// Pure, and asserted at launch: the whole value of the override is that
     /// it cannot widen where data goes.
-    public static func isLoopback(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
-        guard url.scheme == "http" || url.scheme == "https" else { return false }
-        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
-    }
+    /// Forwards to `Allowly.isLoopback`, which the voice transcriber now uses
+    /// too. One implementation, so the two cannot drift into disagreeing about
+    /// what counts as local.
+    public static func isLoopback(_ url: URL) -> Bool { Allowly.isLoopback(url) }
     public static let defaultModel = "jev-latest"
 
     public enum Question: Sendable {

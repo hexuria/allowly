@@ -12,17 +12,14 @@ import JevWeb
 ///
 /// So it is a setting the menu bar owns, in the shape `VoiceLocale` already
 /// uses for exactly that.
+///
+/// There is no default. There was one, and it meant a fresh install wrote into
+/// people's forms using a model nobody had chosen. Now nothing is picked until
+/// somebody picks it, the pick persists, and a web task run before then refuses
+/// and says where to go.
 enum WebModelChoice {
 
     static let defaultsKey = "AllowlyWebTextModel"
-
-    /// What the model is when nobody has said otherwise. Deliberately still
-    /// the old value: shipping a different hardcoded default while calling the
-    /// feature configurable would be the same bug in a new coat.
-    ///
-    /// Taken from `WebTextModel` rather than written again, so the menu cannot
-    /// name one default while the request sends another.
-    static let fallback = WebTextModel.defaultModel
 
     /// What was picked from the menu, or nil for "whatever the default is".
     ///
@@ -54,12 +51,12 @@ enum WebModelChoice {
     /// rule — the menu has to show what the request will actually send, and a
     /// second implementation of the same precedence is how those two drift
     /// apart without anybody noticing.
-    static func effective(stored: String?, environment: String?) -> String {
+    static func effective(stored: String?, environment: String?) -> String? {
         WebTextModel.effective(stored: stored, environment: environment)
     }
 
-    /// The model in force right now, read from the two places that decide it.
-    static var effective: String {
+    /// The model in force right now, or nil if nobody has picked one.
+    static var effective: String? {
         effective(stored: chosen, environment: environment)
     }
 
@@ -73,34 +70,35 @@ enum WebModelChoice {
            !environment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "the environment"
         }
-        return "the built-in default"
+        return "nothing"
     }
 
     // MARK: - Which row is ticked
 
-    /// Exactly one row in the submenu carries a checkmark, and this says which.
+    /// At most one row in the submenu carries a checkmark, and this says which.
     ///
     /// Computed rather than decided per row, because deciding per row is how
-    /// two of them ended up ticked: "Use the default" ticked whenever nothing
-    /// was stored, and separately every catalog row ticked when its id matched
-    /// the model in force — which, with nothing stored, is the default, and the
-    /// default is in the list. The menu claimed two different answers at once.
+    /// two of them once ended up ticked: a "Use the default" row ticked
+    /// whenever nothing was stored, and separately every catalog row ticked
+    /// when its id matched the model in force — which, with nothing stored,
+    /// was the default, and the default was in the list. The menu claimed two
+    /// answers at once.
+    ///
+    /// Nil now means nothing is ticked, which is the honest picture before a
+    /// first pick: no model is in force, and no row should pretend otherwise.
     ///
     /// The environment does not enter into it. A stored choice beats the
-    /// environment, so when something is stored it is what is in force, and
-    /// when nothing is stored the row that says "nothing is stored" is the
-    /// honest one to mark.
+    /// environment, so when something is stored it is what is in force.
     enum Tick: Equatable {
-        case useTheDefault
         case model(String)
         /// Stored, but the gateway does not offer it any more.
         case noLongerOffered(String)
     }
 
-    static func tick(chosen: String?, listed: [String]) -> Tick {
+    static func tick(chosen: String?, listed: [String]) -> Tick? {
         guard let chosen = chosen?.trimmingCharacters(in: .whitespacesAndNewlines),
               !chosen.isEmpty else {
-            return .useTheDefault
+            return nil
         }
         return listed.contains(chosen) ? .model(chosen) : .noLongerOffered(chosen)
     }

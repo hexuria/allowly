@@ -231,6 +231,15 @@ public actor WebAgent {
                     goal: goal, fieldLabel: action.label, fieldRole: action.role,
                     currentValue: action.currentValue ?? action.value, pageTitle: snapshot.title)
                 guard case .success(let value) = asked else {
+                    // "No model is picked" is answerable — go and pick one —
+                    // and every other failure here is not. Collapsing them
+                    // into one message sends somebody hunting for a fault in
+                    // the page when the fix is two clicks in the menu bar.
+                    if case .failure(.noModel) = asked {
+                        return .failed(reason: "no model is picked — choose one in "
+                                       + "Allowly's menu bar, under Web text model",
+                                       steps: steps)
+                    }
                     return .failed(reason: "could not work out what to type", steps: steps)
                 }
                 typed = value
