@@ -1234,6 +1234,10 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // handed the lookup. Without it the installed app can never change
         // its model, because `open` inherits no shell.
         WebTextModel.storedChoice = { WebModelChoice.chosen }
+        // Which model is SELECTED is in the menu; which model actually served
+        // a task is only knowable from here. No page content comes through —
+        // see the rule on `WebTextModel.log`.
+        WebTextModel.log = { JevLog.write($0) }
         let webModelEnvironment = WebModelChoice.environment
         JevLog.write("[allowly] web text model: "
             + WebModelChoice.effective(stored: WebModelChoice.chosen,

@@ -18,8 +18,12 @@ import JevCore
 ///   that is nearly right is refused rather than salvaged — no scraping a
 ///   quoted string out of prose, because a model that answered in the wrong
 ///   shape has not demonstrated it understood the question.
-/// - Nothing here is logged. The page context that goes up contains whatever
-///   the person was looking at, and the answer is about to be typed somewhere.
+/// - No CONTENT here is logged. The page context that goes up contains
+///   whatever the person was looking at, and the answer is about to be typed
+///   somewhere, so neither the goal, the field, the page title, the current
+///   value nor the reply ever reaches a log line. What is recorded is which
+///   model was asked, whether it answered, and how long it took — see `log`.
+///   That is a setting and a timing, not a thing anybody was reading.
 public enum WebTextModel {
 
     public enum Failure: Error, Sendable, Equatable {
@@ -57,6 +61,23 @@ public enum WebTextModel {
     /// Unset in a test or a bare library run, and then the environment and the
     /// default answer exactly as they did before.
     nonisolated(unsafe) public static var storedChoice: (@Sendable () -> String?)?
+
+    /// Where a one-line record of each request goes, if anywhere.
+    ///
+    /// The menu can say which model is selected; only this can say which model
+    /// actually served a task. Without it, "grok wrote that one" is a claim
+    /// about a setting rather than evidence about a request — and the setting
+    /// can change between the task starting and anybody asking.
+    ///
+    /// Same shape as `storedChoice` and `CuaDriver.log`: JevWeb cannot see the
+    /// daemon, so the daemon hands the writer in. Unset in a library run, and
+    /// then nothing is written, exactly as before.
+    ///
+    /// **What it may be given.** The model id, the outcome, and the elapsed
+    /// time. Never the goal, the field label, the page title, the value that
+    /// was there or the value that came back — those are the page, and the
+    /// page is not ours to write down.
+    nonisolated(unsafe) public static var log: (@Sendable (String) -> Void)?
 
     /// The stored choice wins over the environment, which is the reverse of
     /// `loadAPIKey` below and deliberate: `open` inherits no shell, so for the
@@ -153,8 +174,12 @@ public enum WebTextModel {
     /// translation rejects any request whose *input* messages lack the literal
     /// word "json", and it measured slower. Validating our own reply is the
     /// thing that actually holds.
+    /// `model` is passed in rather than read here, so the caller resolves it
+    /// once and the id it logs is the id in the body — not a second read that
+    /// could land after the menu changed.
     public static func body(goal: String, fieldLabel: String, fieldRole: String,
-                            currentValue: String, pageTitle: String) -> [String: Any] {
+                            currentValue: String, pageTitle: String,
+                            model: String = WebTextModel.model) -> [String: Any] {
         [
             "model": model,
             "max_tokens": 1024,
@@ -179,10 +204,37 @@ public enum WebTextModel {
         ]
     }
 
+    /// The one line a request is allowed to leave behind.
+    ///
+    /// Pure, so what it says is a launch assertion. More to the point, its
+    /// SIGNATURE is the protection: it takes a model, an outcome and a
+    /// duration, and there is no parameter a goal, a field label, a page title
+    /// or a typed value could arrive through. No assertion enforces that —
+    /// a test cannot see a future edit that adds an argument — but the shape
+    /// means such an edit has to be deliberate and visible in review.
+    static func record(model: String, outcome: String, seconds: TimeInterval) -> String {
+        "[allowly] web text: \(model) \(outcome) in \(String(format: "%.1f", seconds))s"
+    }
+
     /// Ask for the value. Returns the string to type, or why it cannot.
     public static func text(goal: String, fieldLabel: String, fieldRole: String,
                             currentValue: String, pageTitle: String) async -> Result<String, Failure> {
-        guard let key = loadAPIKey() else { return .failure(.noKey) }
+        // Resolved once. Everything below — the body, the log line — uses this
+        // one value, so the record cannot name a different model than the one
+        // that was asked.
+        let asked = model
+        let started = Date()
+        // Named `note` and not `record`, so it does not shadow the pure
+        // builder it calls.
+        func note(_ outcome: String) {
+            log?(record(model: asked, outcome: outcome,
+                        seconds: Date().timeIntervalSince(started)))
+        }
+
+        guard let key = loadAPIKey() else {
+            note("had no gateway key")
+            return .failure(.noKey)
+        }
 
         var request = URLRequest(url: baseURL.appendingPathComponent("v1/chat/completions"))
         request.httpMethod = "POST"
@@ -191,8 +243,12 @@ public enum WebTextModel {
         request.timeoutInterval = 30
         guard let encoded = try? JSONSerialization.data(
             withJSONObject: body(goal: goal, fieldLabel: fieldLabel, fieldRole: fieldRole,
-                                 currentValue: currentValue, pageTitle: pageTitle))
-        else { return .failure(.unusableReply) }
+                                 currentValue: currentValue, pageTitle: pageTitle,
+                                 model: asked))
+        else {
+            note("could not be asked — the request would not encode")
+            return .failure(.unusableReply)
+        }
         request.httpBody = encoded
 
         let data: Data
@@ -202,15 +258,21 @@ public enum WebTextModel {
         } catch {
             // The message is the transport's, never the request: the body holds
             // the page the person was looking at.
+            note("did not answer")
             return .failure(.transport(error.localizedDescription))
         }
 
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            note("was refused by the gateway (HTTP \(http.statusCode))")
             return .failure(.http(http.statusCode))
         }
         guard let reply = content(fromBody: data), let value = value(fromReply: reply) else {
+            // Not the reply itself. A model that answers in the wrong shape is
+            // worth knowing about; what it actually said is still the page.
+            note("answered in a shape that could not be used")
             return .failure(.unusableReply)
         }
+        note("filled a field")
         return .success(value)
     }
 }

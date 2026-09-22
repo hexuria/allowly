@@ -239,6 +239,37 @@ public enum WebSelfTest {
         check("the request does not ask for a constrained response format",
               request["response_format"] == nil)
         check("the request names a model", (request["model"] as? String)?.isEmpty == false)
+
+        // The model is HANDED to the body, not read again inside it, so the id
+        // that gets logged is the id that was sent. Two reads could straddle a
+        // menu pick and make the record name a model that never served it.
+        let pinned = WebTextModel.body(goal: "search for coffee filters",
+                                       fieldLabel: "Search", fieldRole: "searchbox",
+                                       currentValue: "", pageTitle: "Amazon.com",
+                                       model: "test/pinned-model")
+        check("the body carries the model it was handed",
+              (pinned["model"] as? String) == "test/pinned-model")
+
+        // What a request leaves in the log. The page must not be in it.
+        let line = WebTextModel.record(model: "xai/grok-4.7",
+                                       outcome: "filled a field", seconds: 1.84)
+        check("the record names the model that served it", line.contains("xai/grok-4.7"))
+        check("and what became of the request", line.contains("filled a field"))
+        check("and how long it took, so two models can be compared",
+              line.contains("1.8s"))
+        // There is deliberately NO loop here asserting the line is free of
+        // "coffee filters", "Search" or "Amazon.com". A first draft had one and
+        // it was theatre: `line` is built from literals that share nothing with
+        // the request above, so the loop passes whatever `record` does. It
+        // would catch someone hardcoding the word Amazon — which nobody will —
+        // and miss the edit that matters, a new parameter carrying the field
+        // label. Reviewing it honestly, it asserted the compiler's work and
+        // dressed it up as a privacy check.
+        //
+        // What keeps the page out of the log is `record`'s signature: model,
+        // outcome, seconds, and no parameter page content can arrive through.
+        // That is not something a test can hold, and pretending otherwise is
+        // worse than saying so here.
     }
 
     private static func checkStartResolution(_ check: (String, Bool) -> Void) {
