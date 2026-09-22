@@ -42,10 +42,14 @@ public enum WebTextModel {
         return URL(string: "http://127.0.0.1:29080")!
     }
 
+    /// What the model is when nobody has said otherwise.
+    ///
     /// The route is in passthrough mode, so a concrete name is honoured rather
     /// than reclassified. Named explicitly instead of using a virtual `oag/*`
     /// rung, because which model writes into a form field is a decision worth
     /// being able to point at.
+    public static let defaultModel = "openai/gpt-5.6-luna"
+
     /// What the menu bar has been told to use, when anything.
     ///
     /// JevWeb cannot see jevd, so the daemon hands the lookup in at startup —
@@ -57,15 +61,38 @@ public enum WebTextModel {
     /// The stored choice wins over the environment, which is the reverse of
     /// `loadAPIKey` below and deliberate: `open` inherits no shell, so for the
     /// installed app the environment is never set and a menu the person
-    /// clicked has to be what takes effect. See `WebModelChoice.effective`,
-    /// which owns this rule and is asserted at launch.
-    public static var model: String {
-        if let stored = storedChoice?()?.trimmingCharacters(in: .whitespacesAndNewlines),
+    /// clicked has to be what takes effect.
+    ///
+    /// Pure, so the precedence is a launch assertion rather than a claim — and
+    /// so the menu bar can show the same answer the request will use by
+    /// calling the same function instead of a second copy of the rule. Two
+    /// copies agreed on the day they were written and would have drifted.
+    ///
+    /// An empty or blank string is not a choice.
+    public static func effective(stored: String?, environment: String?) -> String {
+        if let stored = stored?.trimmingCharacters(in: .whitespacesAndNewlines),
            !stored.isEmpty {
             return stored
         }
-        return Allowly.environment("ALLOWLY_WEB_TEXT_MODEL", "JEV_WEB_TEXT_MODEL")
-            ?? "openai/gpt-5.6-luna"
+        if let environment = environment?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !environment.isEmpty {
+            return environment
+        }
+        return defaultModel
+    }
+
+    /// The environment half of the rule, in one place.
+    ///
+    /// `Allowly.environment` takes both spellings; reading the raw dictionary
+    /// for the new name only — as the menu first did — makes the menu label
+    /// and the log disagree with the request on a machine that still sets
+    /// `JEV_WEB_TEXT_MODEL`.
+    public static var modelFromEnvironment: String? {
+        Allowly.environment("ALLOWLY_WEB_TEXT_MODEL", "JEV_WEB_TEXT_MODEL")
+    }
+
+    public static var model: String {
+        effective(stored: storedChoice?(), environment: modelFromEnvironment)
     }
 
     /// The gateway key. Same shape as `JevAPI.loadAPIKey`, and for the same

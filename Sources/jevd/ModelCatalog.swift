@@ -46,7 +46,6 @@ enum ModelCatalog {
     struct Catalog: Equatable {
         let models: [Model]
         let providers: [Provider]
-        let pressure: String?
     }
 
     /// What went wrong, when nothing came back.
@@ -102,8 +101,10 @@ enum ModelCatalog {
                                 serving: (entry["serving"] as? Bool) ?? false,
                                 reason: (entry["reason"] as? String) ?? "unknown")
             }
-        let pressure = (envelope?["budget"] as? [String: Any])?["pressure"] as? String
-        return Catalog(models: models, providers: providers, pressure: pressure)
+        // The envelope's `budget` block is deliberately not read. How much
+        // allowance is left is nobody's business but the owner's, and a field
+        // that exists is a field somebody later puts in a log line.
+        return Catalog(models: models, providers: providers)
     }
 
     // MARK: - Grouping
@@ -201,6 +202,19 @@ enum ModelCatalog {
         lock.unlock()
     }
 
+    /// Its own session, not `URLSession.shared`.
+    ///
+    /// This is a GET carrying a Bearer key, and GETs are cacheable: the shared
+    /// session's on-disk `URLCache` would be a place the answer to an
+    /// authenticated request comes to rest. Ephemeral keeps cache, cookies and
+    /// credentials in memory for the life of the process and nowhere else.
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
+
     private static func fetch() async {
         guard let key = WebTextModel.loadAPIKey() else {
             publish(catalog: nil, failure: .noKey)
@@ -213,7 +227,7 @@ enum ModelCatalog {
         request.timeoutInterval = 5
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 // A 401 body carries no envelope, so there is nothing to
                 // summarise — say what happened instead.

@@ -1,5 +1,6 @@
 import Foundation
 import JevCore
+import JevWeb
 
 /// The model picker: what the gateway offers, and which one is in force.
 ///
@@ -225,10 +226,15 @@ enum ModelPickerSelfTest {
               "nor is a blank environment variable")
         check(WebModelChoice.fallback == "openai/gpt-5.6-luna",
               "the default is unchanged — picking grok is the feature, not a new hardcoded value")
+        check(WebModelChoice.fallback == WebTextModel.defaultModel,
+              "and the menu's default is the request's default, not a second copy of it")
+        check(WebModelChoice.effective(stored: "xai/grok-4.7", environment: "openai/gpt-5.5")
+                == WebTextModel.effective(stored: "xai/grok-4.7", environment: "openai/gpt-5.5"),
+              "the menu resolves the model exactly as the request does")
         check(WebModelChoice.source(stored: "x", environment: nil) == "the menu bar",
               "the log can say the choice came from the menu")
-        check(WebModelChoice.source(stored: nil, environment: "x") == "ALLOWLY_WEB_TEXT_MODEL",
-              "or from the environment")
+        check(WebModelChoice.source(stored: nil, environment: "x") == "the environment",
+              "or from the environment — either spelling of the variable, so it is not named")
         check(WebModelChoice.source(stored: nil, environment: nil) == "the built-in default",
               "or from neither")
 
@@ -269,14 +275,13 @@ enum ModelPickerSelfTest {
               "a healthy gateway needs no warning line")
         let stalled = ModelCatalog.Catalog(
             models: [],
-            providers: [ModelCatalog.Provider(name: "xai", serving: false, reason: "exhausted")],
-            pressure: "critical")
+            providers: [ModelCatalog.Provider(name: "xai", serving: false, reason: "exhausted")])
         let text = ModelCatalog.summary(stalled) ?? ""
         check(text.contains("xai") && text.contains("exhausted"),
               "an empty list says which provider ran out and why")
         check(!text.contains("95") && !text.contains("%"),
               "and never how much allowance is left — that is nobody's business")
-        let noProviders = ModelCatalog.Catalog(models: [], providers: [], pressure: nil)
+        let noProviders = ModelCatalog.Catalog(models: [], providers: [])
         check(ModelCatalog.summary(noProviders) != nil,
               "an empty list with no explanation still says something")
 
@@ -302,6 +307,40 @@ enum ModelPickerSelfTest {
         failed.failure = .refused
         failed.attemptedAt = Date()
         check(!ModelCatalog.isStale(failed), "a recent failure is remembered, not retried at once")
+
+        // ---- Exactly one row is ticked ----
+        //
+        // Two were. "Use the default" ticked whenever nothing was stored, and
+        // every catalog row ticked when its id matched the model in force —
+        // and with nothing stored that IS the default, which is in the list.
+        // A matrix, not one example, because the bug was one unconsidered
+        // combination rather than a wrong line.
+        let served = ["openai/gpt-5.6-luna", "xai/grok-4.7", "oag/cheap"]
+        check(WebModelChoice.tick(chosen: nil, listed: served) == .useTheDefault,
+              "nothing picked ticks the default row")
+        check(WebModelChoice.tick(chosen: "", listed: served) == .useTheDefault,
+              "an empty stored value ticks it too")
+        check(WebModelChoice.tick(chosen: "  ", listed: served) == .useTheDefault,
+              "so does a blank one")
+        check(WebModelChoice.tick(chosen: "xai/grok-4.7", listed: served) == .model("xai/grok-4.7"),
+              "a picked model that is served ticks its own row")
+        check(WebModelChoice.tick(chosen: "openai/gpt-5.6-luna", listed: served)
+                == .model("openai/gpt-5.6-luna"),
+              "including when the pick happens to equal the default")
+        check(WebModelChoice.tick(chosen: "xai/grok-9", listed: served)
+                == .noLongerOffered("xai/grok-9"),
+              "a picked model the gateway dropped ticks the row that says so")
+        check(WebModelChoice.tick(chosen: "xai/grok-4.7", listed: []) == .noLongerOffered("xai/grok-4.7"),
+              "and so does a pick with no list at all — the default row must not claim it")
+
+        // No loop here counting checkmarks. A first draft had one, and it was
+        // vacuous: `Tick` is an enum, so "exactly one row is ticked" is true
+        // by construction and no arrangement of inputs can make the count
+        // anything but one. That IS the fix — the menu asks once and compares,
+        // instead of deciding each row on its own and contradicting itself —
+        // but it is carried by the type, not by an assertion, and an assertion
+        // that cannot fail is worse than none because it reads like cover.
+        // What is worth pinning is the answer for each case, which is above.
 
         return failures
     }

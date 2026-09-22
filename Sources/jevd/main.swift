@@ -1234,7 +1234,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // handed the lookup. Without it the installed app can never change
         // its model, because `open` inherits no shell.
         WebTextModel.storedChoice = { WebModelChoice.chosen }
-        let webModelEnvironment = ProcessInfo.processInfo.environment["ALLOWLY_WEB_TEXT_MODEL"]
+        let webModelEnvironment = WebModelChoice.environment
         JevLog.write("[allowly] web text model: "
             + WebModelChoice.effective(stored: WebModelChoice.chosen,
                                        environment: webModelEnvironment)
@@ -1644,9 +1644,15 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let snapshot = ModelCatalog.current()
         ModelCatalog.refreshIfStale()
 
-        let effective = WebModelChoice.effective(
-            stored: WebModelChoice.chosen,
-            environment: ProcessInfo.processInfo.environment["ALLOWLY_WEB_TEXT_MODEL"])
+        let chosen = WebModelChoice.chosen
+        let effective = WebModelChoice.effective
+        // What would be in force with nothing picked — the default, unless a
+        // shell set the variable, in which case saying "the default" and
+        // naming something else would be a lie.
+        let whenNothingIsPicked = WebModelChoice.effective(
+            stored: nil, environment: WebModelChoice.environment)
+        let tick = WebModelChoice.tick(
+            chosen: chosen, listed: (snapshot.catalog?.models ?? []).map(\.id))
 
         let root = NSMenuItem(title: "Web text model", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
@@ -1659,11 +1665,11 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // The way back. Without a row that clears the stored choice, picking
         // one is a one-way door — the same row `pickVoiceLocale` has.
-        let defaultItem = NSMenuItem(title: "Use the default  (\(WebModelChoice.fallback))",
+        let defaultItem = NSMenuItem(title: "Use the default  (\(whenNothingIsPicked))",
                                      action: #selector(pickWebModel(_:)), keyEquivalent: "")
         defaultItem.target = self
         defaultItem.representedObject = ""
-        defaultItem.state = WebModelChoice.chosen == nil ? .on : .off
+        defaultItem.state = tick == .useTheDefault ? .on : .off
         submenu.addItem(defaultItem)
 
         if let catalog = snapshot.catalog {
@@ -1684,14 +1690,14 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                           action: #selector(pickWebModel(_:)), keyEquivalent: "")
                     item.target = self
                     item.representedObject = model.id
-                    item.state = model.id == effective ? .on : .off
+                    item.state = tick == .model(model.id) ? .on : .off
                     submenu.addItem(item)
                     listed.insert(model.id)
                 }
             }
             // A model that was picked and is no longer offered. Saying so here
             // beats failing much later, in the middle of a browser task.
-            if let chosen = WebModelChoice.chosen, !listed.contains(chosen) {
+            if let chosen, !listed.contains(chosen) {
                 submenu.addItem(NSMenuItem.separator())
                 let gone = NSMenuItem(title: "  \(chosen) — no longer offered",
                                       action: nil, keyEquivalent: "")
@@ -1723,9 +1729,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The model id is fine to write down — it is a setting, not a secret,
         // and `pickVoiceLocale` logs its choice the same way. What never goes
         // here is the envelope's budget figures.
-        let nowUsing = WebModelChoice.effective(
-            stored: WebModelChoice.chosen,
-            environment: ProcessInfo.processInfo.environment["ALLOWLY_WEB_TEXT_MODEL"])
+        let nowUsing = WebModelChoice.effective
         JevLog.write("[allowly] web text model set to \(nowUsing)"
             + (identifier.isEmpty ? " (back to the default)" : ""))
     }
