@@ -1239,11 +1239,15 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // see the rule on `WebTextModel.log`.
         WebTextModel.log = { JevLog.write($0) }
         let webModelEnvironment = WebModelChoice.environment
-        JevLog.write("[allowly] web text model: "
-            + WebModelChoice.effective(stored: WebModelChoice.chosen,
-                                       environment: webModelEnvironment)
-            + " (from " + WebModelChoice.source(stored: WebModelChoice.chosen,
-                                                environment: webModelEnvironment) + ")")
+        if let picked = WebModelChoice.effective(stored: WebModelChoice.chosen,
+                                                 environment: webModelEnvironment) {
+            JevLog.write("[allowly] web text model: \(picked)"
+                + " (from " + WebModelChoice.source(stored: WebModelChoice.chosen,
+                                                    environment: webModelEnvironment) + ")")
+        } else {
+            JevLog.write("[allowly] web text model: none picked — a web task will "
+                + "refuse until one is chosen in the menu bar")
+        }
         // Ask the gateway now, so the first menu open already has a list.
         ModelCatalog.refreshIfStale()
         var testFailures = SelfTest.run()
@@ -1650,11 +1654,6 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let chosen = WebModelChoice.chosen
         let effective = WebModelChoice.effective
-        // What would be in force with nothing picked — the default, unless a
-        // shell set the variable, in which case saying "the default" and
-        // naming something else would be a lie.
-        let whenNothingIsPicked = WebModelChoice.effective(
-            stored: nil, environment: WebModelChoice.environment)
         let tick = WebModelChoice.tick(
             chosen: chosen, listed: (snapshot.catalog?.models ?? []).map(\.id))
 
@@ -1662,19 +1661,22 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let submenu = NSMenu()
 
         // What is in force, always, whatever else the gateway has to say.
-        let current = NSMenuItem(title: "Using: \(effective)", action: nil, keyEquivalent: "")
+        //
+        // There is no "Use the default" row, because there is no default to go
+        // back to. Nothing is picked until somebody picks it, and the first
+        // line says so plainly rather than naming a model nobody chose.
+        let current = NSMenuItem(
+            title: effective.map { "Using: \($0)" } ?? "No model picked yet",
+            action: nil, keyEquivalent: "")
         current.isEnabled = false
         submenu.addItem(current)
-        submenu.addItem(NSMenuItem.separator())
 
-        // The way back. Without a row that clears the stored choice, picking
-        // one is a one-way door — the same row `pickVoiceLocale` has.
-        let defaultItem = NSMenuItem(title: "Use the default  (\(whenNothingIsPicked))",
-                                     action: #selector(pickWebModel(_:)), keyEquivalent: "")
-        defaultItem.target = self
-        defaultItem.representedObject = ""
-        defaultItem.state = tick == .useTheDefault ? .on : .off
-        submenu.addItem(defaultItem)
+        if effective == nil {
+            let prompt = NSMenuItem(title: "Web tasks need one — pick below",
+                                    action: nil, keyEquivalent: "")
+            prompt.isEnabled = false
+            submenu.addItem(prompt)
+        }
 
         if let catalog = snapshot.catalog {
             if let summary = ModelCatalog.summary(catalog) {
@@ -1715,6 +1717,17 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                  action: nil, keyEquivalent: "")
             why.isEnabled = false
             submenu.addItem(why)
+
+            // Allowly cannot install the gateway, and a person who has never
+            // heard of it is otherwise left staring at an empty menu. The one
+            // thing that helps is knowing where it lives.
+            if let help = snapshot.failure?.help {
+                let go = NSMenuItem(title: "  \(help.label)",
+                                    action: #selector(openGatewayHelp(_:)), keyEquivalent: "")
+                go.target = self
+                go.representedObject = help.url
+                submenu.addItem(go)
+            }
         }
 
         submenu.addItem(NSMenuItem.separator())
@@ -1736,6 +1749,18 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let nowUsing = WebModelChoice.effective
         JevLog.write("[allowly] web text model set to \(nowUsing)"
             + (identifier.isEmpty ? " (back to the default)" : ""))
+    }
+
+    /// Open the gateway's repository.
+    ///
+    /// The URL comes from `ModelCatalog.repository`, a constant in this
+    /// binary. It is read back off the menu item that this code put there a
+    /// moment ago — nothing from the gateway's answer, or any page, can reach
+    /// here and send somebody somewhere.
+    @objc private func openGatewayHelp(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL,
+              url == ModelCatalog.repository else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func refreshWebModels() {
