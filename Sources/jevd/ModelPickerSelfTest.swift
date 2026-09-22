@@ -216,18 +216,16 @@ enum ModelPickerSelfTest {
         check(WebModelChoice.effective(stored: nil, environment: "openai/gpt-5.5")
                 == "openai/gpt-5.5",
               "with nothing picked, the environment is used")
-        check(WebModelChoice.effective(stored: nil, environment: nil) == WebModelChoice.fallback,
-              "and with neither, the built-in default")
-        check(WebModelChoice.effective(stored: "", environment: nil) == WebModelChoice.fallback,
+        check(WebModelChoice.effective(stored: nil, environment: nil) == nil,
+              "and with neither, NOTHING — there is no default to fall back to")
+        check(WebModelChoice.effective(stored: "", environment: nil) == nil,
               "an empty stored value is not a choice")
-        check(WebModelChoice.effective(stored: "   ", environment: nil) == WebModelChoice.fallback,
+        check(WebModelChoice.effective(stored: "   ", environment: nil) == nil,
               "nor is a blank one")
-        check(WebModelChoice.effective(stored: nil, environment: "  ") == WebModelChoice.fallback,
+        check(WebModelChoice.effective(stored: nil, environment: "  ") == nil,
               "nor is a blank environment variable")
-        check(WebModelChoice.fallback == "openai/gpt-5.6-luna",
-              "the default is unchanged — picking grok is the feature, not a new hardcoded value")
-        check(WebModelChoice.fallback == WebTextModel.defaultModel,
-              "and the menu's default is the request's default, not a second copy of it")
+        check(WebModelChoice.source(stored: nil, environment: nil) == "nothing",
+              "and the log says so rather than naming a model nobody picked")
         check(WebModelChoice.effective(stored: "xai/grok-4.7", environment: "openai/gpt-5.5")
                 == WebTextModel.effective(stored: "xai/grok-4.7", environment: "openai/gpt-5.5"),
               "the menu resolves the model exactly as the request does")
@@ -235,8 +233,6 @@ enum ModelPickerSelfTest {
               "the log can say the choice came from the menu")
         check(WebModelChoice.source(stored: nil, environment: "x") == "the environment",
               "or from the environment — either spelling of the variable, so it is not named")
-        check(WebModelChoice.source(stored: nil, environment: nil) == "the built-in default",
-              "or from neither")
 
         // ---- Reading the gateway's answer ----
         guard let catalog = ModelCatalog.parse(Data(liveResponse.utf8)) else {
@@ -285,6 +281,28 @@ enum ModelPickerSelfTest {
         check(ModelCatalog.summary(noProviders) != nil,
               "an empty list with no explanation still says something")
 
+        // ---- When there is no gateway at all ----
+        //
+        // The case nobody tests because it never happens on the machine the
+        // thing was written on: Allowly installed, gateway never heard of.
+        check(ModelCatalog.Failure.unreachable("Connection refused").help != nil,
+              "a gateway that is not answering offers somewhere to go")
+        check(ModelCatalog.Failure.noKey.help != nil,
+              "and so does having no key")
+        check(ModelCatalog.Failure.refused.help == nil,
+              "a refused key does not — the gateway is right there, the key is wrong")
+        check(ModelCatalog.Failure.unreadable.help == nil,
+              "nor does a garbled answer — that is a bug to report, not a setup step")
+        check(ModelCatalog.Failure.unreachable("x").help?.url == ModelCatalog.repository,
+              "the link is the constant in this binary")
+        check(ModelCatalog.repository.scheme == "https",
+              "over https, because it is a link handed to someone's browser")
+        // The transport's own words go in the failure and must not come back
+        // out as somewhere to send a person.
+        check(ModelCatalog.Failure.unreachable("http://evil.example").help?.url
+                == ModelCatalog.repository,
+              "and never anything carried in the failure itself")
+
         // ---- Shapes that must not crash ----
         check(ModelCatalog.parse(Data("not json".utf8)) == nil, "rubbish parses to nothing")
         check(ModelCatalog.parse(Data("{}".utf8)) == nil, "so does a response with no data")
@@ -308,30 +326,30 @@ enum ModelPickerSelfTest {
         failed.attemptedAt = Date()
         check(!ModelCatalog.isStale(failed), "a recent failure is remembered, not retried at once")
 
-        // ---- Exactly one row is ticked ----
+        // ---- At most one row is ticked ----
         //
-        // Two were. "Use the default" ticked whenever nothing was stored, and
-        // every catalog row ticked when its id matched the model in force —
-        // and with nothing stored that IS the default, which is in the list.
-        // A matrix, not one example, because the bug was one unconsidered
-        // combination rather than a wrong line.
+        // Two once were. A "Use the default" row ticked whenever nothing was
+        // stored, and every catalog row ticked when its id matched the model
+        // in force — and with nothing stored that WAS the default, which was
+        // in the list. A matrix, not one example, because the bug was one
+        // unconsidered combination rather than a wrong line.
         let served = ["openai/gpt-5.6-luna", "xai/grok-4.7", "oag/cheap"]
-        check(WebModelChoice.tick(chosen: nil, listed: served) == .useTheDefault,
-              "nothing picked ticks the default row")
-        check(WebModelChoice.tick(chosen: "", listed: served) == .useTheDefault,
-              "an empty stored value ticks it too")
-        check(WebModelChoice.tick(chosen: "  ", listed: served) == .useTheDefault,
-              "so does a blank one")
+        check(WebModelChoice.tick(chosen: nil, listed: served) == nil,
+              "nothing picked ticks nothing — no row may claim to be in force")
+        check(WebModelChoice.tick(chosen: "", listed: served) == nil,
+              "an empty stored value ticks nothing either")
+        check(WebModelChoice.tick(chosen: "  ", listed: served) == nil,
+              "nor does a blank one")
         check(WebModelChoice.tick(chosen: "xai/grok-4.7", listed: served) == .model("xai/grok-4.7"),
               "a picked model that is served ticks its own row")
         check(WebModelChoice.tick(chosen: "openai/gpt-5.6-luna", listed: served)
                 == .model("openai/gpt-5.6-luna"),
-              "including when the pick happens to equal the default")
+              "including the model that used to be the default — it is now just a model")
         check(WebModelChoice.tick(chosen: "xai/grok-9", listed: served)
                 == .noLongerOffered("xai/grok-9"),
               "a picked model the gateway dropped ticks the row that says so")
         check(WebModelChoice.tick(chosen: "xai/grok-4.7", listed: []) == .noLongerOffered("xai/grok-4.7"),
-              "and so does a pick with no list at all — the default row must not claim it")
+              "and so does a pick with no list at all")
 
         // No loop here counting checkmarks. A first draft had one, and it was
         // vacuous: `Tick` is an enum, so "exactly one row is ticked" is true

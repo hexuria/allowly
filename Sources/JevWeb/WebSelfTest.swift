@@ -235,7 +235,8 @@ public enum WebSelfTest {
         // request whose input messages lack the literal word "json".
         let request = WebTextModel.body(goal: "search for coffee filters",
                                         fieldLabel: "Search", fieldRole: "searchbox",
-                                        currentValue: "", pageTitle: "Amazon.com")
+                                        currentValue: "", pageTitle: "Amazon.com",
+                                        model: "xai/grok-4.7")
         check("the request does not ask for a constrained response format",
               request["response_format"] == nil)
         check("the request names a model", (request["model"] as? String)?.isEmpty == false)
@@ -257,6 +258,15 @@ public enum WebSelfTest {
         check("and what became of the request", line.contains("filled a field"))
         check("and how long it took, so two models can be compared",
               line.contains("1.8s"))
+
+        // A request that was never made. No model to name, no duration to
+        // report — and it must still be visible, or "nothing happened" and
+        // "nothing is picked" look identical in the log.
+        let unasked = WebTextModel.recordNoModel()
+        check("a task with no model picked still leaves a line",
+              unasked.contains("no model is picked"))
+        check("and does not invent a duration for a request never made",
+              !unasked.contains("0.0s"))
         // There is deliberately NO loop here asserting the line is free of
         // "coffee filters", "Search" or "Amazon.com". A first draft had one and
         // it was theatre: `line` is built from literals that share nothing with
