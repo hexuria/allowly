@@ -54,7 +54,17 @@ public enum Allowly {
     public static func isLoopback(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         guard url.scheme == "http" || url.scheme == "https" else { return false }
-        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+        // No "[::1]" arm. Foundation strips the brackets — `URL(string:
+        // "http://[::1]:29080")?.host` is "::1", measured — so that arm could
+        // never match, and an unreachable clause in a security check reads
+        // like coverage it does not provide.
+        //
+        // An exact-string allowlist, deliberately. Every other spelling of
+        // this machine — 2130706433, 0x7f000001, ::ffff:127.0.0.1, a trailing
+        // dot — fails and falls back to the direct endpoint, which is the
+        // safe direction to be wrong in. Do not "improve" this by normalising
+        // addresses without reading the assertions that pin each one.
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
     /// First non-empty environment value among `keys`.

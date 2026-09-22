@@ -28,8 +28,51 @@ enum TranscriberRoutingSelfTest {
         }
         // A scheme that is not http(s) is not a destination we understand, and
         // "file://localhost/..." must not read as local and be waved through.
+        // Measured: its `.host` really is "localhost", so only the scheme
+        // check stops it.
         check(!Allowly.isLoopback(URL(string: "file://localhost/etc/passwd")!),
               "a file URL is not a loopback host")
+
+        // ---- Other spellings of this machine ----
+        //
+        // These all mean 127.0.0.1 to the networking stack and none of them
+        // match the allowlist, so each one falls back to Google. That is the
+        // safe direction, and it is pinned here because the tempting
+        // "improvement" — normalise the address before comparing — would turn
+        // every line below into a way to redirect a recording of somebody's
+        // voice by setting one environment variable. Measured `.host` values
+        // are in the comments.
+        for spelling in [
+            "http://2130706433",            // host = "2130706433"
+            "http://0x7f000001",            // host = "0x7f000001"
+            "http://017700000001",
+            "http://[::ffff:127.0.0.1]",    // host = "::ffff:127.0.0.1"
+            "http://localhost.",            // host = "localhost." — trailing dot
+            "http://0.0.0.0",               // every interface, not this one
+        ] {
+            check(!Allowly.isLoopback(URL(string: spelling)!),
+                  "\(spelling) is not on the allowlist — it falls back to Google, "
+                  + "and normalising addresses would change that")
+        }
+
+        // Case is not one of those spellings: host names are
+        // case-insensitive and `isLoopback` lowercases before comparing, so
+        // this one IS local. Asserted the wrong way round first, and the
+        // suite caught it — which is the only reason to write them.
+        check(Allowly.isLoopback(URL(string: "http://LOCALHOST:29080")!),
+              "an uppercase host name is still this machine")
+
+        // The userinfo trick: everything before the @ is a username, so this
+        // is a request to evil.example that reads like localhost.
+        check(URL(string: "http://127.0.0.1@evil.example")?.host == "evil.example",
+              "Foundation resolves userinfo correctly, so we can trust `.host`")
+        check(!Allowly.isLoopback(URL(string: "http://127.0.0.1@evil.example")!),
+              "a userinfo prefix does not make a remote host local")
+
+        // Bracketed IPv6 is accepted, via the unbracketed arm — the reason
+        // there is no "[::1]" case in `isLoopback`.
+        check(URL(string: "http://[::1]:29080")?.host == "::1",
+              "Foundation strips the brackets, so one arm covers both spellings")
 
         // ---- The override cannot widen where audio goes ----
         check(GeminiTranscriber.resolvedHost(raw: nil) == GeminiTranscriber.google,
@@ -63,9 +106,13 @@ enum TranscriberRoutingSelfTest {
         check(GeminiTranscriber.keyHolder(for: URL(string: "http://localhost:1")!)
                 == .localGateway,
               "any local port does — it is the host that decides, not the port")
+        // Unreachable today: `host` is always `resolvedHost`'s output, which
+        // never yields a remote host. Kept as a backstop, and labelled as one
+        // rather than dressed up as a test of the live path — if the host
+        // rule is ever loosened, this is what stops the GATEWAY's key being
+        // handed to whoever the new rule lets through.
         check(GeminiTranscriber.keyHolder(for: URL(string: "https://evil.example")!) == .google,
-              "and anything else is treated as Google, which is the only key it could "
-              + "already have had — resolvedHost never yields such a host anyway")
+              "a remote host never gets the gateway key (backstop, not a live path)")
 
         // The two keys must be asked for separately, or there is only one
         // credential and the distinction above is decoration.
