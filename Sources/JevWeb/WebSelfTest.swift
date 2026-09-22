@@ -257,11 +257,19 @@ public enum WebSelfTest {
         check("and what became of the request", line.contains("filled a field"))
         check("and how long it took, so two models can be compared",
               line.contains("1.8s"))
-        // The goal, the field, the page and the answer all went into `request`
-        // above. None of them is reachable from `record`, which is the point.
-        for leaked in ["coffee filters", "Search", "searchbox", "Amazon.com"] {
-            check("the record does not carry the page — \(leaked)", !line.contains(leaked))
-        }
+        // There is deliberately NO loop here asserting the line is free of
+        // "coffee filters", "Search" or "Amazon.com". A first draft had one and
+        // it was theatre: `line` is built from literals that share nothing with
+        // the request above, so the loop passes whatever `record` does. It
+        // would catch someone hardcoding the word Amazon — which nobody will —
+        // and miss the edit that matters, a new parameter carrying the field
+        // label. Reviewing it honestly, it asserted the compiler's work and
+        // dressed it up as a privacy check.
+        //
+        // What keeps the page out of the log is `record`'s signature: model,
+        // outcome, seconds, and no parameter page content can arrive through.
+        // That is not something a test can hold, and pretending otherwise is
+        // worse than saying so here.
     }
 
     private static func checkStartResolution(_ check: (String, Bool) -> Void) {
