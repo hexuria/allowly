@@ -1230,6 +1230,18 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Run self-tests
         CuaDriver.log = { JevLog.write($0) }
         DecisionCache.log = { JevLog.write($0) }
+        // The menu bar owns this setting; JevWeb cannot see jevd, so it is
+        // handed the lookup. Without it the installed app can never change
+        // its model, because `open` inherits no shell.
+        WebTextModel.storedChoice = { WebModelChoice.chosen }
+        let webModelEnvironment = ProcessInfo.processInfo.environment["ALLOWLY_WEB_TEXT_MODEL"]
+        JevLog.write("[allowly] web text model: "
+            + WebModelChoice.effective(stored: WebModelChoice.chosen,
+                                       environment: webModelEnvironment)
+            + " (from " + WebModelChoice.source(stored: WebModelChoice.chosen,
+                                                environment: webModelEnvironment) + ")")
+        // Ask the gateway now, so the first menu open already has a list.
+        ModelCatalog.refreshIfStale()
         var testFailures = SelfTest.run()
         // The push crypto is unverifiable from the outside — a wrong key
         // derivation just means a notification that never arrives — so it
@@ -1241,6 +1253,7 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // and none of them had a test.
         testFailures.append(contentsOf: runBlocking { await SelfTest.runStore() })
         testFailures.append(contentsOf: runBlocking { await CachingDeciderSelfTest.run() })
+        testFailures.append(contentsOf: ModelPickerSelfTest.run())
         // What the ledger is holding, so a cache that quietly stopped working
         // is visible rather than merely cheap-looking. It said nothing at all
         // when a salt bug meant it wrote entries it could never read back.
@@ -1406,6 +1419,9 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let keyboardItem = NSMenuItem(title: Self.keyboardSummary(), action: nil, keyEquivalent: "")
         keyboardItem.isEnabled = false
         menu.addItem(keyboardItem)
+
+        menu.addItem(NSMenuItem.separator())
+        addWebModelMenu(to: menu)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -1617,6 +1633,105 @@ final class JevAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return HIDKeycodes.liveMap == nil
             ? "Keyboard: \(name) ✗ using US positions"
             : "Keyboard: \(name) ✓ read from macOS"
+    }
+
+    /// Which model writes into a form field during a browser task.
+    ///
+    /// Reads a cached snapshot and never waits: this runs on every menu open,
+    /// and a network call here would freeze the menu. A refresh is kicked off
+    /// for NEXT time if the cache is stale. See `ModelCatalog`.
+    private func addWebModelMenu(to menu: NSMenu) {
+        let snapshot = ModelCatalog.current()
+        ModelCatalog.refreshIfStale()
+
+        let effective = WebModelChoice.effective(
+            stored: WebModelChoice.chosen,
+            environment: ProcessInfo.processInfo.environment["ALLOWLY_WEB_TEXT_MODEL"])
+
+        let root = NSMenuItem(title: "Web text model", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+
+        // What is in force, always, whatever else the gateway has to say.
+        let current = NSMenuItem(title: "Using: \(effective)", action: nil, keyEquivalent: "")
+        current.isEnabled = false
+        submenu.addItem(current)
+        submenu.addItem(NSMenuItem.separator())
+
+        // The way back. Without a row that clears the stored choice, picking
+        // one is a one-way door — the same row `pickVoiceLocale` has.
+        let defaultItem = NSMenuItem(title: "Use the default  (\(WebModelChoice.fallback))",
+                                     action: #selector(pickWebModel(_:)), keyEquivalent: "")
+        defaultItem.target = self
+        defaultItem.representedObject = ""
+        defaultItem.state = WebModelChoice.chosen == nil ? .on : .off
+        submenu.addItem(defaultItem)
+
+        if let catalog = snapshot.catalog {
+            if let summary = ModelCatalog.summary(catalog) {
+                submenu.addItem(NSMenuItem.separator())
+                let note = NSMenuItem(title: summary, action: nil, keyEquivalent: "")
+                note.isEnabled = false
+                submenu.addItem(note)
+            }
+            var listed: Set<String> = []
+            for group in ModelCatalog.groups(catalog.models) {
+                submenu.addItem(NSMenuItem.separator())
+                let header = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                submenu.addItem(header)
+                for model in group.models {
+                    let item = NSMenuItem(title: "  \(model.displayName)",
+                                          action: #selector(pickWebModel(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = model.id
+                    item.state = model.id == effective ? .on : .off
+                    submenu.addItem(item)
+                    listed.insert(model.id)
+                }
+            }
+            // A model that was picked and is no longer offered. Saying so here
+            // beats failing much later, in the middle of a browser task.
+            if let chosen = WebModelChoice.chosen, !listed.contains(chosen) {
+                submenu.addItem(NSMenuItem.separator())
+                let gone = NSMenuItem(title: "  \(chosen) — no longer offered",
+                                      action: nil, keyEquivalent: "")
+                gone.isEnabled = false
+                gone.state = .on
+                submenu.addItem(gone)
+            }
+        } else {
+            submenu.addItem(NSMenuItem.separator())
+            let why = NSMenuItem(title: snapshot.failure?.menuText ?? "Asking the gateway…",
+                                 action: nil, keyEquivalent: "")
+            why.isEnabled = false
+            submenu.addItem(why)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+        let refresh = NSMenuItem(title: "Refresh the list",
+                                 action: #selector(refreshWebModels), keyEquivalent: "")
+        refresh.target = self
+        submenu.addItem(refresh)
+
+        root.submenu = submenu
+        menu.addItem(root)
+    }
+
+    @objc private func pickWebModel(_ sender: NSMenuItem) {
+        let identifier = (sender.representedObject as? String) ?? ""
+        WebModelChoice.chosen = identifier.isEmpty ? nil : identifier
+        // The model id is fine to write down — it is a setting, not a secret,
+        // and `pickVoiceLocale` logs its choice the same way. What never goes
+        // here is the envelope's budget figures.
+        let nowUsing = WebModelChoice.effective(
+            stored: WebModelChoice.chosen,
+            environment: ProcessInfo.processInfo.environment["ALLOWLY_WEB_TEXT_MODEL"])
+        JevLog.write("[allowly] web text model set to \(nowUsing)"
+            + (identifier.isEmpty ? " (back to the default)" : ""))
+    }
+
+    @objc private func refreshWebModels() {
+        ModelCatalog.refreshIfStale(force: true)
     }
 
     @objc private func openAccessibilitySettings() {

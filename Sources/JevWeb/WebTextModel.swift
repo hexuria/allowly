@@ -46,7 +46,24 @@ public enum WebTextModel {
     /// than reclassified. Named explicitly instead of using a virtual `oag/*`
     /// rung, because which model writes into a form field is a decision worth
     /// being able to point at.
+    /// What the menu bar has been told to use, when anything.
+    ///
+    /// JevWeb cannot see jevd, so the daemon hands the lookup in at startup —
+    /// the hook shape `CuaDriver.log` and `DecisionCache.log` already use.
+    /// Unset in a test or a bare library run, and then the environment and the
+    /// default answer exactly as they did before.
+    nonisolated(unsafe) public static var storedChoice: (@Sendable () -> String?)?
+
+    /// The stored choice wins over the environment, which is the reverse of
+    /// `loadAPIKey` below and deliberate: `open` inherits no shell, so for the
+    /// installed app the environment is never set and a menu the person
+    /// clicked has to be what takes effect. See `WebModelChoice.effective`,
+    /// which owns this rule and is asserted at launch.
     public static var model: String {
+        if let stored = storedChoice?()?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !stored.isEmpty {
+            return stored
+        }
         return Allowly.environment("ALLOWLY_WEB_TEXT_MODEL", "JEV_WEB_TEXT_MODEL")
             ?? "openai/gpt-5.6-luna"
     }
